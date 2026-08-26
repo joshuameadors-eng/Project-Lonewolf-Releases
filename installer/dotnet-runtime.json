@@ -1,0 +1,10 @@
+{
+  "id": "windowsdesktop",
+  "major": 8,
+  "arch": "x64",
+  "displayName": ".NET 8 Desktop Runtime",
+  "akaMsUrl": "https://aka.ms/dotnet/8.0/windowsdesktop-runtime-win-x64.exe",
+  "sharedFxName": "Microsoft.WindowsDesktop.App",
+  "quietArgs": ["/install", "/quiet", "/norestart"],
+  "rationale": "provisioner/LoneWolf.Provisioner/LoneWolf.Provisioner.csproj targets net8.0-windows; package.json publishes -r win-x64 --self-contained false. Electron does not need .NET. Payload is Windows PowerShell 5.1. Union = .NET 8 Desktop Runtime x64 (includes Microsoft.NETCore.App 8). Not Framework 4.8, not ASP.NET hosting bundle, not x86."
+}

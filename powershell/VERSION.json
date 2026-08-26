@@ -1,0 +1,1366 @@
+{
+    "_comment":  "Product/payload version (version) is independent of launcherVersion. Packaged launcher versioning uses public GitHub latest.json. The ISO share must not host this file, launcher exe, or script updates.",
+    "version":  "5.4.2",
+    "launcherVersion":  "5.4.7",
+    "launcherExeName":  "LoneWolf-Launcher.exe",
+    "buildDate":  "2026-08-25",
+    "stagingFolderPattern":  "Windows * ({arch})",
+    "architectures":  {
+                          "AMD64":  {
+                                        "wimBuildDate":  "2026-06-18",
+                                        "payloadHash":  "",
+                                        "enabled":  true
+                                    },
+                          "ARM64":  {
+                                        "wimBuildDate":  "",
+                                        "payloadHash":  "",
+                                        "enabled":  false
+                                    }
+                      },
+    "changelog":  [
+                      {
+                          "version":  "5.4.2",
+                          "date":  "2026-08-25",
+                          "changes":  [
+                                          "Official release 5.4.2 — follow-up to 5.4.1.",
+                                          "Added",
+                                          "USB Explorer icon via autorun.inf (FirstBase\\FirstBase.ico)",
+                                          "Visible FirstBase-Logs folder for USB logs; destage and Quick Update clear prior logs",
+                                          "Hidden FirstBase folder on the stick (fb-im.cmd stays visible)",
+                                          "WinPE wolf from Braille glyphs with Cascadia Mono private-load; console size is not resized on apply ticks",
+                                          "Splash dump copies Setup\\FirstBase\\Logs (including WU-*.log) to USB FirstBase-Logs",
+                                          "Splash background: error dark red, reboot/warn orange",
+                                          "Changed",
+                                          "USB Media Creator — TechInstall no longer disarms the stick after apply; Re-arm USB is removed from the launcher",
+                                          "Hardware gate — PnP error handling (critical PnP Error can fail the box; Get-PnpDevice type mismatch does not)",
+                                          "YouTube/Settings operator close — walk-away timeout does not seal or power off; close the window to continue",
+                                          "Sysprep seal — /oobe /reboot only; FirstBase is not left running in customer OOBE",
+                                          "Windows Update loop",
+                                          "LastBootUpTime must move by at least 10 seconds before a reboot is treated as proven",
+                                          "ONSTART siblings after live-task delete: never /Delete live TNs; Boot2 and AnyLogon tasks",
+                                          "Pending reboot is taken before remaining Driver/Cumulative work",
+                                          "Recall DISM before first scan; CBS cleanup skipped while Driver Install() is running",
+                                          "Per-update install and per-bucket download timeouts without stopping TrustedInstaller",
+                                          "SetupComplete does not wipe live wu-state when InstallDate churn looks like FRESH",
+                                          "BITS Start-Service wait capped at 90 seconds",
+                                          "Escape valve flushes then reads the live transcript without hanging",
+                                          "12-minute reboot ladder wall then shutdown.exe /r",
+                                          "OOBE/CXH hide only while splash is visible and the WU loop painting PID is live",
+                                          "RebootIterations counted at reboot; Save-State no longer zeros counters when omitted"
+                                      ]
+                      },
+                      {
+                          "version":  "5.4.1",
+                          "date":  "2026-08-20",
+                          "changes":  [
+                                          "Official release 5.4.1 — follow-up to 5.4.0. Product version and launcher version are now the same number.",
+                                          "Added",
+                                          "Coming Soon on the Bitraser USB and Secure Wipe home tiles",
+                                          "Settings on the splash technician radial menu",
+                                          "Changed",
+                                          "Splash technician radial menu — round icon buttons and a short open animation",
+                                          "fb-im — compact layout that scales with the splash; collect logs to a USB stick or a folder you choose",
+                                          "Updates splash — fills the screen; Settings and Explorer stay above the splash; cmd stays behind the splash and above OOBE",
+                                          "USB Media Creator — larger ESP, whole install.wim, and rebuilt BCD so ISO-sourced sticks boot",
+                                          "Quick Install (No Updates) volume label uses the Windows image build date",
+                                          "Builder USB-complete notification is one toast when several sticks finish together",
+                                          "Fixed",
+                                          "Network-share launcher when started from a UNC path",
+                                          "Builder stall spinner and a workflow page that rendered blank",
+                                          "WinPE step spinners freezing after Quick Update",
+                                          "Splash STATUS pill hitching every second",
+                                          "fb-im clipping off the bottom when opened inside the splash"
+                                      ]
+                      },
+                      {
+                          "version":  "5.4.0",
+                          "date":  "2026-08-18",
+                          "changes":  [
+                                          "Official release 5.4.0 — fourth cut of the v5 line (RELEASE 3→4). Consolidates 5.3.1–5.3.63 development into a shippable build.",
+                                          "Added",
+                                          "Splash technician radial menu on the logo — embedded fb-im, Restart, Restart to UEFI, and Close",
+                                          "fb-im Seal device — restart to OOBE or shutdown after scrubbing FirstBase scripts",
+                                          "Changed",
+                                          "Dedicated OOBE-handoff splash (styled, no update list) for checks, seal, and restart phases",
+                                          "Updates splash: live STATUS / REBOOTS / elapsed pills, scrollable update list without column titles; STATUS follows the current pass",
+                                          "Hardware gate sound check requires a working microphone and speakers (not PnP presence alone)",
+                                          "Seal scrub deletes .ps1 / .cmd / .bat only and keeps logs and markers",
+                                          "Fixed",
+                                          "SetupComplete specialize aborts that blocked Defender exclusions and the update loop"
+                                      ]
+                      },
+                      {
+                          "version":  "5.3.28",
+                          "date":  "2026-08-11",
+                          "changes":  [
+                                          "Fixed",
+                                          "Back to splash tools no longer crashes Preview (deferred close timer uses script-scoped state instead of a null local)"
+                                      ]
+                      },
+                      {
+                          "version":  "5.3.27",
+                          "date":  "2026-08-11",
+                          "changes":  [
+                                          "Fixed",
+                                          "Embedded fb-im buttons (Collect logs, status, restart, seal) no longer crash the splash — library loads into a persistent module so helpers survive after embed returns"
+                                      ]
+                      },
+                      {
+                          "version":  "5.3.26",
+                          "date":  "2026-08-11",
+                          "changes":  [
+                                          "Fixed",
+                                          "Splash radial button hover/click no longer crash Preview (removed GetNewClosure so `$script:` state resolves correctly)"
+                                      ]
+                      },
+                      {
+                          "version":  "5.3.25",
+                          "date":  "2026-08-11",
+                          "changes":  [
+                                          "Changed",
+                                          "Splash radial tool buttons have hover scale/glow and press/click pop animations"
+                                      ]
+                      },
+                      {
+                          "version":  "5.3.24",
+                          "date":  "2026-08-11",
+                          "changes":  [
+                                          "Fixed",
+                                          "Splash radial tools stay on a left/bottom/right safe arc with canvas clamping so DesignCanvas ClipToBounds no longer cuts off icons; DEV notes at DesignCanvas + Update-FbSplashRadialItemPositions"
+                                      ]
+                      },
+                      {
+                          "version":  "5.3.23",
+                          "date":  "2026-08-11",
+                          "changes":  [
+                                          "Changed",
+                                          "Splash radial menu: Restart and Restart to UEFI both sit on the right (stacked); fb-im left, Close bottom"
+                                      ]
+                      },
+                      {
+                          "version":  "5.3.22",
+                          "date":  "2026-08-11",
+                          "changes":  [
+                                          "Changed",
+                                          "Splash radial menu no longer places tools at the top (clipped by chrome); fb-im is on the left, UEFI bottom-left, Close bottom, Restart right"
+                                      ]
+                      },
+                      {
+                          "version":  "5.3.21",
+                          "date":  "2026-08-11",
+                          "changes":  [
+                                          "Fixed",
+                                          "Splash-embedded fb-im was unclickable because BusyOverlay stayed Visible at ZIndex 200 after fade (opacity 0 still hits) — overlays now collapse and disable hit-testing when fb-im opens"
+                                      ]
+                      },
+                      {
+                          "version":  "5.3.20",
+                          "date":  "2026-08-11",
+                          "changes":  [
+                                          "Fixed",
+                                          "Splash radial menu is a floating overlay (no reserved orbit height) so the updates list is visible again; icons position around the live logo"
+                                      ]
+                      },
+                      {
+                          "version":  "5.3.19",
+                          "date":  "2026-08-11",
+                          "changes":  [
+                                          "Changed",
+                                          "Splash radial menu UEFI item labeled Restart to UEFI"
+                                      ]
+                      },
+                      {
+                          "version":  "5.3.18",
+                          "date":  "2026-08-11",
+                          "changes":  [
+                                          "Fixed",
+                                          "Splash radial tech menu: larger icons and wider orbit so fb-im/Close are no longer under the logo"
+                                      ]
+                      },
+                      {
+                          "version":  "5.3.17",
+                          "date":  "2026-08-11",
+                          "changes":  [
+                                          "Changed",
+                                          "Splash tech tools are a radial icon menu around the logo with blur/dim on the updates panel and open/close/tool transitions",
+                                          "Fixed",
+                                          "1s status refresh no longer restarts PassStatusPulse or rebuilds the updates list when unchanged — keeps elapsed/status animations smooth"
+                                      ]
+                      },
+                      {
+                          "version":  "5.3.16",
+                          "date":  "2026-08-11",
+                          "changes":  [
+                                          "Fixed",
+                                          "Splash-embedded fb-im Back to splash tools now works (script-scoped close callback; defer clearing host so the button is not destroyed mid-Click)"
+                                      ]
+                      },
+                      {
+                          "version":  "5.3.15",
+                          "date":  "2026-08-11",
+                          "changes":  [
+                                          "Changed",
+                                          "Splash logo tech tools: open fb-im inside the splash window, Restart to UEFI (/r /fw with /r fallback), and busy overlays for menu open / restart / status / collect"
+                                      ]
+                      },
+                      {
+                          "version":  "5.3.14",
+                          "date":  "2026-08-11",
+                          "changes":  [
+                                          "Fixed",
+                                          "Hardware sound gate now requires usable Core Audio Render (output) and Capture (input) endpoints with working volume Get/Set — PnP MEDIA/Win32_SoundDevice presence alone no longer passes (PF4XZ549-1323 false pass)"
+                                      ]
+                      },
+                      {
+                          "version":  "5.3.13",
+                          "date":  "2026-08-11",
+                          "changes":  [
+                                          "Fixed",
+                                          "Invoke-WindowsUpdateLoop.ps1 was truncated mid-function (parse error) so powershell -File exited 1 with zero WU-*.log — restored missing tail from backup; loop launcher now AST-parse-preflights to Logs\\\\loop-bootstrap.log",
+                                          "Fixed",
+                                          "SetupComplete Autopilot firewall block no longer passes unresolved hostnames to New-NetFirewallRule (specialize often has no DNS)"
+                                      ]
+                      },
+                      {
+                          "version":  "5.3.12",
+                          "date":  "2026-08-11",
+                          "changes":  [
+                                          "Fixed",
+                                          "SetupComplete Defender exclusion / MDM / Autopilot hardening writers no longer abort specialize (exit 0xff) on PowerShell parentheses inside cmd echo blocks — restores exclusions so the update loop can run"
+                                      ]
+                      },
+                      {
+                          "version":  "5.3.11",
+                          "date":  "2026-08-11",
+                          "changes":  [
+                                          "Fixed",
+                                          "SetupComplete READ_SPLASH_TOGGLE no longer aborts (exit 255) on parentheses in splash-suppression.cfg comments — restores Defender exclusion arming so the update loop can run",
+                                          "Changed",
+                                          "fb-im log notes write FirstBase-Issue.md live on keystrokes; notes panel stays open when dump finishes and auto-hides after 8s of inactivity",
+                                          "Fixed",
+                                          "Updates splash technician Restart now bumps RebootIterations so the REBOOTS counter increments"
+                                      ]
+                      },
+                      {
+                          "version":  "5.3.10",
+                          "date":  "2026-08-11",
+                          "changes":  [
+                                          "Changed",
+                                          "fb-im Seal device Restart/Shutdown choice is an in-window page (no separate popup)"
+                                      ]
+                      },
+                      {
+                          "version":  "5.3.9",
+                          "date":  "2026-08-11",
+                          "changes":  [
+                                          "Changed",
+                                          "Updates splash technician tools are an in-splash page (logo click) instead of a separate dialog — Open fb-im, Restart now, Back to updates"
+                                      ]
+                      },
+                      {
+                          "version":  "5.3.8",
+                          "date":  "2026-08-11",
+                          "changes":  [
+                                          "Added",
+                                          "Updates splash logo hover glow acts as a technician button — Open fb-im or Restart now (shutdown /r /f /t 0)"
+                                      ]
+                      },
+                      {
+                          "version":  "5.3.7",
+                          "date":  "2026-08-11",
+                          "changes":  [
+                                          "Changed",
+                                          "fb-im Seal device opens Restart or Shutdown directly (both scrub and seal; only power action differs)"
+                                      ]
+                      },
+                      {
+                          "version":  "5.3.6",
+                          "date":  "2026-08-11",
+                          "changes":  [
+                                          "Added",
+                                          "fb-im Seal device action with Restart to OOBE or Shutdown (OOBE on next power-on), scrubbing FirstBase tasks/files",
+                                          "Changed",
+                                          "fb-im Collect logs confirms when notes are empty, then hides the notes box after 5 seconds"
+                                      ]
+                      },
+                      {
+                          "version":  "5.3.5",
+                          "date":  "2026-08-11",
+                          "changes":  [
+                                          "Fixed",
+                                          "fb-dump -NoPrompt no longer waits for a keypress, so fb-im Collect logs can finish instead of staying on Gathering"
+                                      ]
+                      },
+                      {
+                          "version":  "5.3.4",
+                          "date":  "2026-08-11",
+                          "changes":  [
+                                          "Changed",
+                                          "fb-im shows the issue notes box only after Collect logs is selected"
+                                      ]
+                      },
+                      {
+                          "version":  "5.3.3",
+                          "date":  "2026-08-11",
+                          "changes":  [
+                                          "Changed",
+                                          "fb-im header shows a simple version label (e.g. v5.3.3) instead of the payload revision string"
+                                      ]
+                      },
+                      {
+                          "version":  "5.3.2",
+                          "date":  "2026-08-11",
+                          "changes":  [
+                                          "Changed",
+                                          "fb-im WPF UI — ASCII-only labels; header shows a single build revision (no stick/launcher/fb-im version line)"
+                                      ]
+                      },
+                      {
+                          "version":  "5.3.1",
+                          "date":  "2026-08-11",
+                          "changes":  [
+                                          "Changed",
+                                          "fb-im technician tool — LoneWolf-themed WPF window for non-technical bench use (ready green/red status, one-click restart updates with auto lock clear, parallel log collection while typing issue notes)"
+                                      ]
+                      },
+                      {
+                          "version":  "5.3.0",
+                          "date":  "2026-08-10",
+                          "changes":  [
+                                          "Official release 5.3.0 — third cut of the v5 line (RELEASE 2→3). Consolidates 5.2.56–5.2.143 development into a shippable build.",
+                                          "Added",
+                                          "Quick Install (No Updates) workflow — minimal WinPE install to clean Windows OOBE, separate from the full Updates path",
+                                          "Pre-split install image staging on the share with fast copy to USB during builds",
+                                          "Hardware gate before seal — Wi-Fi, Camera, and Sound check; PASS plays a short YouTube clip then powers off sealed; FAIL opens Settings, then scrubs and restarts into OOBE",
+                                          "fb-im technician tool on the USB root — seal readiness check, guarded update-loop restart, and log collection",
+                                          "USB layout with FirstBase payload nested under FirstBase\\ and a clean Explorer view of the stick root",
+                                          "WinPE PowerShell deploy screen — branded step list, live DISM apply progress, and failure/completion screens",
+                                          "End-to-end visual test menu for WinPE deploy, updates splash, and handoff previews off-hardware",
+                                          "Pre-seal handoff indicator for restart / checks / seal outcomes",
+                                          "Shared DEV vs release identity across WinPE, updates splash, handoff, and fb-im",
+                                          "Updates splash REBOOTS count and TOTAL ELAPSED (pipeline time across reboots) alongside session ELAPSED",
+                                          "Multi-USB overall build progress with clearer Finalizing progress on long USB flushes",
+                                          "Live build progress for split-WIM copy, on-the-fly WIM split, and ESP boot.wim copy",
+                                          "Changed",
+                                          "Builder always uses the newest share ISO by default; mounted ISOs dismount cleanly on cancel, failure, or crash",
+                                          "Updates and No Updates share the same WinPE look — PowerShell banner and DISM apply UI",
+                                          "Updates splash — LoneWolf branding, phase-colored STATUS, 1-second refresh, and layout that fits small or high-DPI screens",
+                                          "Media Creator image source browser — local ISO scan by default, optional share ISOs, folder grouping",
+                                          "Full rebuild is the default for every stick in release builds (Quick Update toggle is dev-only)",
+                                          "FirstBase product/script line advanced to 4.1.x",
+                                          "Fixed",
+                                          "Update splash staying behind OOBE during audit updates; splash tears down cleanly for customer OOBE and returns when more update passes are needed",
+                                          "SetupComplete abort that prevented splash and update-loop tasks from arming",
+                                          "Release sticks incorrectly showing a DEV marker",
+                                          "Seal leaving Run/Userinit/Autologon and ProgramData SealRegDisarm leftovers; Settings-close now scrubs and restarts reliably into OOBE instead of a Defaultuser0 login screen",
+                                          "Hardware-gate FAIL restart that logged success but never rebooted",
+                                          "WinPE deploy media-disk detection and silent ESP/offline-disk skips",
+                                          "Builder false-fail on WIM split, pre-split fast-copy never engaging, and progress bars stuck or jumping during USB flush",
+                                          "See the 5.2.56 through 5.2.142 entries below for per-build detail."
+                                      ]
+                      },
+                      {
+                          "version":  "5.2.142",
+                          "date":  "2026-08-10",
+                          "changes":  [
+                                          "Hardware-gate FAIL: after Settings close, scrub + /r re-arms SYSTEM\\Setup OOBE (SetupType=2 / oobe\\windeploy.exe) so restart lands in customer OOBE instead of Defaultuser0 login. Finalize 1.0.15-\u003e1.0.16; DeferredOobeSound 1.0.15-\u003e1.0.16. Payload 2347-reboot-count-fix -\u003e 2348-fail-restart-scrub-oobe."
+                                      ]
+                      },
+                      {
+                          "version":  "5.2.141",
+                          "date":  "2026-08-10",
+                          "changes":  [
+                                          "REBOOTS count fix: splash uses max(RebootIterations, BootCount-1); loop increments RebootIterations on patient reboot and Save-State no longer clobbers it when omitted (sentinel -1). Show-UpdateProgress 1.0.18-\u003e1.0.19; Loop 1.0.11-\u003e1.0.12. Payload 2346-splash-poll-1s -\u003e 2347-reboot-count-fix."
+                                      ]
+                      },
+                      {
+                          "version":  "5.2.140",
+                          "date":  "2026-08-10",
+                          "changes":  [
+                                          "Updates splash main status/elapsed poll interval 2s -\u003e 1s (DispatcherTimer supports it; Pulling preview was already 1s). Show-UpdateProgress 1.0.17 -\u003e 1.0.18. Payload 2345-seal-disarm-self-clean -\u003e 2346-splash-poll-1s."
+                                      ]
+                      },
+                      {
+                          "version":  "5.2.139",
+                          "date":  "2026-08-10",
+                          "changes":  [
+                                          "SD00HN3R-1101 follow-up: SealRegDisarm body deletes gate + unregisters ONSTART task after scrub; gate only preserved while marker is armed (no orphan ProgramData scripts after seal). Finalize 1.0.14 -\u003e 1.0.15. Payload 2344-seal-disarm-scrub-preserve -\u003e 2345-seal-disarm-self-clean."
+                                      ]
+                      },
+                      {
+                          "version":  "5.2.138",
+                          "date":  "2026-08-10",
+                          "changes":  [
+                                          "SD00HN3R-1051: pre-oobe scrub no longer deletes FirstBase\\SealRegDisarm (STEP 2+5 preserve + pre-sysprep re-arm); finalize no longer reports SYSTEM power escalate ok when schtasks /Run failed. Fixes Settings-close seal with no restart and ProgramData SealRegDisarm residuals. Loop 1.0.10-\u003e1.0.11; Finalize 1.0.13-\u003e1.0.14. Payload 2343-splash-total-elapsed -\u003e 2344-seal-disarm-scrub-preserve."
+                                      ]
+                      },
+                      {
+                          "version":  "5.2.137",
+                          "date":  "2026-08-10",
+                          "changes":  [
+                                          "Updates splash: TOTAL ELAPSED (pipeline StartTime across reboots, freezes at OOBE handoff) beside session ELAPSED. Show-UpdateProgress 1.0.16 -\u003e 1.0.17. Payload 2342-splash-indicator-row -\u003e 2343-splash-total-elapsed."
+                                      ]
+                      },
+                      {
+                          "version":  "5.2.136",
+                          "date":  "2026-08-10",
+                          "changes":  [
+                                          "Updates splash indicator row: STATUS + DEV on the left, REBOOTS + ELAPSED on the right (reboot count from wu-state RebootIterations / BootCount). Show-UpdateProgress 1.0.15 -\u003e 1.0.16. Payload 2341-splash-status-dev-pull -\u003e 2342-splash-indicator-row."
+                                      ]
+                      },
+                      {
+                          "version":  "5.2.135",
+                          "date":  "2026-08-10",
+                          "changes":  [
+                                          "Updates splash: STATUS chip is phase color-coded (label + border + text); DEV pill is red; Pulling preview advances every 1s. Show-UpdateProgress 1.0.14 -\u003e 1.0.15. Payload 2340-winpe-preview-no-banner -\u003e 2341-splash-status-dev-pull."
+                                      ]
+                      },
+                      {
+                          "version":  "5.2.134",
+                          "date":  "2026-08-10",
+                          "changes":  [
+                                          "WinPE visual preview opens only the dev and release deploy windows (no separate banner). Payload 2339-dism-apply-themed -\u003e 2340-winpe-preview-no-banner."
+                                      ]
+                      },
+                      {
+                          "version":  "5.2.133",
+                          "date":  "2026-08-10",
+                          "changes":  [
+                                          "WinPE DISM apply progress themed to Deploy UI (cyan spinner + label, block bar, white %, green on complete); quiet launch via cmd redirect-to-nul. Payload 2338-winpe-preview-dism-bar -\u003e 2339-dism-apply-themed."
+                                      ]
+                      },
+                      {
+                          "version":  "5.2.132",
+                          "date":  "2026-08-10",
+                          "changes":  [
+                                          "WinPE visual preview: step 4 animates the Applying Image bar + percent (same format as live DISM apply). Payload 2337-dism-apply-ui-clean -\u003e 2338-winpe-preview-dism-bar."
+                                      ]
+                      },
+                      {
+                          "version":  "5.2.131",
+                          "date":  "2026-08-10",
+                          "changes":  [
+                                          "WinPE DISM apply UI: hide helper revision + DISM log path, remove Internal Use Only line, show percent beside the Applying Image bar; redirect DISM console output (async drain) so chatter cannot freeze/refresh the progress line. Payload 2336-seal-disarm-run-power -\u003e 2337-dism-apply-ui-clean."
+                                      ]
+                      },
+                      {
+                          "version":  "5.2.130",
+                          "date":  "2026-08-10",
+                          "changes":  [
+                                          "Builder Finalizing bar (wim-presplit/esp-copy): live copy caps at 88% and flush no longer jumps to 99%; fake progress climbs asymptotically toward ~93% over ~10+ minutes so long USB write-back does not look finished early."
+                                      ]
+                      },
+                      {
+                          "version":  "5.2.129",
+                          "date":  "2026-08-10",
+                          "changes":  [
+                                          "Post-seal autorun residual fix (SD00HN3R-0952): schtasks /Run capture no longer fails with null-process (ProcessStartInfo); when defaultuser0 shutdown /r|/s returns exit=1, finalize re-arms SealRegDisarm with a SYSTEM shutdown so regs clear and the device actually restarts. Payload 2335-deployui-no-footer -\u003e 2336-seal-disarm-run-power."
+                                      ]
+                      },
+                      {
+                          "version":  "5.2.128",
+                          "date":  "2026-08-10",
+                          "changes":  [
+                                          "WinPE deploy UI: removed the bottom launcher/scripts/elapsed build-info footer under the step list. Payload 2334-deployui-step-spinner-dism -\u003e 2335-deployui-no-footer."
+                                      ]
+                      },
+                      {
+                          "version":  "5.2.127",
+                          "date":  "2026-08-10",
+                          "changes":  [
+                                          "WinPE deploy UI: removed the overall loading bar; |/-\\\\ spinner sits on the active step. DISM apply shows a simple Applying Image bar only (no elapsed/percent/spinner clutter). Payload 2333-seal-reg-disarm-onstart -\u003e 2334-deployui-step-spinner-dism."
+                                      ]
+                      },
+                      {
+                          "version":  "5.2.126",
+                          "date":  "2026-08-10",
+                          "changes":  [
+                                          "Post-seal autorun residual fix (SD00HN3R-0848): SetupComplete pre-arms a dormant SYSTEM ONSTART SealRegDisarm gate; finalize arms .seal-reg-disarm-needed + FbSealRegDisarm.cmd and tries /Run (no longer depends on defaultuser0 schtasks /Create). Preserves gate/body across script scrub until disarm completes. Payload 2332-winpe-splash-spinner -\u003e 2333-seal-reg-disarm-onstart."
+                                      ]
+                      },
+                      {
+                          "version":  "5.2.125",
+                          "date":  "2026-08-10",
+                          "changes":  [
+                                          "Multi-stick overall progress averages full-pipeline % across all USBs (no per-phase reset jumps), shows a Partition/ESP/Data/Install/WinPE/Finish stage strip, and replaces Flushing hang text with Finalizing… plus a ~2 min ease-out fake bar."
+                                      ]
+                      },
+                      {
+                          "version":  "5.2.124",
+                          "date":  "2026-08-10",
+                          "changes":  [
+                                          "WinPE deploy UI: splash branding lives in the same Invoke-FbDeployUi surface (no separate banner process, no title ribbon); progress keeps % and adds a |/-\\\\ spinner beside it. Payload 2331-honest-update-status-reboot -\u003e 2332-winpe-splash-spinner."
+                                      ]
+                      },
+                      {
+                          "version":  "5.2.123",
+                          "date":  "2026-08-10",
+                          "changes":  [
+                                          "Updates splash STATUS chip styled like ELAPSED; row labels are honest: Pending Restart, Retry Next Boot, Done (Installing/Downloading stay active with progress). Stopped Set-FbAllUpdatesDeferred from flipping in-flight rows to Completed. Reboot ladder tightened: /t 15, mid-force at 40s, Phase A 60s / Phase B 45s, watchdog stale-Rebooting 20s. Payload 2330-seal-autostart-disarm -\u003e 2331-honest-update-status-reboot."
+                                      ]
+                      },
+                      {
+                          "version":  "5.2.122",
+                          "date":  "2026-08-10",
+                          "changes":  [
+                                          "Seal autostart residual fix (SD00HN3R-0652): defaultuser0 could not write Winlogon/Run (access denied) and clears were logged without verify, leaving Userinit + Run/RunOnce + AutoAdminLogon after seal. Finalize now verifies, falls back to reg.exe, and escalates to a one-shot SYSTEM SealRegDisarm task; bootstrap sealed early-exit also disarms instead of exiting dirty. Payload 2329-updates-splash-status-chrome -\u003e 2330-seal-autostart-disarm."
+                                      ]
+                      },
+                      {
+                          "version":  "5.2.121",
+                          "date":  "2026-08-10",
+                          "changes":  [
+                                          "Updates splash: elapsed timer moved opposite the status line in the panel header with cyan chip + pulse; status messages color-coded by phase; logo 132-\u003e168. Payload 2328-updates-splash-layout -\u003e 2329-updates-splash-status-chrome."
+                                      ]
+                      },
+                      {
+                          "version":  "5.2.120",
+                          "date":  "2026-08-10",
+                          "changes":  [
+                                          "Updates splash layout: removed the center status card (header/activity/version line); status now sits small and light where UPDATE ACTIVITY was; larger wolf logo; title 36-\u003e33pt; DEV marker restyled to cyan on-theme chrome (handoff splash matched). Payload 2327-disksetup-dol-token-fix -\u003e 2328-updates-splash-layout."
+                                      ]
+                      },
+                      {
+                          "version":  "5.2.119",
+                          "date":  "2026-08-07",
+                          "changes":  [
+                                          "WinPE disksetup MEDIADISK fix (rev 2026-08-07.3): FB_DOL_PARSE now reads disk number from token 3 of \"* Disk N\" (not token 2); FB_DOL_WALK matches drive letter via token 3 on Volume rows; removed the Get-Partition PS fallback from disksetup pre-wipe (it hung WinPE even when diskpart already had the answer). Payload 2326-disksetup-mediadisk-parse -> 2327-disksetup-dol-token-fix."
+                                      ]
+                      },
+                      {
+                          "version":  "5.2.118",
+                          "date":  "2026-08-07",
+                          "changes":  [
+                                          "WinPE disksetup MEDIADISK parse fix: diskpart capture is now parsed via findstr-to-file + usebackq (no for/f subshell findstr), with detail-disk walk before the bounded Get-Partition fallback. Fixes deploys that stalled at \"media-disk fallback\" before wipe/DISM when diskpart already showed \"* Disk 1\". disksetup/TechInstall rev 2026-08-07.2. Payload 2325-handoff-splash-branding -> 2326-disksetup-mediadisk-parse."
+                                      ]
+                      },
+                      {
+                          "version":  "5.2.117",
+                          "date":  "2026-08-07",
+                          "changes":  [
+                                          "OOBE handoff indicator (FirstBaseHandoffSplash.ps1) now uses the same wolf logo and header chrome as Show-UpdateProgress.ps1 (loaded from the sibling splash script) and shows the DEV pill via FirstBaseBuildIdentity.ps1.",
+                                          "Removed the fullscreen running-checks handoff during the hardware gate; YouTube/Settings is the operator surface for that phase. Payload 2324-splash-handoff-visibility -> 2325-handoff-splash-branding."
+                                      ]
+                      },
+                      {
+                          "version":  "5.2.116",
+                          "date":  "2026-08-07",
+                          "changes":  [
+                                          "Windows update splash and OOBE handoff visibility (SD00HN3R-1101): seal-window guard and splash teardown now run only after STAGE 1 convergence passes, so the updates splash stays visible during convergence scan and inline-retry install passes instead of being killed immediately when InstallsCompleted=true routes to handoff.",
+                                          "OOBE handoff indicator (FirstBaseHandoffSplash.ps1) no longer launches with -WindowStyle Hidden; the pre-seal status window is visible when shown.",
+                                          "Fixed UTF-8 mojibake in build-version.txt and handoff splash copy (em dashes and middle dots replaced with ASCII). Payload 2323-handoff-preseal-indicator -> 2324-splash-handoff-visibility."
+                                      ]
+                      },
+                      {
+                          "version":  "5.2.115",
+                          "date":  "2026-08-07",
+                          "changes":  [
+                                          "OOBE handoff splash is now a non-blocking pre-seal status indicator shown before the restart into driver/hardware checks (and while checks/sealing run). It no longer arms RunOnce/scheduled tasks, no longer waits for Acknowledge, and never halts restart or seal. Invoke-FbOobeHandoff launches restart-for-checks fire-and-forget; DeferredOobeSound shows running-checks / gate-fail-restart the same way. Payload 2322-e2e-visual-test -> 2323-handoff-preseal-indicator."
+                                      ]
+                      },
+                      {
+                          "version":  "5.2.114",
+                          "date":  "2026-08-07",
+                          "changes":  [
+                                          "Added Invoke-FbEndToEndVisualTest.ps1 - a single visual-test entry point with an interactive menu (or -Workflow) covering WinPE full preview, animated Windows pulling-updates, static Windows updates previews (including DEV vs RELEASE pills), OOBE handoff outcomes, and sequential end / end-error pipelines. Show-UpdateProgress.ps1 gains -PreviewScenario Static|Pulling|Checking so the pulling workflow can animate off-hardware. Payload 2321-dev-marker-parity -> 2322-e2e-visual-test."
+                                      ]
+                      },
+                      {
+                          "version":  "5.2.113",
+                          "date":  "2026-08-07",
+                          "changes":  [
+                                          "Fixed release builds showing a DEV marker on the on-device updates splash and in the fb-im technician tool. Both treated FirstBaseBuildStatus in FirstBaseVersion.ps1 as a dev signal, but that is a checked-in constant rather than a build output, so every build inherited whatever value was committed. Dev status is now decided only by artifacts the builder stamps per build.",
+                                          "Dev/release detection is now one shared function (FirstBaseBuildIdentity.ps1) used by the WinPE banner, the WinPE deploy screen, the updates splash, the handoff splash and fb-im, replacing four separate implementations. It reads LW_VERSION.json devBuild first, then the .dev-build marker, and treats a missing or unreadable signal as release - a dev stick losing its tag is cosmetic, a release device claiming DEV is not.",
+                                          "TechInstall now stages LW_VERSION.json and the .dev-build marker to C:\\Windows\\Setup\\FirstBase alongside the resolver, so the on-device surfaces have the same per-build evidence the WinPE surfaces already had. Previously neither reached the device, which is why the splash had nothing real to read. Payload 2320-winpe-ps-ui -> 2321-dev-marker-parity."
+                                      ]
+                      },
+                      {
+                          "version":  "5.2.112",
+                          "date":  "2026-08-07",
+                          "changes":  [
+                                          "WinPE deploy terminal is now a PowerShell visual environment (Invoke-FbDeployUi.ps1). Instead of a scrolling echo progress bar, the console holds one repainted screen: branded header with the workflow and DEV tags, the full step plan with each step marked pending / active / done, a progress bar, a live detail line, and a launcher + scripts + elapsed footer. Failure and completion get their own full-screen treatment, with the last 10 log lines shown inline on a failure. Wired into all three deploy profiles (Updates, No Updates, WIN-INSTALL); the old echo bar is retained as an automatic fallback for a WinPE without PowerShell.",
+                                          "Handoff splash (FirstBaseHandoffSplash.ps1): after the final restart the technician now gets a screen stating the outcome - sealed and ready, hardware-gate failure, or a generic restart - which stays open until it is explicitly closed. It does not delay or block the restart itself, and it removes its own scheduled task and marker once dismissed.",
+                                          "Updates splash no longer renders a blank status area. Get-FbSplashStateVersionText was a stub returning an empty string, so the line under the header was always empty; it now reports pipeline phase, pass and version without exposing KB IDs or update titles. The status card also shows an explicit 'checking for updates' state instead of an empty panel before the first wu-status.json write, the loop's message field is bound again, and the dead WarningText lookup is resolved.",
+                                          "WinPE console no longer prints 'The system cannot find the path specified.' The WinPE log was opened under %TEMP% before wpeinit had run, with no stderr redirection; %TEMP% is now validated with an X:\\ fallback and the log writes are redirected. The UEFI preflight also stopped echoing its status lines to the console, restoring the intended silent pre-banner phase.",
+                                          "Fixed a deploy bug that had been firing on every run: a for /f command string beginning with a double quote never executed, printing a syntax error and leaving MEDIADISK empty, which silently skipped the split-USB ESP disarm and the offline-disk step. Both call sites now use the capture-file diskpart pattern and log the resolved disk number. disksetup.cmd and TechInstall.cmd also agree on the payload root for their logs and operator flags. Payload 2319-usb-root-fb-im -> 2320-winpe-ps-ui."
+                                      ]
+                      },
+                      {
+                          "version":  "5.2.108",
+                          "date":  "2026-08-06",
+                          "changes":  [
+                                          "USB root cleanup: Explorer shows only fb-im.cmd and the FirstBase\\ payload folder. Windows boot/media (sources, EFI, boot, bootmgr, setup.exe, ...) stay at the volume root for bootability but are Hidden+System. LoneWolf overlay (Deploy, WUPayload, Policy, Scripts, Autounattend, LW_VERSION, logs) nests under FirstBase\\. fb-dump.cmd is deprecated - use fb-im menu option 3 (Collect logs). WinPE Startnet/TechInstall resolve FirstBase\\Deploy with flat-layout fallbacks. Payload 2318-aio-tool-winpe-dev -> 2319-usb-root-fb-im."
+                                      ]
+                      },
+                      {
+                          "version":  "5.2.107",
+                          "date":  "2026-08-06",
+                          "changes":  [
+                                          "New fb-aio technician tool, staged at the USB root beside fb-dump.cmd. One menu with three actions: a device status check that reports whether the box is sealed and ready to pack (seal markers, sysprep tags, update-loop state, plus a residue scan for leftover FirstBase tasks, autostart values and runnable files); a guarded restart of the Windows Update loop for devices where SetupComplete never fired it, which prefers the armed scheduled task and refuses to run on a sealed device; and a hand-off to fb-dump. Runs from the stick, so it still works after the device has been scrubbed."
+                                      ]
+                      },
+                      {
+                          "version":  "5.2.106",
+                          "date":  "2026-08-06",
+                          "changes":  [
+                                          "WinPE deploy banner now marks dev builds: a red DEV tag sits beside the [ Updates ] / [ No Updates ] workflow tag and the footer prints the launcher and script versions (red with the share versions alongside on a dev stick, grey on a release stick). Detection is self-contained - the banner reads LW_VERSION.json from the data-partition root and falls back to WUPayload\\.dev-build - so both workflows are covered with no change to TechInstall.cmd. Payload 2317-hw-gate-watch-url -> 2318-aio-tool-winpe-dev."
+                                      ]
+                      },
+                      {
+                          "version":  "5.2.105",
+                          "date":  "2026-08-05",
+                          "changes":  [
+                                          "Hardware-gate PASS video: fixed the playback error introduced in payload 2315. The /embed/ URL fails whenever the video's owner disallows embedding, so playback is back on the normal watch page and autoplay now comes solely from the Chromium --autoplay-policy=no-user-gesture-required launch flag. Payload 2316-dev-xref-stick-pill -> 2317-hw-gate-watch-url; FirstBaseDeferredOobeSound.ps1 1.0.11 -> 1.0.12."
+                                      ]
+                      },
+                      {
+                          "version":  "5.2.104",
+                          "date":  "2026-08-05",
+                          "changes":  [
+                                          "Per-disk Full Rebuild / Quick Update toggle is now dev-mode only. Release builds hide it and always full-rebuild every selected stick (overlay mode remains available in dev)."
+                                      ]
+                      },
+                      {
+                          "version":  "5.2.103",
+                          "date":  "2026-08-05",
+                          "changes":  [
+                                          "Media Creator: per-disk Quick Update / Full Rebuild toggle removed - every stick is a full rebuild. Image Source grid lists local ISOs only by default and scans the whole system: a known-folder pass renders instantly, then a background sweep of every fixed and removable drive streams further hits into the grid behind an animated progress bar (live ISO + folder counts, fades out on completion; new tiles animate in; reduced-motion respected). System/junk trees and reparse points are skipped, network drives excluded, results cached 5 minutes. Show share toggle next to Refresh pulls share ISOs when needed. Folder tiles group multiple ISOs in one directory with a back link. Long UNC paths stay inside the tile. Source checks are metadata-only; Verify boot files is opt-in."
+                                      ]
+                      },
+                      {
+                          "version":  "5.2.98",
+                          "date":  "2026-08-04",
+                          "changes":  [
+                                          "Dev mode: cross-ref share release VERSION.json vs local VERSION.json for launcher (launcherVersion) and script (version). DEV when either is ahead of share. Sticks stamp launcher/script + share baselines; home/builder DEV pill when stick is ahead of share (or stamped). Share VERSION.json read always registers credentials (even in Local Build Mode). Payload 2315-youtube-autoplay-once -> 2316-dev-xref-stick-pill."
+                                      ]
+                      },
+                      {
+                          "version":  "5.2.97",
+                          "date":  "2026-08-04",
+                          "changes":  [
+                                          "Hardware-gate PASS YouTube: open embed with autoplay=1 + Chromium --autoplay-policy=no-user-gesture-required (was paused on watch URL); play once only (loop=0, no playlist/next). Payload 2314-dev-pill-splash-scroll -> 2315-youtube-autoplay-once; FirstBaseDeferredOobeSound.ps1 1.0.10 -> 1.0.11."
+                                      ]
+                      },
+                      {
+                          "version":  "5.2.96",
+                          "date":  "2026-08-04",
+                          "changes":  [
+                                          "Dev sticks: LW_VERSION.json stamps devBuild + launcherVersion when local launcher is ahead of share official; home/builder show DEV pill (not Outdated). On-device FirstBase updates splash shows DEV pill (BuildStatus=dev or WUPayload\\.dev-build) and dark cyan-styled updates-list scrollbar. Payload 2313-hw-gate-verified-restart -> 2314-dev-pill-splash-scroll; Show-UpdateProgress.ps1 1.0.8 -> 1.0.9; FirstBaseBuildStatus set to dev."
+                                      ]
+                      },
+                      {
+                          "version":  "5.2.95",
+                          "date":  "2026-08-04",
+                          "changes":  [
+                                          "SD00HN3R-1157: hardware-gate FAIL path logged /r but the device never restarted. Root cause: DeferredOobeSound issued /r /t 30 then finalize issued another /r /t 12 (shutdown.exe aborts the prior pending reboot); finalize used SilentlyContinue with no exit-code check. Fix (2313): FAIL path no longer issues an early /r (finalize owns restart); finalize verifies /r exit codes with retries (12/3/0) then Restart-Computer -Force. Launcher: Dev build flag when local launcherVersion is higher than share Remote\\\\Staging\\\\VERSION.json official (nav + splash show 'DEV'). Payload 2312-hardware-gate-window-wait -> 2313-hw-gate-verified-restart; FirstBaseDeferredOobeSound.ps1 1.0.9 -> 1.0.10; FirstBaseOobeOperatorFinalize.ps1 1.0.8 -> 1.0.9."
+                                      ]
+                      },
+                      {
+                          "version":  "5.2.94",
+                          "date":  "2026-08-04",
+                          "changes":  [
+                                          "FirstBase hardware gate (2312): closing Edge no longer waits for msedge.exe to fully exit (background mode left the gate hung, so seal/shutdown never ran). Wait now tracks visible MainWindowHandle for a dedicated --user-data-dir profile, then kills leftover profile processes and proceeds to seal. Payload 2311-hardware-gate-inprivate -> 2312-hardware-gate-window-wait; FirstBaseDeferredOobeSound.ps1 1.0.8 -> 1.0.9."
+                                      ]
+                      },
+                      {
+                          "version":  "5.2.93",
+                          "date":  "2026-08-04",
+                          "changes":  [
+                                          "FirstBase hardware gate (2311): launch Edge with --inprivate (Chrome --incognito) plus --no-first-run / --no-default-browser-check so the YouTube PASS path skips browser first-time setup in OOBE. Payload 2310-hardware-gate-youtube -> 2311-hardware-gate-inprivate; FirstBaseDeferredOobeSound.ps1 1.0.7 -> 1.0.8."
+                                      ]
+                      },
+                      {
+                          "version":  "5.2.92",
+                          "date":  "2026-08-04",
+                          "changes":  [
+                                          "FirstBase OOBE operator gate (2310): Wi-Fi + Camera + Sound presence check replaces unconditional Sound Settings. PASS (all three OK): set volume 25%, open YouTube https://www.youtube.com/watch?v=mD3v1B_aXw0 until browser closes (no Settings), then seal + shutdown /s. FAIL (any missing, or browser never starts): open ms-settings:sound, hold until closed, seal + restart /r (marker .hardware-gate-fail-restart; finalize honors /r). FirstBaseDeferredOobeSound.ps1 1.0.6 -> 1.0.7; FirstBaseOobeOperatorFinalize.ps1 1.0.7 -> 1.0.8; payload 2309-splash-topmost-os-limitation -> 2310-hardware-gate-youtube."
+                                      ]
+                      },
+                      {
+                          "version":  "5.2.91",
+                          "date":  "2026-08-04",
+                          "changes":  [
+                                          "FirstBase splash: treat splash-above-OOBE as an OS limitation and ship Topmost only. Field (Shift+F10): console can black-screen and still not focus the splash; Layer 2 OOBE-host kill is not a supported fix. SetupComplete now drops splash-suppression.cfg with FIRSTBASE_SPLASH_KILL_OOBE=0 (was 1); kill remains opt-in. Show-UpdateProgress documents the OS limitation (2309). Existing sticks that already have splash-suppression.cfg keep their tech edits - delete the cfg or set KILL_OOBE=0 to match. Payload rev 2308-splash-fit-small-screens -> 2309-splash-topmost-os-limitation; Show-UpdateProgress.ps1 1.0.7 -> 1.0.8; SetupComplete.cmd 1.0.4 -> 1.0.5."
+                                      ]
+                      },
+                      {
+                          "version":  "5.2.90",
+                          "date":  "2026-08-04",
+                          "changes":  [
+                                          "FirstBase splash: fit small / high-DPI screens so the elapsed timer (top) and update list (bottom) are no longer clipped. Root cause: fixed-pixel layout (140px logo + fixed 392px ListView + 1060px-wide panel inside star-row padding) overflowed short working areas when Windows display scaling 'sized up' the UI. Fix (tag 2308): wrap the splash in a 1280x800 design canvas inside a Viewbox with Stretch=Uniform StretchDirection=DownOnly (scale down only on small screens; full size on large ones), give the timer a reserved top row, let the update list fill remaining height with vertical scroll, and log 2308 fit Loaded scale in splash-ui.log. Payload rev 2307-splash-inline-retry-revert -> 2308-splash-fit-small-screens; Show-UpdateProgress.ps1 1.0.6 -> 1.0.7. Rebuild sticks; preview with Show-UpdateProgress.ps1 -Preview on a scaled display."
+                                      ]
+                      },
+                      {
+                          "version":  "5.2.89",
+                          "date":  "2026-08-04",
+                          "changes":  [
+                                          "FirstBase payload: fix SD00HN3R-0724 same-session gap in seal-window splash teardown. 2306 only restored the splash on the reboot-after-exhausted-inline-retry path; when STAGE 1 refused handoff and entered same-session inline-retry (up to 3 residual install passes), the splash stayed torn down with .oobe-seal-window still set - so OOBE was the only UI while updates continued (operator report: splash stuck behind OOBE / needs elevated cmd). Evidence: 2306 kill+activate already worked on Audit boots (fgEqSplash=True); dump-time failure was 07:23:42 2305 teardown then 07:24:02 REFUSE + inline-retry with no revert. Fix (tag 2307): before STAGE 1 inline-retry starts, call Invoke-FbSplashSealTeardownRevert -RelaunchNow (clear seal guard + re-enable splash tasks + clear .splash-teardown + schtasks /Run SplashWatcher/UpdateSplash + DirectSpawn). If inline-retry CONVERGES, re-write the seal guard and re-run Invoke-FbSplashSealTeardown before falling through to committed sysprep. Exhausted-retry reboot path still reverts as in 2306. Payload rev 2306-splash-seal-teardown-reversible -> 2307-splash-inline-retry-revert; Invoke-WindowsUpdateLoop.ps1 1.0.7 -> 1.0.8. Rebuild sticks; dev-retest by dropping the updated loop into C:\\Windows\\Setup\\FirstBase\\."
+                                      ]
+                      },
+                      {
+                          "version":  "5.2.88",
+                          "date":  "2026-08-04",
+                          "changes":  [
+                                          "Builder: deprecated local temp staging for USB-bound content. ISO/PreferIso/OverlayOnly no longer create LWCache/EspCache/overlay temp — boot files copy ISO→USB and deploy overlay copies ContentRoot→USB directly. Non-ISO staged-WIM EspCache retained (injected boot.wim template) with guaranteed finally cleanup. Added best-effort orphan sweep of LWMount_*/LWPEMount_*/LW-Wim*/LW-robocopy-disk*.log at build start, and LWCache_* plus the same at build end / -DismountOnly cancel."
+                                      ]
+                      },
+                      {
+                          "version":  "5.2.87",
+                          "date":  "2026-08-03",
+                          "changes":  [
+                                          "FirstBase payload: made the 2305 seal-window splash teardown REVERSIBLE on a refused OOBE hand-off (follow-up to 2305). 2305 tore the splash down permanently the moment the seal window opened, which was correct for a committed seal but wrong when the STAGE 1 convergence gate REFUSES the hand-off and reboots for another UPDATE PASS: two persistent bits of state (the State\\.splash-teardown marker + End/DISABLE\u0027d splash tasks, and the .oobe-seal-window seal guard that halts Layer 2) kept the splash down forever after the first hand-off attempt, so no progress UI showed on the subsequent update passes. Fix (tag 2306): Invoke-WindowsUpdateLoop.ps1 adds Invoke-FbSplashSealTeardownRevert (a mirror of Invoke-FbSplashSealTeardown) called ONLY on the STAGE 1 residual-refusal branch (the sole exit that clears PendingSysprep=false and reboots for another pass), right before Invoke-FbReboot. It reverts the FULL seal-window state in order: (1) remove the seal guard .oobe-seal-window so Layer 2 (kill-OOBE) + Layer 4 operate again next boot (without this the splash would run but stay stuck behind OOBE - the original bug), (2) schtasks /Change /ENABLE the same five splash tasks 2305 disabled (UpdateSplash, SplashWatcher, UpdateSplashLayer4, UpdateSplashInteractive[Launch]) so the ONSTART watcher relaunches, (3) remove the cooperative State\\.splash-teardown marker so Show-UpdateProgress.ps1 spins up and the watcher stops standing down. The COMMITTED / seal path is unchanged - it stays permanently torn down. Safe because the next hand-off attempt re-writes the seal guard + re-runs the teardown on entry (reversal is re-armed each attempt), and because Show-UpdateProgress.ps1 / FirstBaseSplashWatcher.ps1 already re-arm automatically once the marker + seal guard are gone (no change needed to those files). Seal-safety preserved: reversal happens only on the refused branch; STAGE 2 CBS-not-settled and sysprep-failure retries keep PendingSysprep=true and stay torn down (still sealing, no update passes); Invoke-FbPreSysprepScrub L1/L3/L4 reverts, loop re-arm, Bug U/B1 fences, overlay.mode, sysprep, and the deferred-sound/finalize chain are untouched. Payload rev 2305-splash-seal-teardown -\u003e 2306-splash-seal-teardown-reversible; Invoke-WindowsUpdateLoop.ps1 1.0.6 -\u003e 1.0.7. Requires rebuilding sticks; dev-retest by forcing a refused hand-off (residual update at the STAGE 1 gate) and confirming the splash reappears and surfaces on the next pass, then a committed hand-off and confirming the splash is gone with a clean customer OOBE."
+                                      ]
+                      },
+                      {
+                          "version":  "5.2.86",
+                          "date":  "2026-08-03",
+                          "changes":  [
+                                          "FirstBase payload: clean splash teardown at the OOBE-handoff seal window (complements 2304\u0027s pre-seal reclaim). Field finding (machine SD00HN3R): on the seal / OOBE-handoff boot the update splash kept running and sat BEHIND the real customer OOBE looking broken. Root cause: the seal-window guard (.oobe-seal-window, written when the loop enters Invoke-FbOobeHandoff) correctly halts Layer 2 so the splash can no longer take the foreground, but nothing told the splash to EXIT - so it lingered behind OOBE for the entire hand-off, including the STAGE 1 \u0027refused; reboot for another pass\u0027 window (the exact boot the operator saw). The pre-sysprep scrub only tears the splash down later on the committed path (and defers it under OOBE-overlay mode), so it never covered the seal window. Fix (tag 2305): the moment the seal window opens, Invoke-WindowsUpdateLoop.ps1 now calls a new Invoke-FbSplashSealTeardown that (1) writes a cooperative State\\.splash-teardown marker, (2) End+DISABLE the splash scheduled tasks (UpdateSplash, SplashWatcher, UpdateSplashLayer4, UpdateSplashInteractive[Launch]) so nothing relaunches it, and (3) force-kills lingering splash processes by command-line match. Show-UpdateProgress.ps1 closes + exits on the marker (bypassing the Updates-Done close guard, and refusing to spin up WPF if the marker is already present); FirstBaseSplashWatcher.ps1 stands down on the marker and never relaunches. Seal-safety preserved: the teardown ONLY stops the splash - it disables (does not delete) tasks, never touches the seal guard, overlay.mode, sysprep, the OOBE regeneration, or the deferred-sound / operator-finalize chain, and Invoke-FbPreSysprepScrub\u0027s layer reverts / re-arm / Bug U/B1 fences are unchanged. Layer 3 (splash-as-shell) guard: if the .splash-shell-mode marker is present the teardown stands down entirely so the scrub\u0027s ordered Shell=explorer.exe restore is what removes the shell (never leaves the session shell-less). Payload rev 2304-splash-fg-spawn-reclaim -\u003e 2305-splash-seal-teardown; Invoke-WindowsUpdateLoop.ps1 1.0.5 -\u003e 1.0.6; Show-UpdateProgress.ps1 1.0.5 -\u003e 1.0.6; FirstBaseSplashWatcher.ps1 1.0.2 -\u003e 1.0.3. Requires rebuilding sticks; a stuck box can be dev-retested by dropping the updated files into C:\\Windows\\Setup\\FirstBase\\ and rebooting to the seal boot (expect the splash to vanish and a clean customer OOBE)."
+                                      ]
+                      },
+                      {
+                          "version":  "5.2.85",
+                          "date":  "2026-08-03",
+                          "changes":  [
+                                          "FirstBase payload: 3rd-boot regression follow-up to the 2303 splash/OOBE activation fix, from two on-box bundles (machine SD00HN3R, payload=2303 confirmed running). Root cause: the ONLY primitive that reliably surfaces the splash is Layer 2 killing the OOBE host that holds the foreground - post-kill SetForegroundWindow returns True gle=0 every time, while the self-window minimize-\u003erestore reclaim (reclaim-2214b) fails every time (SetForegroundWindow False, no fresh error). Two failure modes made the splash sit behind OOBE: (1) the Layer 2 backoff throttled the kill to ~1 per 20s after only 3 kills, so during the WWAHost respawn storm the splash was hidden between kills; and (2) on the later boot the update loop reached the OOBE handoff and the seal-window guard correctly halted Layer 2 (protecting the real customer OOBE being regenerated at sysprep) - so WWAHost held the foreground uncontested. Fixes (tag 2304): (a) added SwitchToThisWindow (the Alt+Tab shell\u0027s own activation API, which the operator confirmed surfaces the splash) as a cheap first try in the self-activate path, before and after the minimize-\u003erestore; (b) raised the per-boot/per-proc kill ceiling from 3 to 30 so the proven kill+activate keeps firing through the respawn storm (the storm subsides within ~1 min once updates progress); (c) coupled the reclaim path to the proven kill+activate - when the self-window activation still cannot take the foreground from an OOBE-family host, it escalates to the seal-gated Layer 2 kill. All activation acts only on the splash\u0027s own window/input; the Layer 2 seal-window gate is unchanged, so nothing touches the real customer OOBE during the seal window (during seal the splash intentionally yields - suppressing OOBE there would hide the customer handoff). Payload rev 2303-splash-fg-activation -\u003e 2304-splash-fg-spawn-reclaim; Show-UpdateProgress.ps1 1.0.4 -\u003e 1.0.5. Requires rebuilding sticks; a stuck box can be dev-retested by dropping the updated Show-UpdateProgress.ps1 into C:\\Windows\\Setup\\FirstBase\\ and rebooting 3x to reproduce the 3rd-boot case (cfg already has FIRSTBASE_SPLASH_KILL_OOBE=1)."
+                                      ]
+                      },
+                      {
+                          "version":  "5.2.84",
+                          "date":  "2026-08-03",
+                          "changes":  [
+                                          "FirstBase payload: follow-up to the 2302 splash/OOBE fix after the on-box 1253 validation run (machine SD00HN3R). The 2302 diagnostics showed the picture had changed: the foreground LOCK is now cleared (fgLockTimeout=0ms, driven by the SetupComplete registry seed of ForegroundLockTimeout=0), yet SetForegroundWindow was still refused - the splash is topmost and Alt+Tab-activatable but cannot self-activate, because a background thread lacks SetForegroundWindow activation rights (AttachThreadInput to the WWAHost CoreWindow thread also fails). Three changes: (Fix 0) initialized the per-tick fglock state variable that was throwing every tick under StrictMode, and documented that SystemParametersInfo(SPI_SETFOREGROUNDLOCKTIMEOUT=0) returns ERROR_INVALID_PARAMETER (gle=87) on Windows build 26100 regardless of marshaling (IntPtr/UIntPtr), flags, or value - it is cosmetic because the registry seed is what clears the lock; the gle logging is kept. (Fix 1) the foreground reclaim now fires a real Alt (VK_MENU) key tap instead of the inert VK_F15 - giving the activation the same user-input provenance the operator\u0027s working Alt+Tab uses - and, when SetForegroundWindow is still refused, performs a guarded self minimize-\u003erestore of the splash window plus a HWND_TOPMOST/BringWindowToTop re-assert, with post-attempt SetForegroundWindow + GetLastError logging under a new 2303 self-activate tag. (Fix 2) after a successful Layer 2 kill the splash now claims the foreground in the SAME tick (Alt tap + topmost re-assert + SetForegroundWindow, with the minimize-\u003erestore fallback) to beat the WWAHost respawn race, instead of waiting for the next ~1.5s UI refresh. All activation actions touch only the splash\u0027s own window and our own input (seal-safe); Layer 2\u0027s seal-window gate and 3-kills/20s backoff are unchanged. Payload rev 2302-splash-oobe-fg-reclaim -\u003e 2303-splash-fg-activation; Show-UpdateProgress.ps1 1.0.3 -\u003e 1.0.4. Requires rebuilding sticks; a stuck box can be dev-retested by dropping the updated Show-UpdateProgress.ps1 into C:\\Windows\\Setup\\FirstBase\\ and rebooting (cfg already has FIRSTBASE_SPLASH_KILL_OOBE=1)."
+                                      ]
+                      },
+                      {
+                          "version":  "5.2.83",
+                          "date":  "2026-08-03",
+                          "changes":  [
+                                          "FirstBase payload: fixed the Audit-Mode update splash rendering but staying hidden behind the OOBE host (field report: machine SD00HN3R, Lenovo). Root cause from the runtime logs: Layer 1 fglock never lifts the foreground lock - SystemParametersInfo(SPI_SETFOREGROUNDLOCKTIMEOUT=0) returns ok=False and the effective ForegroundLockTimeout stays pinned at 2147483647ms (0x7FFFFFFF, set by the OOBE/CloudExperienceHost host), so every SetForegroundWindow and AttachThreadInput from the splash is rejected by the foreground lock. The splash is topmost but loses the foreground/z-order fight to WWAHost\u0027s Windows.UI.Core.CoreWindow; only real user input (Shift+F10 opening a console) satisfied the recent-input gate and released the pending foreground change. Three changes: (A) diagnostics - capture and log Marshal.GetLastWin32Error() after the SPI set and after the 2214b SetForegroundWindow so the exact denial code is recorded; (B) re-apply SPI_SETFOREGROUNDLOCKTIMEOUT=0 on every ~1.5s refresh tick (guarded on Layer 1 being enabled, fully wrapped, logs only on state-change) so an OOBE-re-forced lock keeps getting zeroed; (C) enabled Layer 2 (kill OOBE host when it holds the foreground) by default - it remains seal-window-gated and per-proc backoff-limited, so it is safe during the pre-seal audit window and never touches the real customer OOBE regenerated at sysprep. Payload rev 2301-splash-cfg-paren-fix -\u003e 2302-splash-oobe-fg-reclaim; Show-UpdateProgress.ps1 1.0.2 -\u003e 1.0.3; SetupComplete.cmd 1.0.3 -\u003e 1.0.4. Requires rebuilding sticks for the baked-in Layer 2 default; a stuck box can be fixed in-place by editing C:\\Windows\\Setup\\FirstBase\\splash-suppression.cfg to FIRSTBASE_SPLASH_KILL_OOBE=1 and rebooting."
+                                      ]
+                      },
+                      {
+                          "version":  "5.2.82",
+                          "date":  "2026-08-03",
+                          "changes":  [
+                                          "CRITICAL payload fix (blocked entire 4.1.4 audit pipeline, not just the splash): SetupComplete.cmd\u0027s 2300 Phase 0 block wrote splash-suppression.cfg with echo lines containing UNESCAPED parentheses (e.g. \u0027(default 0):\u0027, \u0027(2300).\u0027) INSIDE an if/else ( ... ) block. cmd treats the first bare \u0027)\u0027 as the block terminator, so the script aborted with \u0027was unexpected at this time.\u0027 immediately after seeding Layer 1 fglock and BEFORE arming any scheduled tasks - so the SplashWatcher/UpdateSplash/WindowsUpdateLoop tasks were never created and the splash never fired (field report: machine SD00HN3R). The failure was deterministic and hardware-independent on every 4.1.4 stick. Fix: moved the cfg body into a flat :WRITE_SPLASH_SUPPRESS_CFG subroutine (outside any parenthesized block, where literal parens are safe) and reworded the else-branch log to drop its parens. Reproduced the abort and verified the fix parses/executes green in isolation. Payload rev 2300-oobe-splash-suppression-layers -\u003e 2301-splash-cfg-paren-fix; SetupComplete.cmd 1.0.2 -\u003e 1.0.3. Requires rebuilding sticks."
+                                      ]
+                      },
+                      {
+                          "version":  "5.2.81",
+                          "date":  "2026-08-03",
+                          "changes":  [
+                                          "Builder progress: the pre-split WIM copy (wim-presplit) and ESP boot.wim copy (esp-copy) no longer appear to hang at 99%. The byte-poll now caps the active-copy phase at 95% and, once the destination file sizes look complete while robocopy is still running (the write-back cache flushing to the slow FAT32 USB), the disk card label switches to \u0027Flushing to USB (this can take a while)\u0027 at 99% so the tail is clearly finalizing rather than stalled.",
+                                          "Renderer: progress events can now carry an optional \u0027label\u0027 that overrides the phase label for the active disk card; it is cleared automatically on phase change and on done/failed."
+                                      ]
+                      },
+                      {
+                          "version":  "4.1.4",
+                          "date":  "2026-08-03",
+                          "changes":  [
+                                          "FirstBase payload: added layered, independently-toggleable OOBE-suppression so the Audit-Mode update splash reliably surfaces over the OOBE host on every boot (root cause: an OOBE host - usually WWAHost/CoreWindow - holds the foreground lock, so the splash could only be brought forward after a manual Shift+F10). All layers are wrapped so they can never crash the splash, log to a dedicated splash-oobe-suppression.log for field bisection, honor a global kill switch (FIRSTBASE_SPLASH_SUPPRESSION_DISABLE), and are fully neutralized before sysprep so the real customer OOBE (regenerated by sysprep /oobe) and the update-loop re-arm/seal pipeline stay intact.",
+                                          "Layer 1 fglock (FIRSTBASE_SPLASH_FGLOCK, default ON): removes the foreground-lock timeout (SystemParametersInfo SPI_SETFOREGROUNDLOCKTIMEOUT=0) at splash startup, with SetupComplete.cmd seeding ForegroundLockTimeout=0 in the Administrator/default-user hive so it is present from the first audit logon.",
+                                          "Layer 2 killoobe (FIRSTBASE_SPLASH_KILL_OOBE, default OFF): when an OOBE-family host holds the foreground, the splash terminates it (Stop-Process -Force, never minimize) with a per-boot kill counter and backoff; always halted by the seal-window guard.",
+                                          "Layer 3 shell (FIRSTBASE_SPLASH_SHELL, default OFF, most invasive): SetupComplete.cmd can swap the audit-session Winlogon Shell to a generated FirstBaseSplashShell.cmd; the splash watcher detects shell-mode and stands down; explorer.exe is restored before seal.",
+                                          "Layer 4 oobeflags (FIRSTBASE_SPLASH_OOBE_FLAGS, default OFF): sets candidate OOBE setup-state flags to 0 during audit (prior values captured for exact revert) and restores them before sysprep so real customer OOBE + account creation re-arm.",
+                                          "A field tech can flip any layer without a rebuild via C:\\Windows\\Setup\\FirstBase\\splash-suppression.cfg (dropped by SetupComplete.cmd); environment variables override the file. A -SimulateOobeForeground preview hook lets the reclaim/kill logic be smoke-tested off-hardware.",
+                                          "FirstBase payload/product version bumped 4.1.3 -\u003e 4.1.4; launcher/app version bumped 5.2.79 -\u003e 5.2.80."
+                                      ]
+                      },
+                      {
+                          "version":  "5.2.79",
+                          "date":  "2026-07-31",
+                          "changes":  [
+                                          "UI (build view): removed the global WinPE-injection status bar (#startnet-status, which reused the precache-bar styling), mirroring the ESP pre-cache change. WinPE injection progress is now shown per-disk via the winpe-inject phase on each progress card and aggregated into the overall multi-USB progress bar. updateStartnetStatus/updateStartnetProgress are now no-ops that keep the legacy bar hidden, and startBuild no longer shows it. The disk-0 shared WinPE cache-prep step still labels waiting cards (\u0027Preparing WinPE boot cache...\u0027).",
+                                          "Launcher/app version bumped 5.2.78 -\u003e 5.2.79."
+                                      ]
+                      },
+                      {
+                          "version":  "5.2.78",
+                          "date":  "2026-07-31",
+                          "changes":  [
+                                          "UI (build view): removed the ESP pre-cache progress bar. The precache-bar element is now repurposed to be Stage-ISO-only (it shows dev Stage ISO staging/pre-split progress); the ESP pre-cache backend and Start-button pre-cache gating are unchanged, they just no longer drive or show a bar.",
+                                          "UI (build view): added an overall multi-USB progress bar above the per-disk grid, showing the average % across all USBs being built as the fill plus an \u0027X of N done\u0027 label. It is shown only when more than one USB is being built and stays hidden for single-USB builds (which rely on the per-disk card).",
+                                          "Launcher/app version bumped 5.2.77 -\u003e 5.2.78."
+                                      ]
+                      },
+                      {
+                          "version":  "5.2.77",
+                          "date":  "2026-07-31",
+                          "changes":  [
+                                          "FIX (wim-split): the on-the-fly split fell over with a bogus \u0027DISM /Split-Image (install.wim) failed (exit ):\u0027 even though DISM reported \u0027The operation completed successfully\u0027. In the -Progress (async) path added in 5.2.74, DISM is launched via Start-Process -PassThru; the process handle was not retained, so .NET released it on exit and $proc.ExitCode came back $null -\u003e $null -ne 0 was misread as a failure and aborted the build (disk 3). Fix: reference $proc.Handle immediately after launch (retains the handle so ExitCode survives), call WaitForExit() before reading it, and guard the failure check with $null -ne $exit so a still-null code falls through to the existing install.swm existence/chunk validation instead of false-failing. Applied to both the install.wim and install.esd split branches in lib\\Split-LWImage.ps1.",
+                                          "Launcher/app version bumped 5.2.76 -\u003e 5.2.77."
+                                      ]
+                      },
+                      {
+                          "version":  "5.2.76",
+                          "date":  "2026-07-31",
+                          "changes":  [
+                                          "ESP-COPY (ISO mode): the direct-from-ISO boot copy (shared by LoneWolf / WIN-INSTALL / QUICK-INSTALL) now reports live per-disk progress. sources\\boot.wim (~600-700MB, the bulk of the phase) is copied via a background robocopy with a 1s byte-poll loop that emits progress 0-\u003e100, and the small root EFI/boot items emit coarse progress first. Previously esp-copy emitted only a phase-start + a final log, so its bar sat stuck for ~30s.",
+                                          "FIX (UI): added \u0027esp-copy\u0027 to the renderer LIVE_PROGRESS_PHASES set so the new esp-copy progress events drive the per-disk bar (same class of gap that had hidden wim-split/wim-presplit progress).",
+                                          "FIX (labels): esp-copy log and error messages no longer hardcode \u0027WIN-INSTALL\u0027. The path is shared by three workflows, so messages now use an accurate $wfLabel (LoneWolf / WIN-INSTALL / QUICK-INSTALL) derived from -NoPayload/-QuickInstall. Prevents confusing \u0027WIN-INSTALL\u0027 lines appearing in LoneWolf builds.",
+                                          "Launcher/app version bumped 5.2.75 -\u003e 5.2.76."
+                                      ]
+                      },
+                      {
+                          "version":  "5.2.75",
+                          "date":  "2026-07-31",
+                          "changes":  [
+                                          "FIX (UI): the new wim-split and wim-presplit progress now drives the per-disk build progress bar in the renderer. The builder was emitting progress events for these phases (visible in the console/log) but builder.js only forwarded live pct for a hardcoded whitelist (\u0027dism\u0027/\u0027data-copy\u0027/\u0027winpe-inject\u0027), so the two new phases showed a label but a stuck/indeterminate bar. Introduced a single LIVE_PROGRESS_PHASES set (data-copy, wim-presplit, wim-split, dism, winpe-inject) used by the progress-event handler, renderProgressCard, and refreshProgressCard, and added both phases to PHASES (labels \u0027Splitting WIM...\u0027 / \u0027Copying split WIM...\u0027) and DISK_OWNED_PHASES. Launcher/app version bumped 5.2.74 -\u003e 5.2.75."
+                                      ]
+                      },
+                      {
+                          "version":  "5.2.74",
+                          "date":  "2026-07-31",
+                          "changes":  [
+                                          "Live build progress for the FAT32 install-image placement, which previously sat at 0% (\u0027building\u0027) for minutes because both phases only emitted 0 then 100. (1) wim-presplit fast-copy: the staged install*.swm set now copies via robocopy /MT:3 so the three .swm files transfer in PARALLEL, and a nested-job byte-poll loop compares destination bytes vs source bytes to emit live \u0027wim-presplit\u0027 percentages (capped at 99 until the copy truly finishes, then 100). (2) wim-split / dism /Split-Image: the shared Split-LWImageForFat32 helper gained a new OPTIONAL -Progress callback; when supplied it runs dism /Split-Image asynchronously (Start-Process -PassThru) and polls the growing install*.swm bytes against the source image length to emit live percentages, for both the install.wim split path and the install.esd export-\u003esplit path. Callers wired through: the worker wrapper Invoke-LWSplitForFat32 forwards JProgress under a new -ProgressPhase param (\u0027wim-split\u0027 for the on-the-fly fallback, \u0027dism\u0027 for the wim-shared and per-disk mount paths), and the producer Stage-PreSplitImage.ps1 forwards EmitProgress \u0027stage-split\u0027 so the staging UI shows split progress too. Split OUTPUT remains byte-identical: identical DISM flags (/FileSize /CheckIntegrity, /Export-Image /Compress:recovery /CheckIntegrity), chunk naming, monolithic-image deletion, and throws are preserved; callers that do not pass -Progress keep the exact original synchronous DISM call. Launcher/app version bumped 5.2.73 -\u003e 5.2.74."
+                                      ]
+                      },
+                      {
+                          "version":  "5.2.73",
+                          "date":  "2026-07-31",
+                          "changes":  [
+                                          "FIX (pre-split fast-copy never engaged - root cause): the builder\u0027s Emit JSON-event helper used \u0027Write-Output\u0027, which places every event on the PowerShell success (pipeline) stream. Because Get-LWPreSplitSet calls EmitLog internally and its return value is captured ($resolvedSet = Get-LWPreSplitSet ...), the emitted \u0027presplit: MATCH ...\u0027 JSON line was RETURNED alongside the staged-set path. $PreSplitSetDir thus became an array of [matchJson, setDir] that collapsed into a \u0027{...MATCH json...} \\\\WIN-HQ5JDEACV3S\\...\\\u003cimageVersion\u003e\u0027 string when marshalled into each per-disk Start-Job, so the worker\u0027s Test-Path failed and every disk fell back to the on-the-fly dism /Split-Image despite a valid, matching set on the share. Emit now writes via [Console]::Out.WriteLine, which reaches the same stdout main.js parses but never enters the pipeline - so no function\u0027s return value can be polluted again. The per-disk worker\u0027s J emitter is intentionally left on Write-Output (its output is harvested by Receive-Job and must stay on the job output stream). Verified: a full ISO-mode Single-layout build now resolves a clean set path and enters the \u0027wim-presplit\u0027 fast-copy phase instead of \u0027wim-split\u0027. Launcher/app version bumped 5.2.72 -\u003e 5.2.73."
+                                      ]
+                      },
+                      {
+                          "version":  "5.2.72",
+                          "date":  "2026-07-31",
+                          "changes":  [
+                                          "Diagnostics (pre-split fast-copy): the per-disk worker\u0027s on-the-fly-split fallback log line no longer reads the ambiguous \u0027presplit: no matching staged set for this ISO\u0027 in every case. It now distinguishes (a) an EMPTY set dir - the MAIN-THREAD detector Get-LWPreSplitSet found no valid/matching set, and the authoritative reason is the disk 0 \u0027presplit:\u0027 line - from (b) a resolved-but-unreadable set dir, meaning detection matched on the main thread but the worker runspace could not reach the share path. This removes the confusion where the worker\u0027s echo looked like the detection verdict. No behavior change to detection or splitting. Verified against the live share that Get-LWPreSplitSet returns MATCH for a correctly-uploaded set, so a fresh full build (Local Build Mode off) fast-copies install*.swm. Launcher/app version bumped 5.2.71 -\u003e 5.2.72."
+                                      ]
+                      },
+                      {
+                          "version":  "5.2.71",
+                          "date":  "2026-07-31",
+                          "changes":  [
+                                          "Fix (Stage ISO \u0027Access to the path PreSplit is denied\u0027): the DEV-ONLY Stage ISO button now ALWAYS stages the pre-split install*.swm set into the project\u0027s LOCAL Remote\\Staging\\PreSplit tree (its documented \u0027staged for upload to share\u0027 purpose) instead of depending on the separate Local Build Mode toggle. Previously, with that toggle off, main.js\u0027 stage:start omitted -LocalProjectRoot, so Stage-PreSplitImage.ps1 defaulted to the read-only network share and failed at the stage-copy phase (the Reflect account can read the share but cannot create the PreSplit folder). stage:start now forces local staging in dev (opts.localBuild===false can still opt back to the share explicitly). Launcher/app version bumped 5.2.70 -\u003e 5.2.71."
+                                      ]
+                      },
+                      {
+                          "version":  "5.2.70",
+                          "date":  "2026-07-31",
+                          "changes":  [
+                                          "Added staged pre-split install.wim (Option A): a new one-shot producer (Stage-PreSplitImage.ps1) mounts a source ISO and splits sources\\install.wim (or exports+splits install.esd) into a versioned install*.swm set on the share at Remote\\Staging\\PreSplit\\\u003cARCH\u003e\\\u003cimageVersion\u003e\\ with a presplit-manifest.json (schema 1: source-ISO identity, per-chunk sizes, optional -DeepHash sha256) and a \u0027current\u0027 marker. The USB builder now detects a valid, matching set for the ISO it is about to build from (Get-LWPreSplitSet: identity match on isoName+size+lastWriteUtc+imageVersion, mandatory per-chunk size validation, optional sha256 behind -VerifyPreSplitHash) and, in ISO-mode Single-layout builds, FAST-COPIES the already-split install*.swm straight from the share to the USB (new \u0027wim-presplit\u0027 phase) instead of running dism /Split-Image on every build. The split body was refactored into a shared dot-sourced helper (lib\\Split-LWImage.ps1, Split-LWImageForFat32) used by BOTH the producer and the builder fallback, so a staged set is byte-identical to an on-the-fly split (same /FileSize:3800, same /CheckIntegrity, same ESD-export path, same chunk naming). A missing / mismatched / corrupt / unreadable set is NEVER fatal: the builder logs the reason and automatically falls back to the exact on-the-fly split used before this feature (Secure Boot loaders and boot.wim still come verbatim from the ISO - Option A). Get-StagingVersion now also reports preSplitAvailable / preSplitMatchesIso / preSplitImageVersion for the current arch\u0027s newest ISO. NOT YET HARDWARE-VALIDATED: a staged build must be confirmed to boot with Secure Boot intact and apply Windows from install*.swm.",
+                                          "Cleanup (roblog): the per-disk ISO-copy robocopy log (%TEMP%\\LW-robocopy-disk\u003cN\u003e.log) is now deleted after its failure-tail is read, via a finally so removal is guaranteed on both success and failure - it no longer litters %TEMP% after a completed build.",
+                                          "Cleanup (wimdirect, no-ISO builds only): the shared read-only WIM mount and the per-disk WIM fallback now mount the staging .wim DIRECTLY from its share path (dism /Mount-Image /ReadOnly) instead of robocopying the whole multi-GB WIM to %TEMP% first; if the direct mount throws it falls back to the previous copy-to-temp-then-mount, and the mount dir + finally unmount/cleanup are unchanged.",
+                                          "OOBE splash visibility (2296-splash-oobe-synth-input-fg-reclaim): the update splash now fires a harmless synthetic input event (VK_F15 key down+up, inert in OOBE) immediately before its foreground-reclaim SetForegroundWindow call (on the gated OOBE-host reclaim path and the one-time Loaded boost), emulating the \u0027recent input\u0027 state that opening a Shift+F10 console creates so Windows honors the reclaim. This targets the long-standing issue where the topmost splash stays behind the OOBE window after boot/reboots until a terminal is opened. Additive and reversible, all native calls wrapped in try/catch, with env opt-out FIRSTBASE_SPLASH_DISABLE_SYNTH_INPUT=1 (default enabled). Update-script product version bumped 4.1.2 -\u003e 4.1.3 (VERSION.json, FirstBaseVersion.ps1, FirstBaseVersion.cmd); launcher/app version unchanged at 5.2.70. NOT YET HARDWARE-VALIDATED: the reclaim path (and thus the nudge) only runs on real OOBE hardware, not in -Preview/dev-static mode."
+                                      ]
+                      },
+                      {
+                          "version":  "5.2.62",
+                          "date":  "2026-07-31",
+                          "changes":  [
+                                          "No-Updates (Quick Install) WinPE console now matches the Updates workflow: PowerShell DISM apply UI (Invoke-FirstBaseDismApply.ps1) with live progress and the shared styled status routine; builder now stages the DISM UI script for Quick Install; deploy banner wolf resized.",
+                                          "Update-script (FirstBase staging/product) version bumped 4.0.0 -\u003e 4.1.0 (release): VERSION.json top-level version, FirstBaseVersion.ps1 $FirstBaseProductVersion (splash display), and the FirstBaseVersion.cmd mirror are all now 4.1.0. Launcher/app version is unchanged at 5.2.62.",
+                                          "Revamped update splashscreen: launcher blue/black theme, wolf logo, red internal-use notice, themed update list; added -Preview mode. Update-script product version bumped 4.1.0 -\u003e 4.1.1 (VERSION.json, FirstBaseVersion.ps1, FirstBaseVersion.cmd); launcher/app version unchanged at 5.2.62.",
+                                          "Refined update splashscreen: per-update indeterminate progress bars on active rows (replacing the single global bar), simplified status words (Queued/Downloading/Installing/Retrying/Restart/Done/Failed) and subtext, elapsed timer moved to the top, removed the yellow \u0027do not turn off\u0027 warning, circular logo cropped to its cyan ring, and title changed to \u0027Project LoneWolf\u0027. Update-script product version bumped 4.1.1 -\u003e 4.1.2 (VERSION.json, FirstBaseVersion.ps1, FirstBaseVersion.cmd); launcher/app version unchanged at 5.2.62."
+                                      ]
+                      },
+                      {
+                          "version":  "5.2.61",
+                          "date":  "2026-07-31",
+                          "changes":  [
+                                          "Deploy banner is now rendered by PowerShell (Show-DeployBanner.ps1): animated, colored, framed PROJECT/LONEWOLF title with a full Braille wolf; replaces the cmd/ANSI banner in both Updates and No-Updates deploy scripts."
+                                      ]
+                      },
+                      {
+                          "version":  "5.2.60",
+                          "date":  "2026-07-31",
+                          "changes":  [
+                                          "Removed the two no-update clean-install workflows (WIN-INSTALL \u0027Intel/AMD\u0027 + \u0027Snapdragon\u0027): dropped their Home tiles, the main.js resolveArch/usesPsBuilder routing and -NoPayload arg wiring for them, and the builder.js header labels/isInstallOnlyWorkflow branch. The two remaining install families are now \u0027Updates\u0027 (full LoneWolf payload) and \u0027No Updates\u0027 (the minimal Quick Install). The TechInstall-Install.cmd / autounattend-install.xml deploy assets remain in the tree but are dormant (no reachable path stages them).",
+                                          "Added a branded WinPE console banner to BOTH install deploy scripts so their WinPE environments look identical: a medium \u0027Project LoneWolf\u0027 title with the workflow subtext (\u0027Updates\u0027 for LoneWolf via TechInstall.cmd, \u0027No Updates\u0027 for Quick Install via TechInstall-QuickInstall.cmd) and a blue wolf to the right. Implemented as a shared :FB_SHOW_BANNER routine (byte-identical in both scripts) using ANSI VT color with the ESC char captured via the prompt trick - no PowerShell. Art is stored in variables and printed with delayed expansion so the slashes/parentheses are never treated as cmd operators; on a console without VT the color codes are simply inert."
+                                      ]
+                      },
+                      {
+                          "version":  "5.2.59",
+                          "date":  "2026-07-30",
+                          "changes":  [
+                                          "Build log now reports the actual deploy script staged in ISO mode (e.g. TechInstall-QuickInstall.cmd vs TechInstall-Install.cmd) instead of a hardcoded \u0027copied TechInstall-Install.cmd\u0027 line, so a stick\u0027s workflow is unambiguous from the build log. No behavior change to any install path."
+                                      ]
+                      },
+                      {
+                          "version":  "5.2.58",
+                          "date":  "2026-07-30",
+                          "changes":  [
+                                          "Added a new QUICK-INSTALL workflow (Quick Install - Intel/AMD, plus a Snapdragon placeholder): a minimal, payload-free WinPE Windows install that is SEPARATE from and does not affect the existing WIN-INSTALL or LoneWolf paths. It reuses the proven Architecture B mechanics (newest share ISO mounted per build, disksetup partitioning, DISM apply, bcdboot, firmware boot-order handoff, shutdown) but stages only a gutted deploy set - Deploy\\TechInstall-QuickInstall.cmd (renamed to Deploy\\TechInstall.cmd on the stick) and the offline Policy\\autounattend-quickinstall.xml. There is no FirstBase payload copy (no WUPayload/Scripts/splash/finalize) and none of the on-boot prereqs (no SetupComplete arming, RunOnce/RunOnceEx/ActiveSetup/Startup, scheduled tasks, MDM/Defender/BitLocker hardening, Windows Update loop, seal/sysprep, or reaper). The install is fully unattended with no Windows Setup edition/disk menus (a direct DISM apply, not setup.exe) and lands the device at a clean Windows OOBE (region/keyboard/account screens shown; no autologon). main.js routes QUICK-INSTALL-AMD64/ARM64 through the local PowerShell builder with a new independent -QuickInstall flag (kept separate from -NoPayload) and resolves staging against the bare arch; a minimal additive Home tile and builder header were added."
+                                      ]
+                      },
+                      {
+                          "version":  "5.2.57",
+                          "date":  "2026-07-30",
+                          "changes":  [
+                                          "WIN-INSTALL (clean build / no update payload) now runs through the proven local PowerShell builder (Invoke-LoneWolfBuild.ps1) with -NoPayload instead of the C# provisioner. This eliminates the clean build failing with \u0027Access to a CIM resource was not available to the client\u0027 (MI RESULT 2) that occurred when the provisioner\u0027s nested powershell.exe ran Clear-Disk; the builder runs Clear-Disk inside its already-elevated job, exactly like the update build. main.js adds a usesPsBuilder() predicate (LoneWolf + WIN-INSTALL-AMD64/ARM64) that drives both the useProvisioner and cacheRoot (no persistent EspCache) decisions, and translates the WIN-INSTALL-\u003carch\u003e id to the bare arch (AMD64/ARM64) for -WorkflowType so the builder\u0027s ISO glob resolves. MEDIA-CREATOR / BITRASER / DESTRUCTION are unchanged and still use the provisioner.",
+                                          "ISO is now the unconditional default source for every non-overlay build (LoneWolf and WIN-INSTALL alike): the builder always mounts the newest *(arch)*.iso from the share and no longer stages Windows from a pre-built WIM at build time. The staged-WIM resolution and shared WIM mount are retained but dormant as a fallback: if no matching ISO is found the builder now WARNS and falls through to the staged WIM instead of hard-failing, and only errors when neither an ISO nor a WIM exists. Overlay-only (Quick Update) builds are unaffected.",
+                                          "The share ISO now reliably dismounts on build cancel, failure, and crash. Each mount is recorded in a marker (C:\\ProgramData\\LoneWolf\\mounted-isos.txt) written right after Mount-DiskImage and cleared after the finally-block Dismount-DiskImage. A startup sweep runs at the top of every build/precache run to dismount and clear any ISO a prior cancelled or crashed run left mounted, and the launcher\u0027s build:cancel handler now fires a one-shot -DismountOnly sweep after killing the build so a cancelled build releases the ISO immediately instead of waiting for the next run."
+                                      ]
+                      },
+                      {
+                          "version":  "5.2.56",
+                          "date":  "2026-07-28",
+                          "changes":  [
+                                          "Reverted script and implemented updated WinPE for better visibility."
+                                      ]
+                      },
+                      {
+                          "version":  "5.1.43",
+                          "date":  "2026-07-24",
+                          "changes":  [
+                                          "Fixed a Microsoft/Surface-only stall where the device \u0027was completed, settings closed, but did not scrub and shutdown to exit sysprep\u0027 (dump 0F000QG23233FB-0621-Microsoft, CPS-00QG23233FB). Build that ran was 5.1.42 (LoopVersion 1.0.9). Confirmed the operator Settings gate WORKED on Surface: it acquired the live ApplicationFrameWindow hosting SystemSettings (hwnd=131880, hostsSettings=True) and correctly detected the operator close, starting its 6s close-grace at 06:14:03 - so this is NOT a strict-liveness/DWM-cloak/host-mapping detection bug. Root cause: the gate SCRIPT process (FirstBaseOpenSettingsAndFinish.ps1, PID 3120) then VANISHED mid-grace BEFORE it could conclude window-closed and write C:\\ProgramData\\FirstBase\\.operator-settings-closed (no .NET/WER crash was logged; a Surface Kernel-Power \u0027power source change\u0027 fired at 06:14:07 inside the grace window - most consistent with an external interactive-session/power teardown on Surface hardware). The .operator-settings-gate-active marker was left present and the closed-marker was never written, so the SYSTEM loop\u0027s Invoke-FbOperatorSettingsGateInSession close-wait (which had already \u0027seen\u0027 SystemSettings) sat the FULL CloseTimeoutSec=2100s (35-min) backstop; the operator gave up at ~10 min. The chain would have self-recovered at ~06:45 but that is an unacceptable no-feedback hang.",
+                                          "Fix (Invoke-WindowsUpdateLoop.ps1 v1.0.9-\u003e1.0.10, function Invoke-FbOperatorSettingsGateInSession): the SYSTEM loop now watches the gate script\u0027s own process (Get-CimInstance Win32_Process for powershell.exe whose CommandLine contains FirstBaseOpenSettingsAndFinish.ps1 + -GateOnly). Once the gate process has been positively observed alive, if it disappears with no closed-marker the loop waits only a short 30s gate-death grace (re-checking the marker for a flush race) and then proceeds to the inline scrub/seal/sysprep, instead of waiting the full 35-min backstop. This is hardware-agnostic and directly fixes the reported symptom on ANY device whose gate process is torn down after the operator closes Settings.",
+                                          "Invariants preserved: the death detection keys on OUR gate SCRIPT process ending, NEVER on SystemSettings.exe (which merely suspends on a normal close), so the 5.0.40 anti-premature-close property is NOT regressed. The 5.0.41 strict-liveness / anti-zombie-frame close-detection inside the still-running gate is untouched. The detection only ARMS after the gate process is seen alive (a launch/startup race cannot false-trigger it) and treats a failed process query as \u0027assume alive\u0027 (falls through to the existing bounded CloseTimeoutSec backstop, never a false death). The 5.0.42 final-ship reaper and Option B (Administrator-session inline scrub, sysprep /oobe /shutdown last, no /r /fw) are unchanged.",
+                                          "Note on the remaining open question: the exact trigger that terminated the gate process on Surface is not definitively logged (no WER entry). If it recurs, the next step is to additionally harden the gate script\u0027s own survival and/or have it persist the closed-marker earlier; this DEV fix makes the pipeline robust to the death regardless of its cause."
+                                      ]
+                      },
+                      {
+                          "version":  "5.1.42",
+                          "date":  "2026-07-22",
+                          "changes":  [
+                                          "Official release 5.1.42 - first cut release of the v5 line (RELEASE 0-\u003e1; DEV stays at 42 per the MAJOR.RELEASE.DEV scheme - DEV only resets on a new MAJOR). Consolidates all 5.0.1-5.0.42 development work into a shippable build.",
+                                          "LoneWolf USB build: the launcher drives the proven local builder (Invoke-LoneWolfBuild.ps1) with a default Single FAT32 (GPT Basic Data) layout that mirrors Build-UsbStick.ps1 - full ISO copy incl. \\boot, stock ISO BCD shipped verbatim (no hand-authored/{fwbootmgr} store), signed EFI loaders copied byte-for-byte (Secure Boot preserved), install.wim auto-split to install.swm for the FAT32 4 GB limit, WinPE OCs pulled per-architecture from the share, parallel multi-stick builds, newest ISO auto-mounted from the share, volume label \u0027LoneWolf\u0027, and live JSON build progress in the UI.",
+                                          "WinPE deploy: reliable boot into custom WinPE and image apply with live same-line DISM progress for the split image, force-boot to the internal Windows Boot Manager, and a clean console (the recurring \u0027The system cannot find the path specified.\u0027 end-of-deploy noise eliminated).",
+                                          "OOBE/MDM provisioning (Option B): operator finalize + MDM/Autopilot scrub run inline as SYSTEM in the Administrator audit session with per-item verification; the temporary MDM/Autopilot block is applied at SetupComplete, persists through the whole audit/OOBE sit, and is reliably removed at operator settings-close (residue confirmed clean on-device). The operator Settings gate opens maximized in front (splash stands aside), waits for a real strict-liveness window close, then seals with sysprep /oobe /shutdown (power off into OOBE, no reboot-to-login). A self-deleting final-ship reaper guarantees no FirstBase files/tasks/RunOnce/Startup remain on the shipped device.",
+                                          "See the 5.0.1 through 5.0.42 entries below for the full per-fix detail."
+                                      ]
+                      },
+                      {
+                          "version":  "5.0.42",
+                          "date":  "2026-07-22",
+                          "changes":  [
+                                          "Fixed residual FirstBase files shipping on the sealed device after the 5.0.41 good-path ran cleanly (dump PF4VGG7V-1311-Lenovo: operator note \u0027settings pipeline closed, device shutdown, but files are still on the device post shutdown to OOBE\u0027). Confirmed the win first - gate reason=window-closed, .operator-settings-closed, inline MDM scrub overall=PASS (.mdm-scrub-result), .pipeline-completed + .firstbase-sealed, and sysprep /oobe /shutdown exit 0 (power off, no /r /fw) all ran. Root cause of the residue: the Invoke-SysprepToOobe success-path teardown (remove FirstBase-Splash-Oobe-Overlay.mode + the OOBE-overlay-preserved splash/finalize/gate/sound scripts + the Run/RunOnce/RunOnceEx trigger layers) executes AFTER Start-Process sysprep -Wait returns and LOSES the race with sysprep\u0027s async generalize+shutdown - the 1311 WU log shows the loop killed (\u0027The pipeline has been stopped\u0027) at 13:07:48, one second after arming the deferred-sound stack and BEFORE the teardown block ran. Combined with Invoke-FbPreSysprepScrub STEP 4 deliberately PRESERVING ~12 scripts under FirstBase-Splash-Oobe-Overlay.mode for a post-sysprep splash teardown that never happens under Option B (/oobe /shutdown, no FirstBase reboot pass, specialize arm suppressed), the whole C:\\ProgramData\\FirstBase and C:\\Windows\\Setup\\FirstBase trees (scripts, markers, State, Logs, Tools) plus the FirstBase Run/RunOnce/ActiveSetup/Startup/task triggers shipped to the customer",
+                                          "New Register-FbFinalShipReaper (Invoke-WindowsUpdateLoop.ps1) is called FIRST in the Invoke-SysprepToOobe success path, the instant sysprep validation returns exit 0 (before the deferred-sound arming and the racy overlay teardown, so it is armed before the loop can be killed). It writes TWO independent, self-deleting reapers that both live OUTSIDE the FirstBase trees: (1) a detached C:\\Windows\\Temp\\FbFinalReaper.cmd that covers the bench case (device powered through generalize) - waits 12s so the one-shot success-path arming finishes, then retry-loops rmdir /s /q of both FirstBase trees + del of the Startup .vbs + reg delete of the FirstBase Run/RunOnce/RunOnceEx/ActiveSetup triggers + schtasks delete of FirstBase\\* tasks (up to 60 tries x 3s while the loop/splash release their handles), then self-deletes via (goto) 2\u003enul \u0026 del \"%~f0\"; and (2) a cleanup-only C:\\Windows\\Setup\\Scripts\\SetupComplete.cmd backstop that runs at the NEXT boot\u0027s specialize pass as SYSTEM with no UI - it survives a HARD POWER-OFF (on disk, generalize does not touch \\Windows\\Setup\\Scripts), performs the same reap, and self-deletes. The SetupComplete backstop is REAP-ONLY and never re-arms the loop (the full FirstBase payload is already gone), so the 2213t third fence against post-sysprep re-arming is not defeated",
+                                          "Customer-needed items are deliberately preserved: the HKLM RunOnce OpenWindowsActivationSettingsOnce (2213v activation) and C:\\Windows\\Panther\\unattend.xml / everything Windows and OOBE own are NOT touched - the reaper only removes FirstBase-owned paths, the FirstBase deferred-sound delivery surfaces, and FirstBase\\* scheduled tasks. Behavior note: because the reaper removes the deferred-OOBE-sound delivery surfaces (RunOnce/Run/ActiveSetup/Startup .vbs + the ProgramData sound scripts) at or before the customer\u0027s first-logon, the legacy deferred OOBE welcome sound no longer plays on the shipped device - this is an intended consequence of the \u0027no FirstBase RunOnce/Startup/tasks left\u0027 requirement (the ONLOGON delivery already self-skipped once .pipeline-completed was present); flag if the welcome sound must be retained via a different mechanism",
+                                          "Kept intact and NOT regressed: the 5.0.41 strict-liveness operator-gate close-detection, the verified-clean inline SYSTEM MDM/Autopilot scrub (overall=PASS on 1311), Administrator-active-through-scrub, sysprep /oobe /shutdown as the final action with no /r /fw, and the 5.0.39 splash stand-down. The reaper arming is best-effort/non-blocking (wrapped in try/catch) so it can never stall or fail the seal",
+                                          "Scope: payload/Invoke-WindowsUpdateLoop.ps1 (1.0.8-\u003e1.0.9) + FirstBaseVersion.ps1 semver only. No change to FirstBaseOpenSettingsAndFinish.ps1, Show-UpdateProgress.ps1, the SetupComplete-time MDM block, autologon arming, WU convergence, the pre-sysprep scrub logic itself, or the USB boot/layout/label work. TechInstall.cmd untouched, so FB_TECHINSTALL_REV is unchanged"
+                                      ]
+                      },
+                      {
+                          "version":  "5.0.41",
+                          "date":  "2026-07-22",
+                          "changes":  [
+                                          "Fixed the inverse of the 5.0.40 bug: the operator CLOSED the Settings window but the gate never detected it, so the splash stayed up and the scrub/seal/sysprep pipeline never started (operator note in dump PF4VGG7V-1132-Lenovo 11:33: \u0027settings closed, splash is still up, and settings close pipeline did not start\u0027). Root cause: the 5.0.40 window-close detection re-acquired via FindSettingsWindow() which matched ANY visible ApplicationFrameWindow (incl. a title/any-frame fallback), and a closed UWP Settings window leaves a LINGERING frame that IsWindow()==true (and often IsWindowVisible()==true) but is DWM-CLOAKED. The mirror log shows the eager re-acquire (hwnd 197014 -\u003e 66524 at 11:30:48) latching onto that zombie frame and then never concluding window-closed, while splash-ui.log proves Settings was actually gone by 11:32 (foreground became explorer.exe / WindowsTerminal.exe). .operator-settings-gate-active was never removed and the loop was never signaled",
+                                          "Close-detection is now STRICT-liveness based (FirstBaseOpenSettingsAndFinish.ps1, FbSettingsWin32). A handle only counts as the live Settings window if IsWindow \u0026\u0026 IsWindowVisible \u0026\u0026 NOT DwmGetWindowAttribute(DWMWA_CLOAKED) \u0026\u0026 class==ApplicationFrameWindow \u0026\u0026 it still hosts a Windows.UI.Core.CoreWindow child owned by a live SystemSettings PID. New IsSettingsWindowLive(hwnd) tests the tracked handle each tick; new FindLiveSettingsWindow() finds a genuinely-live frame with NO title/any-frame fallback (those matched leftovers). DwmGetWindowAttribute(DWMWA_CLOAKED) is the key discriminator that separates an open window from a suspended/closed zombie frame",
+                                          "Re-acquire is no longer eager: when the tracked handle stops being live, the gate starts a bounded close-grace (WindowCloseGraceSec=6s) and only re-acquires if a DIFFERENT genuinely live+visible+uncloaked Settings window reappears within that grace (real re-host/navigation); if no live Settings window exists anywhere for the full grace, it concludes reason=window-closed. This recognizes a real close within ~6s yet cannot false-positive early (a genuinely open window is live every tick). Each decision logs a dump-capturable DescribeWindow() breakdown (isWindow/visible/cloaked/class/hostsSettings)",
+                                          "On conclude-closed the gate removes .operator-settings-gate-active and writes the closed-marker (reason=window-closed); the SYSTEM loop then proceeds to the inline scrub -\u003e .pipeline-completed/.firstbase-sealed -\u003e sysprep /oobe /shutdown. Splash end-state is correct: it stays minimized (stand-down latched) only until seal writes the completion markers, then the splash main timer closes it and sysprep-success removes the overlay mode. The generous 1800s close cap and the loop\u0027s 2100s backstop are unchanged, so a walk-away still completes",
+                                          "Scope: payload/FirstBaseOpenSettingsAndFinish.ps1 (1.1.2-\u003e1.1.3) + FirstBaseVersion.ps1 semver only. No change to Invoke-WindowsUpdateLoop.ps1, Show-UpdateProgress.ps1 splash stand-down (5.0.39), the inline SYSTEM MDM scrub (verified clean on 1003), Administrator-active-through-scrub, sysprep /oobe /shutdown (no /r /fw), or the USB boot/layout work. TechInstall.cmd untouched, so FB_TECHINSTALL_REV is unchanged"
+                                      ]
+                      },
+                      {
+                          "version":  "5.0.40",
+                          "date":  "2026-07-22",
+                          "changes":  [
+                                          "Fixed the device SEALING + POWERING OFF while the operator still had the Settings window open. Root cause (dump PF4VGG7V-1003-Lenovo): the operator gate waited on the SystemSettings.exe PROCESS exit, but under ms-settings: / ApplicationFrameHost that process is SUSPENDED (not terminated) when the operator closes the window - so process-exit polling NEVER detects a normal close and always runs to the timeout. The mirror log shows SystemSettings.exe alive the entire 900s and the cap firing at 10:00:28 while the operator was still in Settings, then scrub/seal/sysprep proceeded. (The inline SYSTEM MDM scrub logged overall=PASS - MDM keys + DmEnrollmentSvc + Autopilot firewall all confirmed removed before seal - so the residual-block problem stays solved; that logic was not touched.)",
+                                          "Close-detection is now WINDOW-based, not process-based. FirstBaseOpenSettingsAndFinish.ps1 (Session 1, same session as the window) reuses the 5.0.39 FbSettingsWin32 ApplicationFrameHost-aware window finder plus a new IsWindow P/Invoke: Phase 1 polls (bounded, WindowAcquireSec=180s) to ACQUIRE the Settings ApplicationFrameWindow handle after the async ms-settings: launch; Phase 2 polls IsWindow(hwnd) every 750ms and only declares \u0027operator closed Settings\u0027 when the window is genuinely gone for 2 consecutive polls. It never treats the pre-appear interval as closed, and if the tracked handle dies but a Settings frame is still/again enumerable (re-host/re-create) it RE-ACQUIRES instead of assuming closed",
+                                          "The bounded backstop still guarantees forward progress: the window close-wait is capped at WindowCloseWaitSec=1800s (30 min - generous for real operator work) and the gate writes the closed-marker with a reason tag (window-closed | close-timeout | window-never-appeared). The SYSTEM WU loop (Invoke-FbOperatorSettingsGateInSession, Session 0, cannot see the Session-1 window) now waits on that marker with a generous CloseTimeoutSec=2100s backstop (\u003e the gate\u0027s 180+1800), and NO LONGER treats SystemSettings process-exit as \u0027closed\u0027 (the exact false trigger removed); it keeps only a \u0027process never observed within OpenTimeoutSec\u0027 fast-fail for a genuinely failed interactive launch. Logs now clearly distinguish operator-closed vs timed-out in the next dump",
+                                          "No regression to 5.0.39/5.0.38: splash stand-down/minimize on the gate marker is unchanged, the inline SYSTEM MDM/Autopilot scrub + hardening restore on close is untouched (verified clean), the built-in Administrator stays active through the scrub, and sysprep /oobe /shutdown remains the FINAL action with no /r /fw path. Only the close-DETECTION mechanism and its timeouts changed",
+                                          "Scope: payload/FirstBaseOpenSettingsAndFinish.ps1 (1.1.1-\u003e1.1.2), payload/Invoke-WindowsUpdateLoop.ps1 (1.0.7-\u003e1.0.8), FirstBaseVersion.ps1 semvers. No change to Show-UpdateProgress.ps1, the SetupComplete-time MDM block, autologon arming, WU convergence, the scrub, or the USB boot/layout/label work. TechInstall.cmd untouched, so FB_TECHINSTALL_REV is unchanged"
+                                      ]
+                      },
+                      {
+                          "version":  "5.0.39",
+                          "date":  "2026-07-22",
+                          "changes":  [
+                                          "Fixed the operator Settings gate (Option B, 5.0.38) opening the Settings window BEHIND the FirstBase splash, which stayed maximized and topmost showing \u0027handoff in progress\u0027 and covered the operator\u0027s Settings window (dump PF4VGG7V-0948-Lenovo confirmed the interactive task FirstBase\\OperatorSettings fired at 09:45:27 and ms-settings:sound launched, but the splash\u0027s 2.5s WPF-Topmost + Win32 HWND_TOPMOST/WS_EX_TOPMOST refresh kept it above Settings because the box was in OOBE-overlay mode with FirstBase-Splash-Oobe-Overlay.mode present and no .pipeline-completed yet)",
+                                          "The splash now STANDS ASIDE cooperatively for the gate. FirstBaseOpenSettingsAndFinish.ps1 -GateOnly writes C:\\ProgramData\\FirstBase\\.operator-settings-gate-active just before opening Settings and removes it when SystemSettings exits; Show-UpdateProgress.ps1 polls that marker on its main 2s timer (Invoke-FbSplashHonorOperatorSettingsGate) and, when present, takes the existing F12-topmost-off stand-down path â€” sets UserPreferredTopmostOff (which short-circuits every topmost/Z-order stomp incl. the SplashTopmostRefreshTimer and the 2224 handoff refresh), clears native HWND_TOPMOST/WS_EX_TOPMOST, restores any OOBE windows it had minimized, and minimizes itself. This reuses the proven cooperative mechanism instead of externally fighting the splash\u0027s own topmost timer",
+                                          "The Settings window is now brought to the FOREGROUND and MAXIMIZED. FirstBaseOpenSettingsAndFinish.ps1 (same interactive Administrator session as the splash, so activation works) adds an ApplicationFrameHost-aware Win32 helper (FbSettingsWin32) that enumerates top-level ApplicationFrameWindows and matches the one whose hosted Windows.UI.Core.CoreWindow child thread belongs to a SystemSettings process (falling back to a frame titled \u0027Settings\u0027, then the only visible frame during audit OOBE), then ShowWindowAsync SW_SHOWMAXIMIZED + AllowSetForegroundWindow + BringWindowToTop + SetForegroundWindow, with a bounded 60s poll because ms-settings: opens asynchronously via ApplicationFrameHost",
+                                          "Option B flow is unchanged and NOT regressed: Administrator stays active through finalize + inline SYSTEM scrub, the inline scrub runs on settings-close, sysprep /oobe /shutdown is still the final action, and there is no /r /fw reboot-to-login path. The bounded operator-gate timeout still guarantees the scrub/seal/sysprep proceed even if the operator never interacts â€” the splash stand-down and Settings foreground are both best-effort and time-boxed. The gate marker is pre-cleaned and backstop-removed by Invoke-FbOperatorSettingsGateInSession so a torn-down gate script cannot leave stale state before sysprep",
+                                          "Scope: payload/Show-UpdateProgress.ps1 (3.0.0-\u003e3.0.1), payload/FirstBaseOpenSettingsAndFinish.ps1 (1.1.0-\u003e1.1.1), payload/Invoke-WindowsUpdateLoop.ps1 (1.0.6-\u003e1.0.7), FirstBaseVersion.ps1 semvers. No change to the SetupComplete-time MDM block, autologon arming, the WU loop convergence logic, the inline scrub, sysprep handoff, or the USB boot/layout/label work. TechInstall.cmd untouched, so FB_TECHINSTALL_REV is unchanged"
+                                      ]
+                      },
+                      {
+                          "version":  "5.0.38",
+                          "date":  "2026-07-22",
+                          "changes":  [
+                                          "OOBE/MDM restructure (Option B): operator finalize + MDM/Autopilot scrub + hardening restore now run INLINE in-process as SYSTEM in the Administrator audit session (Invoke-FbInlineMdmScrub in Invoke-WindowsUpdateLoop.ps1 STAGE 2), replacing the limited-defaultuser0 finalize teardown that FALSE-SUCCEEDED (dump PF4VGG7V-1648-Lenovo) and the 5.0.36 FirstBase\\MdmScrub scheduled-task round-trip that a UAC-filtered defaultuser0 token could not reliably launch. The scrub is verified per-item (MDM keys / DmEnrollmentSvc / FirstBase-Block-Autopilot firewall rule) with PASS/FAIL and a loud dump-capturable ERROR on any hard-item failure; it also restores DmEnrollmentSvc, removes Defender exclusions, clears the WU-AU suppression policy, and restores the recovery BCD",
+                                          "The built-in Administrator account now stays active through the entire finalize + scrub and is disabled ONLY at Invoke-FbPreSysprepScrub STEP 3b (net user Administrator /active:no + autologon scrub) immediately before sysprep, which is now the FINAL action: sysprep /oobe /shutdown so the device POWERS OFF into OOBE for pack/ship (customer still receives a clean Windows OOBE, no forced Administrator login)",
+                                          "Removed the /r /fw reboot-to-firmware path from FirstBaseOobeOperatorFinalize.ps1 (the secondary \u0027exited to Windows login\u0027 cause on Secure-Boot-disabled hardware); finalize now powers OFF only and is retained as a recovery-path safety net. Added a backstop delete of SetupComplete.cmd before sysprep so it cannot re-apply the MDM block on the customer\u0027s specialize pass",
+                                          "Retired the fragile OOBE defaultuser0 delivery: the DeferredOobeSoundOnLogon ONLOGON task, the Winlogon Userinit injection, and the FirstBase\\MdmScrub SYSTEM task are no longer armed/called (definitions left in place, banner-marked RETIRED). The operator Settings gate now opens interactively in the Administrator session (FirstBaseOpenSettingsAndFinish.ps1 -GateOnly) with a bounded timeout so the scrub/seal/sysprep always proceed regardless of the operator step",
+                                          "Scope: payload/Invoke-WindowsUpdateLoop.ps1 (1.0.5-\u003e1.0.6), payload/FirstBaseOobeOperatorFinalize.ps1 (1.0.8-\u003e1.0.9), payload/FirstBaseOpenSettingsAndFinish.ps1 (1.0.0-\u003e1.1.0), FirstBaseVersion.ps1 semvers. No change to the SetupComplete-time MDM block itself, autologon arming, the WU loop, or the USB boot/layout/label work. TechInstall.cmd untouched, so FB_TECHINSTALL_REV is unchanged. HARDWARE CAVEAT: the interactive operator Settings window is launched cross-session from the SYSTEM/Session-0 loop via an interactive scheduled task - confirm on a real device that the Settings window actually renders for the operator; if it does not, the fallback is to drop the interactive gate and fire the scrub at WU convergence (the reliability core is unaffected)"
+                                      ]
+                      },
+                      {
+                          "version":  "5.0.37",
+                          "date":  "2026-07-22",
+                          "changes":  [
+                                          "Fixed the recurring WinPE \u0027The system cannot find the path specified.\u0027 console error at the very end of the deploy. Root cause (tied to the 5.0.31 full-ISO-copy + Single FAT32 layout): STEP 9 takes the install-media USB disk OFFLINE via diskpart (MEDIADISK now reliably resolves to the single clean USB disk on the Single layout, so the \u0027offline disk\u0027 branch always runs), and the NEXT line logged the offline exit code with \u0027\u003e\u003e %LOG%\u0027 where %LOG% lives on that just-offlined USB. With no \u00272\u003enul\u0027, cmd printed \u0027The system cannot find the path specified.\u0027 to the console just above the \u0027press any key to reboot\u0027 banner",
+                                          "Fix: in both TechInstall.cmd (rev 2026-07-22.1) and TechInstall-Install.cmd (rev 2026-07-22.1), capture the diskpart offline exit code into FB_OFFLINE_EC BEFORE any \u0027set\u0027 resets ERRORLEVEL, re-point LOG to %TEMP%\\FirstBase-Deploy.log (a RAM path that always resolves once the USB is offline), then log the exit with \u00272\u003enul\u0027 defensively. All prior log writes are pre-offline (USB online) and remain on the USB; only the single post-offline write moved. No genuine fatal error is hidden - logging to an offline USB is impossible and the exit code is still captured to %TEMP%",
+                                          "Audited the full WinPE-time chain (WinPE-Startnet.cmd, TechInstall.cmd, TechInstall-Install.cmd, disksetup.cmd, Invoke-FirstBaseDismApply.ps1): every other if exist / dir / copy / mkdir / for-f / diskpart probe is already guarded or suppressed (5.0.14/5.0.16/5.0.33 hardening intact). Invoke-FirstBaseDismApply.ps1 is pure PowerShell so it cannot emit the cmd-style message. The post-offline log write was the sole remaining unsuppressed source",
+                                          "Scope: payload/Deploy/TechInstall.cmd + TechInstall-Install.cmd only (FB_TECHINSTALL_REV 2026-07-21.3 -\u003e 2026-07-22.1). No change to boot/layout/BCD, disarm, force-boot-to-WBM, DISM progress, volume label, or any MDM/OOBE/SetupComplete/finalize script (owned in parallel)"
+                                      ]
+                      },
+                      {
+                          "version":  "5.0.36",
+                          "date":  "2026-07-21",
+                          "changes":  [
+                                          "Fixed residual Intune/MDM/Autopilot blocks surviving PAST OOBE settings-close into the sealed image, which broke the device\u0027s first Autopilot enrollment until a reset. Confirmed on a real post-sysprep device (dump PF4VGG7V-1648-Lenovo): after the operator closed the OOBE Settings window, AutoEnrollMDM=0 + UseAADCredentialType=0 (HKLM\\SOFTWARE\\Policies\\Microsoft\\Windows\\CurrentVersion\\MDM) and DmEnrollmentSvc StartMode=Disabled still persisted. Root cause: FirstBaseOobeOperatorFinalize.ps1 runs in the LIMITED OOBE defaultuser0 token (finalize-mirror log shows Winlogon HKLM writes failing with \u0027Requested registry access is not allowed\u0027), and its 2277 teardown used Remove-ItemProperty/Set-Service with -ErrorAction SilentlyContinue plus an unconditional success log, so it FALSE-SUCCEEDED while the privileged blocks survived",
+                                          "The temporary MDM/Autopilot block is UNCHANGED and still applied by SetupComplete.cmd (5.0.35 behavior preserved); it now STAYS IN PLACE through sysprep and the entire OOBE sit period and is removed ONLY at settings-close, as required. New Register-FbMdmScrubTaskPreSysprep (Invoke-WindowsUpdateLoop.ps1, STAGE 2 pre-sysprep, running as SYSTEM) writes C:\\ProgramData\\FirstBase\\FirstBaseMdmScrub.ps1 (inline here-string; no new staged payload file) and registers a TRIGGERLESS SYSTEM scheduled task FirstBase\\MdmScrub (/RU SYSTEM /RL HIGHEST). Task XML and the ProgramData scrub script survive sysprep /generalize and are both excluded from Invoke-FbPreSysprepScrub STEP 2",
+                                          "At settings-close FirstBaseOobeOperatorFinalize.ps1 (rev 2296) now triggers FirstBase\\MdmScrub via schtasks /Run (default task security grants Authenticated Users Execute, so the limited defaultuser0 finalize can launch a SYSTEM task) with a Start-ScheduledTask fallback, then VERIFIES the JSON result marker C:\\ProgramData\\FirstBase\\.mdm-scrub-result and logs a LOUD, dump-capturable ERROR (no more silent -ErrorAction swallowing) if overall!=PASS. The SYSTEM scrub removes and hard-verifies the MDM policy keys, DmEnrollmentSvc (StartupType Automatic + Start), and the FirstBase-Block-Autopilot firewall rule, and best-effort removes Defender exclusions, the WU AU suppression policy, and restores the recovery BCD, logging each result to C:\\ProgramData\\FirstBase\\Logs\\WU-mdm-scrub.log; it then self-deletes its own task so nothing lingers",
+                                          "Manual seal path hardened: Tools\\seal_command.txt (which never runs FirstBaseOobeOperatorFinalize.ps1) now performs the same privileged teardown with native reg delete / sc config DmEnrollmentSvc start= auto / Remove-NetFirewallRule before sysprep, so a manually-sealed device is also clean (run the manual seal from an elevated Audit-Mode prompt)",
+                                          "Scope: payload/Invoke-WindowsUpdateLoop.ps1 (1.0.4-\u003e1.0.5), payload/FirstBaseOobeOperatorFinalize.ps1 (1.0.7-\u003e1.0.8), payload/Tools/seal_command.txt, FirstBaseVersion.ps1 semvers. No change to the block itself, autologon arming, WU loop, splash/task layers, sysprep handoff, or the USB boot/layout work. TechInstall.cmd untouched (scrub script is written from an inline here-string, not staged), so FB_TECHINSTALL_REV is unchanged"
+                                      ]
+                      },
+                      {
+                          "version":  "5.0.35",
+                          "date":  "2026-07-21",
+                          "changes":  [
+                                          "Fixed the FirstBase post-install pipeline ending at the local Administrator password login screen instead of the FirstBase OOBE/operator-finalize flow, caused by Intune/MDM auto-enrollment provisioning the device mid-pipeline. Forensic root cause (dumps PF4VGG7V-1416/1423-Lenovo): SetupComplete.cmd aborted abnormally (exit 0xff) inside :ADD_DEFENDER_EXCLUSION - a bypass-policy PowerShell that ran while Defender real-time was still ON - so Windows terminated the process tree BEFORE the \u0027temporary MDM block\u0027 (:SUPPRESS_MDM_ENROLLMENT) and Autopilot firewall block (:BLOCK_AUTOPILOT_ENDPOINTS) ever ran. Confirmed the block never executed (log stops at \u0027Adding Defender path exclusions\u0027) and MDM enrollment was live (deviceenroller.exe /o /c + MDMAppInstaller.exe). This was NOT caused by the 5.0.28-5.0.34 USB/boot/layout work (payload SetupComplete.cmd revision only)",
+                                          "Reordered SetupComplete.cmd pre-reboot hardening (payload rev 2295): (1) MDM enrollment suppression is now PowerShell-FREE (native sc.exe stop/config DmEnrollmentSvc start=disabled + reg.exe AutoEnrollMDM=0 / UseAADCredentialType=0 under HKLM\\SOFTWARE\\Policies\\Microsoft\\Windows\\CurrentVersion\\MDM) and runs FIRST, so Defender\u0027s fileless-attack heuristic has nothing to terminate and the block can never be lost; (2) :DISABLE_DEFENDER now runs BEFORE :ADD_DEFENDER_EXCLUSION so no bypass-policy PowerShell is exposed to live Defender real-time; (3) every remaining PowerShell hardening step (DISABLE_DEFENDER, ADD_DEFENDER_EXCLUSION, BLOCK_AUTOPILOT_ENDPOINTS) is launched through a new :RUN_PS_ISOLATED helper (one-shot launcher .cmd + start /wait in a detached process tree) so a Defender child-process kill/hang can no longer abort SetupComplete.cmd - the script always reaches :DONE / exit /b 0; (4) :BLOCK_AUTOPILOT_ENDPOINTS is now reached and executes",
+                                          "The MDM block stays TEMPORARY: registry path, value names and service name are unchanged, so FirstBaseOobeOperatorFinalize.ps1 (2277) still restores enrollment at the OOBE handoff (Remove-ItemProperty AutoEnrollMDM/UseAADCredentialType, Set-Service DmEnrollmentSvc -StartupType Automatic + Start) and removes the FirstBase-Block-Autopilot firewall rule and Defender exclusions before seal. MDM is never permanently disabled",
+                                          "Scope: payload/SetupComplete.cmd only. No change to autologon arming (:ARM_AUTOLOGIN), WU loop trigger arming, splash/task layers, sysprep/OOBE operator-finalize handoff, or the 5.0.28-5.0.34 USB boot/layout/label work. TechInstall.cmd untouched, so FB_TECHINSTALL_REV is unchanged"
+                                      ]
+                      },
+                      {
+                          "version":  "5.0.34",
+                          "date":  "2026-07-21",
+                          "changes":  [
+                                          "Unified the USB volume label to \u0027LoneWolf\u0027 (8 chars, FAT32-legal) across BOTH layouts and made all detection case-insensitive. Assignment: Invoke-LoneWolfBuild.ps1 Single-layout FAT32 label changed from \u0027LONEWOLF\u0027 to the shared $DataVolumeLabel (now \u0027LoneWolf\u0027), and the Split-layout NTFS data label default changed from \u0027Project LoneWolf\u0027 to \u0027LoneWolf\u0027 - so both Format-Volume/-NewFileSystemLabel and the cmd \u0027format /V:\u0027 fallback now stamp \u0027LoneWolf\u0027 on Single and Split",
+                                          "Detection/reading updated to match \u0027LoneWolf\u0027 case-insensitively (FAT32 stores labels uppercase, so the OS reads them back as \u0027LONEWOLF\u0027 - PowerShell -eq and -contains are case-insensitive so both forms match): Invoke-LoneWolfBuild.ps1 overlay-only data-volume probe, Get-UsbDisks.ps1 isLoneWolfDisk / lwVersion detection (this also fixes Single FAT32 sticks that were previously not recognised because that probe only matched \u0027Project LoneWolf\u0027/\u0027WINSETUP\u0027), and fb-dump.ps1 auto-destination ($lwLabels now \u0027LoneWolf\u0027,\u0027LONEWOLF\u0027,\u0027Project LoneWolf\u0027). Legacy labels \u0027Project LoneWolf\u0027 and \u0027WINSETUP\u0027 are still accepted everywhere so already-built sticks keep working",
+                                          "Scope guard: only USB VOLUME LABEL assignments/comparisons were changed. Product-name UI text and window titles (\u0027Project LoneWolf\u0027 in index.html / app.js / guides.js), the ProjectLoneWolfLauncher folder path, env vars, the internal ESP label \u0027FB_ESP\u0027, and disksetup.cmd\u0027s target-disk labels (System / Windows) were all left untouched. TechInstall.cmd / TechInstall-Install.cmd / WinPE-Startnet.cmd / disksetup.cmd locate the USB by sources\\install.wim + Deploy\\TechInstall.cmd presence (not by volume label), so no deploy-script edits were needed and FB_TECHINSTALL_REV is unchanged",
+                                          "No change to any 5.0.33 WinPE-polish fix or the boot chain: stock ISO BCD verbatim, full ISO copy incl. \\boot, Secure Boot loaders, share WinPE-OC injection, parallel builds, auto-mount newest ISO, FAT32 install.swm split, force-boot-to-WBM, JSON plumbing. No {fwbootmgr} device-selection or hand-authored BCD"
+                                      ]
+                      },
+                      {
+                          "version":  "5.0.33",
+                          "date":  "2026-07-21",
+                          "changes":  [
+                                          "WinPE visual polish only (5.0.32 boot + image-apply confirmed working). (1) WinPE-Startnet.cmd is quiet again: removed the \u0027FirstBase - WinPE starting...\u0027 banner and every per-step console echo (wpeinit / preflight / locating deployment / found entry point / \u00275% Starting deployment\u0027) added in 5.0.32, and wpeinit is now run as \u0027wpeinit \u003enul 2\u003e\u00261\u0027. All the same status is still written to the RAM-disk log, all functionality is retained (scan-first for Deploy\\TechInstall.cmd, diskpart letter-assignment fallback for Split layouts, log persistence to FirstBase-UsbLogs, drop-to-cmd on a FATAL not-found), and the FATAL not-found branch still prints so a real failure is visible",
+                                          "(2) Pre-flight messages silenced: Invoke-FbUefiPreflight.ps1\u0027s Write-PrefLog is now log-only (removed its Write-Host) and the L3 \u0027Secure Boot status could not be read\u0027 console block was folded into the log, so normal-flow pre-flight prints NOTHING to the WinPE console. The check still runs (Secure Boot + RAID detection) and the only remaining console output is the ACTION-REQUIRED banner shown when it must actually reboot to UEFI firmware to fix a real problem. Startnet\u0027s own preflight echoes were also removed",
+                                          "(3) Killed the \u0027The system cannot find the path specified\u0027 noise. Root cause of the [2230] lead: Show-SplashNow.cmd was listed in the overlay expected-files manifest (x3 build paths) and staged by TechInstall.cmd, but the file never existed in the payload, so it logged a missing-file WARNING every deploy. Per direction the file is NOT created; instead ALL Show-SplashNow references were removed (overlay manifest x3 in Invoke-LoneWolfBuild.ps1, the TechInstall.cmd Tools\\Show-SplashNow.cmd staging block incl. its W:\\...\\FirstBase\\Tools mkdir, the ProgramData-kit copy block in Invoke-WindowsUpdateLoop.ps1, and stale doc/comment mentions). Full re-audit of every WinPE-time path probe in WinPE-Startnet.cmd / disksetup.cmd / TechInstall.cmd / TechInstall-Install.cmd: hardened the deploy-log directory resolution so LOG/TRACE/DISM logs fall back to %TEMP% when the USB FirstBase-UsbLogs folder can\u0027t be created (previously the early \u0027\u003e\u003e %LOG%\u0027 writes could emit \u0027path not found\u0027 before the dir was confirmed), suppressed the two unredirected \u0027mkdir W:\\Windows\\Panther\u0027 calls (\u003enul 2\u003e\u00261) and the two FirstBase-USB-Disarmed.txt marker writes (2\u003enul). disksetup.cmd was already fully suppressed",
+                                          "(4) Restored DISM apply progress for the FAT32 split image (install.swm + install2.swm + install3.swm). Root cause: Get-WimUncompressedBytes appended /SWMFile to \u0027dism /Get-ImageInfo\u0027, but /SWMFile is only valid for /Apply-Image - /Get-ImageInfo rejected it, printed an error and NO \u0027Size\u0027 line, so the denominator was 0 and the bar showed \u0027(size unknown)\u0027 with no live percent. Fixed with a layered, split-aware size lookup: (a) Get-WindowsImage -ImagePath install.swm -Index N -\u003e .ImageSize (auto-resolves sibling .swm parts), (b) dism /Get-ImageInfo /ImageFile:install.swm /Index:N WITHOUT /SWMFile (the part-1 XML carries the full uncompressed size), (c) fallback = sum of on-disk .swm byte sizes. Verified on the live D: stick: methods (a) and (b) both report 33,700,623,774 bytes (31.39 GB) uncompressed vs the old call\u0027s 0; the disk-usage-growth percentage and same-line SetCursorPosition overwrite work again. No stdout redirection / /Progress was reintroduced (that path deadlocked in 5.0.22)",
+                                          "Constraints preserved: stock ISO BCD verbatim, full ISO copy incl. \\boot, Secure Boot signed loaders, share WinPE-OC injection, parallel builds, auto-mount newest ISO, FAT32 install.swm split, force-boot-to-WBM, JSON plumbing. No {fwbootmgr} device-selection or hand-authored BCD. FB_TECHINSTALL_REV bumped 2026-07-21.2 -\u003e 2026-07-21.3 in TechInstall.cmd and TechInstall-Install.cmd (both edited)"
+                                      ]
+                      },
+                      {
+                          "version":  "5.0.32",
+                          "date":  "2026-07-21",
+                          "changes":  [
+                                          "Fixed the 5.0.31 Single-layout stick booting into WinPE but sitting at a blank/silent command prompt with TechInstall never starting. GROUND TRUTH from mounting the built stick\u0027s sources\\boot.wim (both indexes, read-only) DISPROVED the assumed cause: the boot.wim injection was already correct - index 1 (Windows PE) AND index 2 (Windows Setup) both carried our exact FirstBase startnet.cmd and the correct winpeshl.ini ([LaunchApps] / cmd.exe, /c X:\\Windows\\System32\\startnet.cmd), PowerShell was present, and the overlay (Deploy\\TechInstall.cmd) was on the volume. The real divergences from the proven reference (Build-UsbStick.ps1 WinPE-Startnet.cmd) were in the injected startnet SCRIPT itself, not the injection mechanics or the booted index",
+                                          "(1) WinPE-Startnet.cmd was completely silent: \u0027@echo off\u0027 with every line redirected to a RAM-disk log and no banner, so a WORKING boot looked like a dead/blank terminal. It now prints an immediate visible \u0027FirstBase - WinPE starting...\u0027 banner + a window title and echoes each step (wpeinit, preflight, locating deployment, launching), mirroring the reference builder\u0027s proven startnet",
+                                          "(2) startnet ran a diskpart \u0027assign a letter to every volume 0-25\u0027 dance BEFORE scanning for TechInstall - the reference does NOT do this and relies on WinPE auto-lettering the boot USB (proven on the default Single layout). The scan is now done FIRST (fast path, matches the reference); the diskpart letter-assignment is only a fallback if that first pass finds nothing (Split ESP+NTFS layout where WinPE does not letter the NTFS data partition), then it retries. On a not-found FATAL the WinPE log is now persisted to the USB (FirstBase-UsbLogs\\FirstBase-winpe.log) and startnet drops to an interactive shell (reference behavior) instead of silently rebooting, so a failed scan is diagnosable",
+                                          "(3) The boot.wim injection now also copies Invoke-FbUefiPreflight.ps1 into the WinPE image at X:\\Windows\\System32\\ (both the per-disk and ESP-cache injection paths, sourced from ContentRoot\\Deploy which always ships it - the overlay cache copy set does not). The reference\u0027s Invoke-TiPatchBootWim injects its preflight helper the same way; ours shipped the script in the payload but never placed it inside boot.wim, so the Secure Boot / RAID pre-flight check was being silently skipped on every boot",
+                                          "No change to the stock ISO BCD (shipped verbatim), the full ISO copy incl. \\boot, Secure Boot signed loaders, share-based WinPE-OC injection, parallel builds, auto-mount newest ISO, FAT32 install.swm split, or the JSON progress plumbing. No bcdedit {fwbootmgr} device-selection or hand-authored BCD was reintroduced. TechInstall.cmd was not edited (FB_TECHINSTALL_REV unchanged)"
+                                      ]
+                      },
+                      {
+                          "version":  "5.0.31",
+                          "date":  "2026-07-21",
+                          "changes":  [
+                                          "Re-aligned the Single-layout LoneWolf USB build to MIRROR the proven reference builder (Windows_Installation\\FirstBase Image Creation\\Builder\\Build-UsbStick.ps1) instead of carrying a custom boot structure. Two boot-critical divergences were fixed. (1) ISO-mode builds no longer exclude the root \\boot folder from the copy (previous /XD boot excluded boot.sdi, the stock BIOS \\boot\\BCD, fonts and resources as \u0027UEFI does not need BIOS files\u0027). The stock UEFI BCD resolves the WinPE RAM disk via \u0027{ramdiskoptions} ramdisksdipath \\boot\\boot.sdi\u0027, so a missing \\boot\\boot.sdi made WinPE reset silently right after \u0027WinPE initialized\u0027 with no output and no logs. The whole ISO tree (incl. \\boot) is now copied verbatim exactly as Build-UsbStick.ps1 does; only the monolithic install.wim/.esd is excluded (FAT32 4 GB limit) and re-added split into install.swm",
+                                          "(2) The builder no longer runs ANY bcdedit against the USB BCD. 5.0.30 shipped the stock ISO BCD but still ran \u0027bcdedit /store /set {bootmgr} timeout 0 / displaybootmenu no\u0027 and kept a hand-authored fallback store. The reference builder never touches the BCD - it copies the ISO\u0027s \\efi\\microsoft\\boot\\BCD (UEFI) and \\boot\\BCD (BIOS) byte-for-byte and ships them as-is. The build now does the same and only VERIFIES the stock UEFI BCD is present (failing loudly if the media copy did not land it) rather than mutating or hand-authoring a store. Result: {bootmgr} has no device element (firmware load device), the loader is \u0027ramdisk=[boot]\\sources\\boot.wim,{ramdiskoptions}\u0027, [boot] resolves to the USB, and every element 25H2 winload requires is present - safe on machines that already have Windows",
+                                          "Force-boot-to-Windows-Boot-Manager at deployment completion was already the reference\u0027s proven method verbatim (TechInstall.cmd / TechInstall-Install.cmd FB_FORCE_NEXT_BOOT_INTERNAL: symbolic {fwbootmgr} bootsequence {bootmgr} -\u003e explicit firmware WBM GUID list -\u003e permanent displayorder /addfirst, preceded by bcdboot W:\\Windows /s S: /f UEFI); left unchanged (FB_TECHINSTALL_REV unchanged). No fragile {fwbootmgr} device-selection logic was reintroduced",
+                                          "The user\u0027s request to remove the root \\boot folder from the built stick was reconciled as REQUIRED, not removed: the reference builder ships \\boot, the stock UEFI BCD depends on \\boot\\boot.sdi, and the reference\u0027s own deploy-time disarm renames \\boot -\u003e boot.disabled only AFTER install - confirming \\boot must be present for the stick to boot WinPE. Removing it would ship unbootable media, so \\boot is retained. Secure Boot is preserved (signed \\EFI\\Boot\\bootx64.efi + \\EFI\\Microsoft\\Boot\\bootmgfw.efi copied verbatim from the ISO, verified present, never re-signed). Parallel builds, share-based WinPE OC injection, auto-mount newest ISO, FAT32 install.swm split, and the JSON progress plumbing are all unchanged"
+                                      ]
+                      },
+                      {
+                          "version":  "5.0.30",
+                          "date":  "2026-07-21",
+                          "changes":  [
+                                          "Fixed the Single-layout LoneWolf USB still booting the Windows Boot Manager and then silently resetting before WinPE prints anything (no deployment, no logs) even after the 5.0.29 {bootmgr} device=boot fix. Root cause: the builder hand-authored a minimal WinPE BCD from scratch, and that store was missing elements the Windows 11 25H2 winload requires - the WinPE osloader entry had no \u0027inherit {bootloadersettings}\u0027 and no \u0027isolatedcontext Yes\u0027, and the store omitted the {globalsettings}/{bootloadersettings}/{hypervisorsettings}/{dbgsettings}/{emssettings} inheritance chain entirely. winload loaded far enough to run the boot manager, then aborted and reset the machine with no console output. Confirmed by dumping the fresh stick\u0027s BCD (5.0.29 changes were present and boot.sdi/boot.wim were correct) and diffing it against the stock ISO UEFI BCD",
+                                          "The Single-layout build now ships the ISO\u0027s own \\efi\\microsoft\\boot\\BCD verbatim (copied from the mounted ISO, BIOS \\boot\\BCD refreshed too) instead of hand-authoring one - exactly what stock removable Windows install media and the proven Build-UsbStick.ps1 do. That store boots the RAM disk via \u0027ramdisk=[boot]\\sources\\boot.wim\u0027 with {bootmgr} carrying NO device element, so [boot] resolves to the USB the boot manager was actually loaded from (safe on machines that already have Windows - no \u0027locate\u0027, no explicit partition) and it carries every element winload expects. The store\u0027s timeout is set to 0 and the boot menu suppressed so the technician is not left on a countdown; all other stock elements are preserved. A hand-authored fallback (now including inherit {bootloadersettings} + isolatedcontext) is kept only for the edge case where no stock ISO BCD is available. No {fwbootmgr} logic was added and Secure Boot handling is unchanged"
+                                      ]
+                      },
+                      {
+                          "version":  "5.0.29",
+                          "date":  "2026-07-21",
+                          "changes":  [
+                                          "Fixed the Single-layout LoneWolf USB booting into WinPE with no terminal output and then silently exiting/resetting without starting deployment (no FirstBase-UsbLogs written). Root cause: the freshly rebuilt WinPE BCD set the Windows Boot Manager device to \u0027locate=\\EFI\\Microsoft\\Boot\\bootmgfw.efi\u0027, which searches EVERY partition for that loader and anchors the boot device to the first match. On any QA machine that already has Windows installed, the internal disk\u0027s ESP also contains \\EFI\\Microsoft\\Boot\\bootmgfw.efi, so \u0027locate\u0027 resolved [boot] to the internal ESP; the ramdisk device \u0027ramdisk=[boot]\\sources\\boot.wim\u0027 then pointed at a partition with no boot.wim, the RAM disk could not be resolved, and WinPE never started. The {bootmgr} device is now \u0027boot\u0027 (the volume the boot manager was actually loaded from = the USB), which is unambiguous and matches stock Windows install media and the proven Build-UsbStick.ps1. The custom WinPE (winpeshl.ini + startnet.cmd + PowerShell OCs, verified present in both boot.wim indexes) now actually runs on boot, prints its banner, locates Deploy\\TechInstall.cmd on the USB, and starts the image apply with visible progress. No {fwbootmgr} firmware-boot-order logic was reintroduced and Secure Boot handling is unchanged"
+                                      ]
+                      },
+                      {
+                          "version":  "5.0.28",
+                          "date":  "2026-07-21",
+                          "changes":  [
+                                          "Fixed the LoneWolf USB force-boot failure (\u0027The boot configuration data store could not be opened / multiple indistinguishable devices\u0027) by adding a Single-layout build path and making it the DEFAULT for LoneWolf. Single layout creates ONE FAT32 Microsoft Basic Data partition (GPT type {ebd0a0a2-...}, deliberately NOT an ESP GUID) that holds both the boot files and the install media. Because the USB no longer carries an EFI System Partition GUID, only the internal disk\u0027s ESP exists after bcdboot, so bcdedit {fwbootmgr} can disambiguate cleanly - matching the proven local Build-UsbStick.ps1 default. The legacy Split (FAT32 ESP + NTFS data) layout is retained behind -Layout Split as a fallback for firmware that requires an ESP GUID",
+                                          "Single layout splits install.wim into install.swm chunks (DISM /Split-Image /FileSize:3800) so the \u003e4 GB image fits the FAT32 4 GB per-file limit; the monolithic install.wim is never written to the FAT32 volume. The deploy side already applies from install*.swm via SWMFile when install.wim is absent (TechInstall.cmd + Invoke-FirstBaseDismApply.ps1), so no image is lost",
+                                          "Secure Boot is preserved: the Microsoft-signed loaders (\\EFI\\Boot\\bootx64.efi removable-media fallback and \\EFI\\Microsoft\\Boot\\bootmgfw.efi) are copied byte-for-byte from the mounted ISO and never re-generated or re-signed; a build-time check now verifies both signed loaders are present on the volume and fails the build loudly if bootx64.efi is missing. Nothing disables Secure Boot",
+                                          "Fixed USB disarm / offline-disk sometimes never running after FORCE_BOOT_RESULT=FAILED: the MEDIADISK PowerShell Get-Partition fallback (which can hang indefinitely on this hardware) is again wrapped in an in-process runspace with a 6-second timeout so control always returns and the disarm + offline defense-in-depth always completes. Applied to both TechInstall.cmd and TechInstall-Install.cmd. With Single layout the disarm targets the single FAT32 volume\u0027s \\EFI\\Boot\\bootx64.efi (moved aside, Secure-Boot-safe) and the split-ESP partition probe is skipped",
+                                          "NOTE: FAT32 volume labels are limited to 11 characters, so the Single-layout volume is labeled \u0027LONEWOLF\u0027 (the 16-char \u0027Project LoneWolf\u0027 label cannot be applied to FAT32); fb-dump.cmd now accepts either label when locating the USB"
+                                      ]
+                      },
+                      {
+                          "version":  "5.0.27",
+                          "date":  "2026-07-21",
+                          "changes":  [
+                                          "Fixed the persistent post-image boot loop by porting the proven local-builder boot handoff wholesale into TechInstall.cmd and TechInstall-Install.cmd, reversing the 5.0.24 removal of firmware boot-order handoff. Fresh device logs (TechInstall rev 2026-07-20.5) confirmed the USB was correctly booting the injected custom WinPE (not stock Windows Setup - WinPE-Startnet found Deploy\\TechInstall.cmd and ran it), and that disksetup, DISM apply, bcdboot, and WU payload staging all succeeded; the loop was caused solely by the post-bcdboot handoff. 5.0.24 had deleted the {fwbootmgr} firmware boot-order promotion and left a disarm-only path whose MEDIADISK detection (diskpart \u0027detail volume\u0027 written to a UTF-16 file that findstr cannot match, then a bounded Get-Partition) never yielded a disk number, so the trace stopped at \u0027STEP6 bcdboot succeeded\u0027 and \u0027STEP6 usb_disarm_complete\u0027 never appeared - disarm and handoff never completed, so firmware re-booted the still-armed USB and re-imaged every cycle",
+                                          "Restored FB_FORCE_NEXT_BOOT_INTERNAL as the PRIMARY anti-loop mechanism, matching the proven Windows_Installation TechInstall.cmd exactly: pre-flight \u0027bcdedit /deletevalue {fwbootmgr} bootsequence\u0027 to clear the stale \u0027multiple indistinguishable devices\u0027 state, one-time bootsequence set to symbolic {bootmgr} with an explicit firmware-GUID fallback (enumerated from bcdedit /enum FIRMWARE), then a PERMANENT \u0027displayorder /addfirst\u0027 so the raw UEFI BootOrder itself prefers the internal disk over the USB on every subsequent power cycle. FORCE_BOOT_RESULT=SUCCESS|FAILED is traced for deterministic post-mortem",
+                                          "Replaced the broken MEDIADISK detection with the proven live-pipe diskpart parse (the detail output is piped straight into findstr as ANSI so it matches, instead of being written to a UTF-16 file first), keeping a single plain Get-Partition call only as a fallback when the pipe parse finds nothing. USB ESP disarm (FB_DISARM_USB_VOLUME + the 1-6 split-ESP partition probe) and diskpart offline-disk remain, now as defense-in-depth behind the firmware handoff rather than the sole mechanism",
+                                          "Removed the competing 5.0.23/5.0.25 fallback code paths so there is ONE proven flow: deleted the lettered-volume Set-Partition ESP mount scan (FB_SCAN_ESP_LETTERED / FB_PS_MOUNT_ESP_LETTERED / FB_TRY_DISARM_ESP_LETTERED), the disk+partition \u0027assign letter=T\u0027 direct-targeting block, and the 6-second bounded Get-Partition runspace (FB_RESOLVE_MEDIADISK / FB_USB_DISARM_ALL). The 5.0.26 keypress-before-reboot (TechInstall.cmd) and keypress-before-shutdown (TechInstall-Install.cmd) pauses and the 5.0.22/5.0.23 DISM apply progress fix are preserved unchanged",
+                                          "Note on the \u0027Loading files...\u0027 progress-bar screen before WinPE: this is Windows Boot Manager loading boot.wim into a RAM disk (the BCD ramdiskoptions / boot.sdi load), which is unavoidable for any WIM-based boot and is NOT stock Windows Setup - the logs prove the injected custom WinPE is what boots. It is normal and is not removed; it was never the cause of the re-install loop"
+                                      ]
+                      },
+                      {
+                          "version":  "5.0.26",
+                          "date":  "2026-07-20",
+                          "changes":  [
+                                          "TechInstall.cmd and TechInstall-Install.cmd no longer reboot/shut down automatically on a fixed timer after image application: both now show an on-screen \u0027press any key to continue\u0027 message and wait indefinitely for a keypress before proceeding, so a technician who is not watching the screen can no longer miss the handoff. The pause is placed as the last interactive step, strictly after USB disarm, offline-disk, WU payload staging, and log-copy finalization already run unattended"
+                                      ]
+                      },
+                      {
+                          "version":  "5.0.25",
+                          "date":  "2026-07-20",
+                          "changes":  [
+                                          "Fixed the boot loop persisting after 5.0.24: a fresh device log confirmed the diskpart-parse-first reorder from 5.0.24 does not eliminate the risk, because the diskpart parse can still legitimately find nothing on a given run, and execution still falls through to the PowerShell Get-Partition fallback - the exact call already proven to hang indefinitely on this hardware. USB forensics after the hang confirmed disarm never ran at all (bootx64.efi untouched on both the ESP and data partition, no disarm marker file) - this is not an attrib-only disarm bug (the disarm code already moves/renames bootx64.efi, verified by source read), it is that disarm is never reached. The PowerShell Get-Partition fallback in TechInstall.cmd, TechInstall-Install.cmd, and disksetup.cmd is now wrapped in an in-process PowerShell runspace with a 6-second AsyncWaitHandle timeout, so control always returns to the calling script even if Get-Partition itself hangs, guaranteeing USB disarm always runs after bcdboot",
+                                          "Clarified in file headers that neither TechInstall.cmd nor TechInstall-Install.cmd is dead code: TechInstall.cmd is copied unrenamed for the full LoneWolf workflow (WIM and ISO mode); TechInstall-Install.cmd is copied and renamed to Deploy\\TechInstall.cmd for the WIN-INSTALL / -NoPayload workflow only, so it never appears under its own filename on a built USB"
+                                      ]
+                      },
+                      {
+                          "version":  "5.0.24",
+                          "date":  "2026-07-20",
+                          "changes":  [
+                                          "Removed all bcdedit {fwbootmgr} firmware-boot-order manipulation from TechInstall.cmd and TechInstall-Install.cmd: this hardware has returned \u0027multiple indistinguishable devices\u0027 for every {fwbootmgr} enum/set/deletevalue attempt across 15+ prior fix revisions and it has never once succeeded, so it is no longer attempted at all (not even as a best-effort probe). USB ESP disarm (the target-volume-letters logic proven in the local builder, kept together with the 5.0.23 Set-Partition fix) is now the sole, unconditional boot handoff / anti-loop mechanism; bcdboot itself and the local-store bcdedit /store edits (which configure the newly written ESP\u0027s own boot manager, not firmware NVRAM) are unchanged",
+                                          "Fixed the actual boot loop seen in a fresh device log: MEDIADISK resolution called out to a PowerShell Get-Partition subprocess unconditionally before falling back to parsing the diskpart detail file, and on this hardware that PowerShell call hung indefinitely right after bcdboot succeeded, so USB disarm never ran at all (trace/deploy logs stopped cold with no further lines). Matching the local builder\u0027s proven order, the diskpart detail file is now parsed first and PowerShell Get-Partition is only invoked as a fallback when that parse finds nothing"
+                                      ]
+                      },
+                      {
+                          "version":  "5.0.23",
+                          "date":  "2026-07-20",
+                          "changes":  [
+                                          "Fixed the USB boot loop for real: Windows/VDS refuses to assign a drive letter to the USB\u0027s own EFI System Partition on removable media (confirmed from live logs - wpeinit\u0027s own automatic letter assignment fails on it with \u0027The operation is not supported on removable media\u0027), and the disk+partition \u0027assign letter=T\u0027 fallback added in 5.0.15 hits the exact same restriction, so neither disarm path had ever actually reached the real ESP through 5.0.13-5.0.22. The A-Z lettered-volume scan is now the primary disarm mechanism again and actively mounts any un-lettered removable ESP first via PowerShell Set-Partition (which uses the Storage Management API instead of diskpart\u0027s VDS-based assign and is not subject to the restriction); disk+partition targeting now runs only as a secondary fallback when the letter scan finds nothing",
+                                          "Removed the unintended \\boot\\ folder (BIOS-only boot files - bcd, boot.sdi, bootfix.bin, bootsect.exe, memtest.exe, fonts) from the USB data partition root: the ISO-mode per-disk copy added in 5.0.18/5.0.19 robocopied the entire mounted ISO root with no exclusions; it now excludes \\boot\\, which is not needed for a UEFI-only deployment and was never referenced from the data partition",
+                                          "Fixed DISM apply progress showing nothing for the whole ~4 minute run and then jumping to 100% on a new line: without /Progress, DISM\u0027s /LogPath file never contains a percentage at all (only Info-level lifecycle lines), so the log-tail regex had nothing to match and the percent stayed pinned at 0% the entire time; live percent is now estimated from apply-drive disk usage (WIM uncompressed size read once via \u0027dism /Get-ImageInfo\u0027, free space polled every second via System.IO.DriveInfo - no process I/O redirection and no directory recursion, so no deadlock or performance risk), falling back to elapsed time + spinner only if either signal is unavailable. Also removed a stray unconditional blank-line write between the last live progress update and the final line, which was preventing the same-line overwrite on completion"
+                                      ]
+                      },
+                      {
+                          "version":  "5.0.22",
+                          "date":  "2026-07-20",
+                          "changes":  [
+                                          "Fixed DISM apply hanging forever right after the DISM command line was logged, with no progress and no exit code: the wrapper redirected both DISM stdout and stderr and drained them with a Peek()-gated ReadLine loop, but .NET\u0027s StreamReader.Peek() permanently latches non-blocking after the first partial pipe read (the documented _isBlocked behavior), so the loop silently stopped reading stdout after the first small burst; DISM\u0027s continuous /Progress output then filled the OS pipe buffer and DISM blocked forever on its own write with nothing left to drain it. Removed /Progress entirely and disabled stdout/stderr redirection so DISM inherits the console directly and cannot deadlock; live progress is now sourced purely from polling process exit state once a second and tailing the DISM /LogPath log file"
+                                      ]
+                      },
+                      {
+                          "version":  "5.0.21",
+                          "date":  "2026-07-20",
+                          "changes":  [
+                                          "Fixed startnet-inject failing on boot.wim index 2 with DISM error 0xc1420127 (\u0027already mounted for read/write access\u0027): a stale or not-yet-released mount on the WIM is now cleared before every mount attempt, /Mount-Image retries up to 3 times with a 2s backoff, and the code waits for /Unmount-Image /Commit\u0027s file lock to actually release before moving to the next index (both the per-disk worker and the cache-level Invoke-StartnetInjection)"
+                                      ]
+                      },
+                      {
+                          "version":  "5.0.20",
+                          "date":  "2026-07-20",
+                          "changes":  [
+                                          "Fixed ISO-mode per-disk WinPE DISM injection failing immediately on boot.wim index 1 with \u0027The term if is not recognized\u0027: inline if subexpression passed as a Start-Job function argument is not re-parsed correctly in the child runspace; progress percent is now assigned to a variable first (matching cache-level Invoke-StartnetInjection)"
+                                      ]
+                      },
+                      {
+                          "version":  "5.0.19",
+                          "date":  "2026-07-20",
+                          "changes":  [
+                                          "Fixed ISO-mode USB sticks booting to the Windows Setup language-selection screen instead of custom WinPE: per-disk DISM injection is no longer skipped by a stale ESP-cache sentinel, ReadOnly is cleared on ISO-sourced boot.wim before mount, and any injection failure in ISO mode aborts the disk build",
+                                          "Moved fb-dump.cmd and fb-dump.ps1 from USB root to WUPayload\\Tools\\"
+                                      ]
+                      },
+                      {
+                          "version":  "5.0.18",
+                          "date":  "2026-07-20",
+                          "changes":  [
+                                          "LoneWolf builds no longer use C:\\ProgramData\\LoneWolf\\EspCache â€” ISO is mounted per build, overlay is staged from bundled payload into a temp folder, and boot files are copied directly from the ISO per disk (Architecture B)",
+                                          "Fixed build failure when EspCache esp was fresh but overlay\\Scripts was missing: WIM-mode builds always refresh overlay from payload even when ESP cache is reused"
+                                      ]
+                      },
+                      {
+                          "version":  "5.0.17",
+                          "date":  "2026-07-20",
+                          "changes":  [
+                                          "Restored USB boot-loop prevention: ESP disarm now runs unconditionally immediately after bcdboot (before optional firmware bootsequence edits), scans already-lettered volumes for the boot.wim ESP signature, and uses disk+partition targeting only when MEDIADISK is known (removed the dangerous default to disk 1)",
+                                          "Fixed DISM apply progress stuck at 0% in WinPE: the helper now reads live percentage from DISM /Progress stdout synchronously (no fragile event handlers) with log-tail fallback, and TechInstall resolves the script from Scripts\\ or Deploy\\ on the USB",
+                                          "Suppressed residual path-not-found console noise after disksetup: USB log paths bind only when the log folder exists, pre-DISM format output is fully redirected, and MEDIADISK resolution parses a saved diskpart detail file instead of a live pipeline that could flush the USB volume"
+                                      ]
+                      },
+                      {
+                          "version":  "5.0.16",
+                          "date":  "2026-07-17",
+                          "changes":  [
+                                          "Fixed DISM error 183 (Cannot create a file when that file already exists) on repeat deploys: the Windows target partition is now checked for stale content immediately before DISM apply and quick-formatted NTFS if a prior interrupted apply left files behind, preventing WinSxS collisions",
+                                          "Fixed the PowerShell DISM wrapper exiting with code 2 immediately in WinPE PowerShell 5.1: replaced the async BeginOutputReadLine and add_OutputDataReceived event pattern with synchronous log-file polling every 1 second, which is reliable in WinPE\u0027s restricted runspace where the event infrastructure can throw a terminating exception",
+                                          "Suppressed residual path-not-found console noise in disksetup.cmd: the USB log directory path is only committed when the directory was successfully created, and the pre-wipe annotation file is only written when the target directory is confirmed present"
+                                      ]
+                      },
+                      {
+                          "version":  "5.0.15",
+                          "date":  "2026-07-17",
+                          "changes":  [
+                                          "Fixed a persistent USB boot loop on hardware where the FAT32 ESP partition has no drive letter: the ESP is now disarmed by selecting it directly as Disk N Partition 1 via diskpart (bypassing the WinPE removable-media volume restriction that blocks letter assignment), assigning a temporary letter T:, removing bootx64.efi, and cleaning up the letter; this replaces the previous A-Z volume scan which never found the un-lettered ESP",
+                                          "Fixed DISM apply progress showing 0% for the entire run then jumping to 100% on a new line: the helper now uses /Progress to capture live percentage output directly from DISM stdout via an async OutputDataReceived handler, and replaces the carriage-return trick with SetCursorPosition so the progress bar overwrites the same line in WinPE\u0027s console",
+                                          "Suppressed spurious path-not-found noise: all PowerShell path probes use -ErrorAction SilentlyContinue and all diskpart invocations redirect stdout+stderr to the log so no diagnostic error strings reach the WinPE console"
+                                      ]
+                      },
+                      {
+                          "version":  "5.0.14",
+                          "date":  "2026-07-17",
+                          "changes":  [
+                                          "Fixed a repeated re-imaging loop on hardware where the firmware boot store is inaccessible: the USB disarm now scans all already-lettered volumes for the FAT32 ESP signature using PowerShell Test-Path (bypassing the HIDDEN+SYSTEM attribute blindspot in cmd IF EXIST), so the EFI boot files are reliably removed even when the disk-number lookup fails; clears file attributes with attrib before each move and falls back to PowerShell Move-Item/Remove-Item if move fails",
+                                          "Restored the diskpart pipeline as a fallback for USB disk-number resolution when PowerShell Get-Partition is unavailable in minimal WinPE builds (Storage module not loaded), preventing the ESP disarm from being silently skipped",
+                                          "Fixed DISM apply progress not appearing in the WinPE terminal: the PowerShell progress helper is now called without stdout redirection so Write-Host same-line progress is visible to the technician; the helper writes diagnostic info directly to the wrapper log via Add-Content instead"
+                                      ]
+                      },
+                      {
+                          "version":  "5.0.13",
+                          "date":  "2026-07-17",
+                          "changes":  [
+                                          "Fixed a boot loop on hardware where the firmware boot configuration store is completely inaccessible: the USB disarm now reliably removes the EFI boot file from the FAT32 ESP partition (which the Windows command interpreter cannot see due to hidden and system attributes) by falling back to PowerShell for both file detection and removal; also eliminated a second diskpart invocation during disk-number resolution that was causing the USB volume to briefly go offline on some USB controllers, silently aborting the entire disarm step"
+                                      ]
+                      },
+                      {
+                          "version":  "5.0.12",
+                          "date":  "2026-07-17",
+                          "changes":  [
+                                          "Force-boot handoff replaced with exact local builder method."
+                                      ]
+                      },
+                      {
+                          "version":  "5.0.11",
+                          "date":  "2026-07-16",
+                          "changes":  [
+                                          "Fixed a deployment loop on hardware where Windows PE had already assigned a drive letter to the USB boot partition before the disarm step ran: the deployment now scans all mounted volumes for the USB boot signature (has boot.wim, no install image) before attempting a diskpart letter assignment, so the correct partition is found and disarmed even when it already has a letter",
+                                          "Added force-delete verification after each USB boot file is moved: file attributes are cleared before the move, and the deployment retries once on failure, logging a clear warning if the file remains accessible so future failures can be diagnosed"
+                                      ]
+                      },
+                      {
+                          "version":  "5.0.10",
+                          "date":  "2026-07-16",
+                          "changes":  [
+                                          "Fixed a deployment failure on hardware where the firmware boot configuration store is completely inaccessible: all firmware boot-order edits are now treated as optional best-effort operations, so a finished install always reaches the USB disarm and handoff steps regardless of whether the firmware accepts boot-order commands"
+                                      ]
+                      },
+                      {
+                          "version":  "5.0.8",
+                          "date":  "2026-07-16",
+                          "changes":  [
+                                          "Fixed devices getting stuck in a repeated re-imaging loop after a Project LoneWolf install: the deployment now permanently promotes the internal Windows Boot Manager to the top of the firmware boot order (matching the proven built-in builder), so a finished machine boots its internal drive first instead of booting the USB again and re-wiping",
+                                          "The safeguard that neutralizes the USB after imaging now identifies the correct USB disk before acting, so it reliably disables the stick\u0027s boot files on split-partition sticks instead of leaving them able to boot"
+                                      ]
+                      },
+                      {
+                          "version":  "5.0.7",
+                          "date":  "2026-07-16",
+                          "changes":  [
+                                          "Project LoneWolf USB builds now start faster: the Windows image (ISO) is mounted directly from the IT share instead of first copying the roughly 10 GB image to this computer, so building begins almost immediately",
+                                          "No local copy of the Windows image is created or left behind on the computer",
+                                          "Improved reliability when building multiple USB sticks at once: image files are now copied to each stick with more tolerance for brief network interruptions, the shared image stays available until every stick finishes, and if a file copy does fail the error now names the specific file so it can be diagnosed"
+                                      ]
+                      },
+                      {
+                          "version":  "5.0.5",
+                          "date":  "2026-07-16",
+                          "changes":  [
+                                          "Project LoneWolf now pulls the Windows PE PowerShell components from the new per-architecture layout on the IT share (the WinPE-OCs folder is now split into AMD64 and ARM64 subfolders), so AMD64 builds continue to find every required component automatically; if the correct subfolder is missing the needed files, the build stops with a clear message naming the exact files and the folder it looked in"
+                                      ]
+                      },
+                      {
+                          "version":  "5.0.4",
+                          "date":  "2026-07-16",
+                          "changes":  [
+                                          "Project LoneWolf now guarantees PowerShell is present and fully working inside the deployment environment (WinPE): the required Windows PE components â€” including their matching language packs â€” are added to the boot image in the correct dependency order, every component is confirmed to install successfully, and the build now stops with a clear message naming any component missing from the IT share instead of quietly producing a stick that cannot run PowerShell",
+                                          "Hardened the safeguard that stops devices from getting stuck re-imaging in a loop, so a finished install always hands the device off to its internal drive even if PowerShell happens to be unavailable in the boot environment",
+                                          "Quieted routine USB drive-detection chatter so the console and logs are no longer flooded during builds; genuine errors are still shown"
+                                      ]
+                      },
+                      {
+                          "version":  "5.0.3",
+                          "date":  "2026-07-16",
+                          "changes":  [
+                                          "Project LoneWolf USB builds now run through the proven built-in builder and automatically use the newest official Windows image published to the share â€” no manual image selection is needed",
+                                          "Project LoneWolf can now build several USB sticks at the same time, with live per-stick progress shown for each drive",
+                                          "The Windows PE boot environment now always includes PowerShell, sourced directly from the IT share, so freshly built sticks reliably boot into the deployment environment",
+                                          "Other workflows (Windows Installation, Bitraser, Secure Wipe, and Bootable Media) are unchanged and continue to build exactly as before"
+                                      ]
+                      },
+                      {
+                          "version":  "5.0.2",
+                          "date":  "2026-07-16",
+                          "changes":  [
+                                          "Fixed PowerShell being missing inside the deployment environment (WinPE): the WinPE PowerShell components are now added to the boot image the USB actually boots, and the build now fails loudly instead of silently shipping a PowerShell-less stick",
+                                          "Fixed devices getting stuck re-imaging in a loop: the USB is now reliably disarmed the moment the image is applied, before the boot-handoff step, so a mid-script hiccup can no longer leave the stick armed and cause repeated re-imaging"
+                                      ]
+                      },
+                      {
+                          "version":  "5.0.1",
+                          "date":  "2026-07-16",
+                          "changes":  [
+                                          "Fixed a regression where a freshly built USB could boot into the Windows Setup language-selection screen instead of the Project LoneWolf deployment environment (the WinPE boot image was not being customized because its source file was read-only)"
+                                      ]
+                      },
+                      {
+                          "version":  "5.0.0",
+                          "date":  "2026-07-14",
+                          "changes":  [
+                                          "Launcher version 5.0.0; staging script version 3.0.0; FirstBase payload aligned to 3.0.0"
+                                      ]
+                      },
+                      {
+                          "version":  "4.0.0",
+                          "date":  "2026-07-12",
+                          "changes":  [
+                                          "USB sticks built with the full Project LoneWolf and Windows Installation workflows now reliably boot straight into the freshly installed Windows system, with no technician action needed to remove the boot menu or reboot manually",
+                                          "Added a new Re-arm USB action for finished USB sticks â€” restores a stick to a bootable installer so it can be reused for another build",
+                                          "Added a warning message if an organization\u0027s device policy is blocking USB drives from being used on this computer",
+                                          "Local build mode (developer setting) is now fully supported for every workflow, and no longer requires any network connection at all",
+                                          "Fixed a visual issue in the settings menu where two overlapping scrollbars could appear",
+                                          "Fixed toggle switches and several buttons in the settings menu that were not displaying correctly",
+                                          "Fixed a setting in the settings menu for showing the Getting Started Guide again that was not working",
+                                          "General cleanup of unused settings menu styling"
+                                      ]
+                      },
+                      {
+                          "version":  "3.0.0",
+                          "date":  "2026-07-07",
+                          "changes":  [
+                                          "New official Project LoneWolf logo",
+                                          "App taskbar and desktop icon updated to match the new logo",
+                                          "Theme switcher added â€” choose from Dark, Light, Midnight, Sunset, and Aurora color presets",
+                                          "New workflow added: Windows Installation â€” installs Windows automatically without the update payload, available for both Intel/AMD and Snapdragon devices",
+                                          "Workflows renamed for clarity: Intel/AMD replaces AMD64, Snapdragon replaces ARM64",
+                                          "Home screen workflows now display in a two-column grid for a cleaner layout",
+                                          "Workflow cards now show a glowing tag and the build date of the installed Windows image",
+                                          "USB drive sidebar is now collapsible â€” automatically hides when no drives are connected and shows a summary of connected, out-of-date, and unprovisioned sticks",
+                                          "Getting Started Guide button added to the Help page under the USB Builder section",
+                                          "Fixed a staging issue where the pre-configured boot environment was being silently overwritten on every update",
+                                          "Added scrubbing to script for path: \u0027C:\\ProgramData\\FirstBase\u0027 where scripts would reside after scrubbing"
+                                      ]
+                      },
+                      {
+                          "version":  "1.0.2",
+                          "date":  "2026-07-01",
+                          "changes":  [
+                                          "Added an interactive Getting Started Guide that walks you through your first USB build step by step",
+                                          "USB sticks are now built one at a time by default, improving reliability",
+                                          "Fixed a critical issue where the device continued to boot from the USB stick after Windows was installed",
+                                          "Fixed USB drives not being accessible on freshly-installed Windows machines",
+                                          "Getting Started Guide launches automatically on first open",
+                                          "Guide features a spotlight effect that highlights each part of the app with visual effects",
+                                          "The auto-start prompt no longer appears when no USB drives are connected",
+                                          "The Relaunch Guide button is only shown in developer mode",
+                                          "Fixed USB boot order not being properly set after Windows installation (error 0xc0000098)",
+                                          "Fixed the boot partition not being properly reset after deployment",
+                                          "Fixed pre-caching step being skipped in the Getting Started Guide",
+                                          "Fixed highlighted elements appearing blurred in the Getting Started Guide"
+                                      ]
+                      },
+                      {
+                          "version":  "1.0.1",
+                          "date":  "2026-06-25",
+                          "changes":  [
+                                          "Home screen now shows a Coming Soon section for upcoming tools",
+                                          "Workflows renamed to Windows Updates for clarity",
+                                          "Help guides rewritten with plain-language instructions",
+                                          "Added guidance for accessing the command prompt and settings during deployment",
+                                          "Bitraser Media Creator added as an upcoming workflow",
+                                          "Fixed build progress disappearing when switching pages mid-build",
+                                          "Fixed launcher update closing the app without reopening it",
+                                          "Fixed build status showing as waiting even while actively building",
+                                          "Fixed the auto-start prompt not appearing correctly after preparation finished",
+                                          "Fixed USB sticks sometimes receiving a full Windows installation instead of setup media"
+                                      ]
+                      },
+                      {
+                          "version":  "1.0.0",
+                          "date":  "2026-06-18",
+                          "changes":  [
+                                          "Initial release of Project LoneWolf Launcher",
+                                          "QA Workflow AMD64 support with parallel USB building",
+                                          "DISM apply-image for fast LAN-based USB writing",
+                                          "In-app guides and FAQ"
+                                      ]
+                      }
+                  ]
+}

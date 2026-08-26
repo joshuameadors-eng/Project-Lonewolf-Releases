@@ -1,0 +1,69 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  FirstBase — For Internal Use Only
+  Offline copy to %WINDIR%\Panther\unattend.xml during WinPE apply (Deploy\TechInstall.cmd).
+  Scope: unattended deployment support + Audit Mode FirstBase update handoff.
+
+  Auto-login strategy (2026-05-12):
+    All AutoLogon registry values + Administrator account enable/blank-password
+    are driven from SetupComplete.cmd during the *specialize* pass, BEFORE
+    Reseal Mode=Audit reboots the box into Audit Mode. This bypasses the
+    unattend pass system entirely and writes directly into the live OS, so
+    the values are guaranteed present when Audit Mode auto-logon code runs.
+
+    Trade-off: device has a blank-password Administrator for a few minutes
+    during Audit Mode. Acceptable because the device is offline/airgapped
+    during this window.
+
+    Why not use <AutoLogon>/<UserAccounts> here? Empirical: those blocks
+    in oobeSystem don't reliably apply when Reseal puts the box into
+    Audit Mode instead of completing OOBE. Registry-direct is bulletproof.
+-->
+<unattend xmlns="urn:schemas-microsoft-com:unattend">
+  <settings pass="specialize">
+    <component name="Microsoft-Windows-Deployment" processorArchitecture="amd64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State">
+      <RunSynchronous>
+        <RunSynchronousCommand wcm:action="add">
+          <Order>1</Order>
+          <Description>FirstBase pre-OOBE update gate</Description>
+          <Path>cmd /c if exist C:\Windows\Setup\Scripts\SetupComplete.cmd C:\Windows\Setup\Scripts\SetupComplete.cmd</Path>
+        </RunSynchronousCommand>
+      </RunSynchronous>
+    </component>
+  </settings>
+  <!--
+    2213d Bug B1: removed <Microsoft-Windows-Deployment><Reseal>Audit</Reseal>
+    block. Post-mortem on F:\fb-dump-final-0635 (Panther\UnattendGC\setupact.log
+    line 167, SysprepPanther\setupact.log line 9) proved that the Reseal=Audit
+    directive caused audit.exe /user to launch sysprep.exe /reboot with NO mode
+    flags on every audit-mode interactive logon. With no mode flags sysprep
+    opens the System Preparation Tool GUI dialog and waits FOREVER for human
+    input. Device sat at Audit desktop with that dialog open for ~14 hours
+    on the test machine.
+
+    Audit Mode persistence across reboots is now driven purely by the
+    AutoLogon + AutoAdminLogon + AutoLogonCount=5 + ForceAutoLogon=1 registry
+    values that SetupComplete.cmd's :ARM_AUTOLOGIN sets during the specialize
+    pass - verified working across multiple reboots in the same dump. The
+    loop drives all real sysprep invocations explicitly via
+    Invoke-FbOobeHandoff -> sysprep.exe /oobe /generalize /quiet, so there
+    is no functional need for a passive <Reseal> directive.
+
+    The Microsoft-Windows-Shell-Setup OOBE configuration below stays in place
+    so the eventual sysprep /oobe handoff fires with the right OOBE flags
+    (HideEULAPage / HideOEMRegistrationScreen / HideWirelessSetupInOOBE /
+    ProtectYourPC).
+  -->
+  <settings pass="oobeSystem">
+    <component name="Microsoft-Windows-Shell-Setup" processorArchitecture="amd64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State">
+      <OOBE>
+        <HideEULAPage>true</HideEULAPage>
+        <HideLocalAccountScreen>false</HideLocalAccountScreen>
+        <HideOEMRegistrationScreen>true</HideOEMRegistrationScreen>
+        <HideOnlineAccountScreens>false</HideOnlineAccountScreens>
+        <HideWirelessSetupInOOBE>true</HideWirelessSetupInOOBE>
+        <ProtectYourPC>3</ProtectYourPC>
+      </OOBE>
+    </component>
+  </settings>
+</unattend>

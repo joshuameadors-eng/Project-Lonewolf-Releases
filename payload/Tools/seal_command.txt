@@ -1,0 +1,150 @@
+:: ===========================================================================
+:: FirstBase MANUAL seal - 5.1.55
+:: ===========================================================================
+:: Run this from an ELEVATED (Administrator) Audit-Mode prompt. Several of the
+:: native reg / sc / schtasks removals below silently do nothing otherwise.
+::
+:: Paste the lines in order, or save the whole thing as a .cmd and run it
+:: elevated. Every line is written to work at an interactive prompt as well as
+:: in a batch file - there are no FOR loops, because those need doubled percent
+:: signs in a .cmd and single ones at a prompt, and getting that wrong here has
+:: historically been the difference between a clean seal and a half-cleaned
+:: device.
+::
+:: 5.1.55: this path now matches the automated seal in BOTH respects that used
+:: to differ.
+::
+::   1. The seal command. The automated path sealed with
+::      /oobe /generalize /shutdown through 5.1.54 while this file used
+::      /oobe /shutdown - neither of which is what ships now. Both are now
+::      sysprep.exe /oobe /reboot /quiet, the same command the proven reference
+::      builder has always used. /generalize is gone (a clean OOBE on the
+::      customer's first power-on is the only requirement, and plain /oobe
+::      already delivers it), and so is the power-off.
+::
+::   2. Log preservation. This file used to delete BOTH FirstBase trees
+::      outright, which threw away every provisioning log. It now preserves
+::      C:\Windows\Setup\FirstBase\Logs in place, merges the ProgramData logs
+::      in beneath it, and writes the same README + scrub manifest the
+::      automated cleanup writes.
+::
+:: WHAT THE OPERATOR SHOULD SEE AND DO AT THE END
+:: ----------------------------------------------
+:: The device REBOOTS. It comes up at the OOBE region / language screen.
+:: Reaching that screen is the proof that this device's boot chain works - it is
+:: the whole reason the seal reboots instead of powering off. Do not click
+:: through it. Power the device off from there and pack it.
+:: If it does NOT reach that screen, do not ship it: collect
+:: C:\Windows\Setup\FirstBase\Logs and hand the device to tech review.
+:: ===========================================================================
+
+:: --- 1. Remove all FirstBase scheduled tasks -------------------------------
+schtasks /Delete /TN "FirstBase\WindowsUpdateLoop" /F
+schtasks /Delete /TN "FirstBase\WindowsUpdateLoopOnLogon" /F
+schtasks /Delete /TN "FirstBase\WindowsUpdateLoopBoot2" /F
+schtasks /Delete /TN "FirstBase\WindowsUpdateLoopAnyLogon" /F
+schtasks /Delete /TN "FirstBase\SplashWatcher" /F
+schtasks /Delete /TN "FirstBase\SplashWatcherBoot2" /F
+schtasks /Delete /TN "FirstBase\UpdateSplash" /F
+schtasks /Delete /TN "FirstBase\UpdateSplashLayer4" /F
+schtasks /Delete /TN "FirstBase\DebugHotkeyWatcher" /F
+schtasks /Delete /TN "FirstBase\DeferredOobeSoundOnLogon" /F
+schtasks /Delete /TN "FirstBase\MdmScrub" /F
+
+:: --- 2. Remove FirstBase Run / RunOnce / RunOnceEx / Active Setup ----------
+:: The customer activation RunOnce is OpenWindowsActivationSettingsOnce. It is
+:: deliberately NOT FirstBase-prefixed and must NOT be deleted here.
+reg delete "HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\RunOnce" /v "!FirstBaseWuLoop" /f
+reg delete "HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\RunOnce" /v "!FirstBaseWuSplash" /f
+reg delete "HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Run" /v "FirstBaseWuLoopRun" /f
+reg delete "HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\RunOnceEx\0001" /v "FirstBaseWuLoop" /f
+reg delete "HKLM\SOFTWARE\Microsoft\Active Setup\Installed Components\{A7B8C9D0-E1F2-4A5B-9C01-2234DEFERREDSOUND}" /f
+del /f /q "%ProgramData%\Microsoft\Windows\Start Menu\Programs\Startup\FirstBaseOobeSoundAtLogon.vbs"
+
+:: --- 3. Privileged block teardown ------------------------------------------
+:: 2296: this path never runs FirstBaseOobeOperatorFinalize.ps1, so the MDM
+:: enrollment block applied by SetupComplete.cmd would otherwise survive into
+:: the sealed image and break the device's first Autopilot enrollment.
+:: Native + tolerant of already-absent values (errors are ignored).
+reg delete "HKLM\SOFTWARE\Policies\Microsoft\Windows\CurrentVersion\MDM" /v AutoEnrollMDM /f
+reg delete "HKLM\SOFTWARE\Policies\Microsoft\Windows\CurrentVersion\MDM" /v UseAADCredentialType /f
+sc config DmEnrollmentSvc start= auto
+sc start DmEnrollmentSvc
+:: 5.1.48: SetupComplete.cmd no longer creates the FirstBase-Block-Autopilot firewall
+:: rule. This best-effort removal is kept only for devices imaged from an older stick.
+powershell -NoProfile -ExecutionPolicy Bypass -Command "Remove-NetFirewallRule -DisplayName 'FirstBase-Block-Autopilot' -ErrorAction SilentlyContinue"
+:: 5.1.44-mdm-teardown: best-effort parity with the FirstBase\MdmScrub SYSTEM task (WU AU
+:: OOBE-restart-suppression policy + Defender path exclusions set by SetupComplete.cmd).
+reg delete "HKLM\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate\AU" /v NoAutoRebootWithLoggedOnUsers /f
+reg delete "HKLM\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate\AU" /v NoAutoUpdate /f
+powershell -NoProfile -ExecutionPolicy Bypass -Command "foreach ($ex in @('C:\Windows\Setup\FirstBase','C:\ProgramData\FirstBase','C:\ProgramData\Microsoft\Windows\Start Menu\Programs\Startup')) { Remove-MpPreference -ExclusionPath $ex -ErrorAction SilentlyContinue }"
+
+:: --- 4. Write the pipeline-completed marker --------------------------------
+:: Written BEFORE the trees are cleaned, because step 6 deletes the folder it
+:: lives in. Its only consumer is the specialize-pass arm suppression, which
+:: has already run by the time a manual seal is being performed.
+echo 1 > "C:\ProgramData\FirstBase\.pipeline-completed"
+
+:: --- 5. Merge the ProgramData logs into the surviving Logs folder ----------
+:: /XF excludes everything executable so the operator kit and splash scripts
+:: cannot be carried into a folder that survives on the customer's device.
+:: Exit codes 0-7 are success; 8 and above mean something did not copy.
+::
+:: TWO passes, plain first and /ZB second, and the order matters. /ZB asks for
+:: backup semantics, which lets robocopy read a log another process still holds
+:: open - but a context WITHOUT SeBackupPrivilege makes robocopy refuse the whole
+:: run outright rather than degrade, so a single /ZB line silently merges NOTHING
+:: when this is not run from a properly elevated prompt. Verified in a sandbox
+:: through real cmd.exe. Plain first therefore guarantees the evidence lands;
+:: /ZB second is a no-op on files already copied and picks up any that were open.
+robocopy "C:\ProgramData\FirstBase" "C:\Windows\Setup\FirstBase\Logs\ProgramData-FirstBase" /E /R:1 /W:1 /XJ /NFL /NDL /NJH /NJS /NP /XF *.ps1 *.psm1 *.psd1 *.cmd *.bat *.vbs *.vbe *.js *.jse *.wsf *.wsh *.hta *.exe *.dll *.com *.scr *.msi *.lnk *.pif *.reg
+robocopy "C:\ProgramData\FirstBase" "C:\Windows\Setup\FirstBase\Logs\ProgramData-FirstBase" /E /ZB /R:1 /W:1 /XJ /NFL /NDL /NJH /NJS /NP /XF *.ps1 *.psm1 *.psd1 *.cmd *.bat *.vbs *.vbe *.js *.jse *.wsf *.wsh *.hta *.exe *.dll *.com *.scr *.msi *.lnk *.pif *.reg
+
+:: --- 6. Remove the ProgramData tree in full --------------------------------
+:: Its evidence was merged in step 5. /q matters: without it rd prompts and the
+:: seal stalls waiting for a keypress nobody is watching for.
+rd /s /q "C:\ProgramData\FirstBase"
+
+:: --- 7. Scrub the Setup tree down to Logs and nothing else -----------------
+:: Mirroring an EMPTY folder onto the tree with /MIR purges everything in it,
+:: and /XD holds Logs back. This is used instead of a FOR loop for the reason in
+:: the header, and instead of "rd /s" because rd cannot spare a subfolder.
+:: /MIR also covers hidden and system entries - the payload writes several
+:: dotfile markers that a plain "del *" would leave behind.
+md "%TEMP%\fb-empty"
+robocopy "%TEMP%\fb-empty" "C:\Windows\Setup\FirstBase" /MIR /XD "C:\Windows\Setup\FirstBase\Logs" /R:1 /W:1 /NFL /NDL /NJH /NJS /NP
+rd /s /q "%TEMP%\fb-empty"
+
+:: --- 8. Remove SetupComplete.cmd ------------------------------------------
+:: Must not exist to be re-invoked on the customer's specialize pass.
+del /f /q "C:\Windows\Setup\Scripts\SetupComplete.cmd"
+
+:: --- 9. README + scrub manifest -------------------------------------------
+:: Same two artifacts the automated cleanup writes, so a manually sealed device
+:: is indistinguishable from an automatically sealed one during verification.
+echo FirstBase - preserved provisioning logs> "C:\Windows\Setup\FirstBase\Logs\README-FirstBase-Logs.txt"
+echo Sealed MANUALLY via Tools\seal_command.txt ^(5.1.55^).>> "C:\Windows\Setup\FirstBase\Logs\README-FirstBase-Logs.txt"
+echo C:\ProgramData\FirstBase was deleted; its logs were merged into ProgramData-FirstBase\.>> "C:\Windows\Setup\FirstBase\Logs\README-FirstBase-Logs.txt"
+echo Everything in C:\Windows\Setup\FirstBase was deleted EXCEPT this Logs folder.>> "C:\Windows\Setup\FirstBase\Logs\README-FirstBase-Logs.txt"
+echo This folder is inert and is safe to delete once the logs have been collected.>> "C:\Windows\Setup\FirstBase\Logs\README-FirstBase-Logs.txt"
+echo FirstBase 5.1.55 manual seal scrub manifest - %DATE% %TIME%> "C:\Windows\Setup\FirstBase\Logs\reaper-scrub-manifest.txt"
+echo Everything remaining under C:\Windows\Setup\FirstBase follows.>> "C:\Windows\Setup\FirstBase\Logs\reaper-scrub-manifest.txt"
+dir /s /b /a "C:\Windows\Setup\FirstBase" >> "C:\Windows\Setup\FirstBase\Logs\reaper-scrub-manifest.txt"
+echo Executable-residue search - any line below this one is a defect.>> "C:\Windows\Setup\FirstBase\Logs\reaper-scrub-manifest.txt"
+dir /s /b /a "C:\Windows\Setup\FirstBase\*.ps1" >> "C:\Windows\Setup\FirstBase\Logs\reaper-scrub-manifest.txt" 2>nul
+dir /s /b /a "C:\Windows\Setup\FirstBase\*.cmd" >> "C:\Windows\Setup\FirstBase\Logs\reaper-scrub-manifest.txt" 2>nul
+dir /s /b /a "C:\Windows\Setup\FirstBase\*.bat" >> "C:\Windows\Setup\FirstBase\Logs\reaper-scrub-manifest.txt" 2>nul
+dir /s /b /a "C:\Windows\Setup\FirstBase\*.vbs" >> "C:\Windows\Setup\FirstBase\Logs\reaper-scrub-manifest.txt" 2>nul
+dir /s /b /a "C:\Windows\Setup\FirstBase\*.exe" >> "C:\Windows\Setup\FirstBase\Logs\reaper-scrub-manifest.txt" 2>nul
+dir /s /b /a "C:\Windows\Setup\FirstBase\*.dll" >> "C:\Windows\Setup\FirstBase\Logs\reaper-scrub-manifest.txt" 2>nul
+
+:: --- 10. CHECK BEFORE SEALING ---------------------------------------------
+:: Open the manifest. If anything appears under the executable-residue heading,
+:: STOP - do not seal. That device would ship carrying runnable FirstBase code.
+notepad "C:\Windows\Setup\FirstBase\Logs\reaper-scrub-manifest.txt"
+
+:: --- 11. Seal: reboot to OOBE --------------------------------------------
+:: Identical to the automated seal. The device restarts and comes up at the OOBE
+:: region / language screen; that screen appearing is the proof the boot chain
+:: works. Power the device off from there to pack it.
+C:\Windows\System32\Sysprep\sysprep.exe /oobe /reboot /quiet

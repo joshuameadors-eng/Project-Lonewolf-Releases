@@ -25,7 +25,9 @@ Installer sources (PowerShell bootstrapper + compile script) also live in this r
 3. If .NET 8 Desktop Runtime x64 is already installed, the UI skips the download.
 4. Launch **Project LoneWolf Launcher** from the desktop shortcut.
 
-The package is **unsigned**. **Windows SmartScreen may warn** until the file builds reputation. SmartScreen is not hidden or bypassed.
+The package is **unsigned**. Install and update download unsigned PE from GitHub (`bin/LoneWolf-Launcher.exe` and this Setup). **Smart App Control** can block them as untrusted.
+
+**If Setup will not run:** Windows Security → App & browser control → Smart App Control. **Evaluation** can usually be turned **Off**. **On (enforcement)** often greys out Off and may need a PC reset; do not expect a one-click Off. Use **More info → Run anyway** / SmartScreen only if those dialogs still appear. Do **not** disable Windows Defender. Signing (Azure, about $10/month) is the real fix.
 
 ## Quick Update vs Launcher Update
 

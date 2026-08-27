@@ -5,7 +5,8 @@
 
 .DESCRIPTION
   Reads latest.json from the public Project-Lonewolf-Releases source tree
-  (raw.githubusercontent.com, unauthenticated). Setup comes from Releases.
+  (raw.githubusercontent.com, unauthenticated). Launcher Update uses the
+  portable exe in that tree. Setup is first-install only (stable tag installer).
   Does not use the ISO staging share for versioning or exe.
 
 .OUTPUTS
@@ -39,8 +40,9 @@ $output = [ordered]@{
     latestVersion   = $CurrentVersion
     shareScriptVersion = $null
     payloadVersion  = $null
-    exeName         = 'LoneWolf-Launcher-Setup.exe'
+    exeName         = 'LoneWolf-Launcher.exe'
     exePath         = $null
+    setupUrl        = $null
     source          = 'github-public-release'
     channel         = $null
 }
@@ -53,15 +55,21 @@ try {
     }
     $latestVersion = if ($vj.launcherVersion) { [string]$vj.launcherVersion } else { $CurrentVersion }
     $payload = if ($vj.payloadVersion) { [string]$vj.payloadVersion } else { $null }
-    $exeName = 'LoneWolf-Launcher-Setup.exe'
+    $exeName = 'LoneWolf-Launcher.exe'
     $exeUrl = $null
-    if ($vj.urls -and $vj.urls.setup) { $exeUrl = [string]$vj.urls.setup }
+    $setupUrl = $null
+    if ($vj.urls -and $vj.urls.portable) { $exeUrl = [string]$vj.urls.portable }
     else {
-        $exeUrl = 'https://github.com/joshuameadors-eng/Project-Lonewolf-Releases/releases/latest/download/LoneWolf-Launcher-Setup.exe'
+        $exeUrl = 'https://raw.githubusercontent.com/joshuameadors-eng/Project-Lonewolf-Releases/main/bin/LoneWolf-Launcher.exe'
+    }
+    if ($vj.urls -and $vj.urls.setup) { $setupUrl = [string]$vj.urls.setup }
+    else {
+        $setupUrl = 'https://github.com/joshuameadors-eng/Project-Lonewolf-Releases/releases/download/installer/LoneWolf-Launcher-Setup.exe'
     }
 
     $output.latestVersion = $latestVersion
     $output.exeName = $exeName
+    $output.setupUrl = $setupUrl
     $output.payloadVersion = $payload
     $output.shareScriptVersion = $payload
     $output.channel = if ($vj.channel) { [string]$vj.channel } else { 'release' }

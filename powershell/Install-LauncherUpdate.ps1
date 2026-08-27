@@ -112,6 +112,43 @@ try {
 Remove-Item -LiteralPath $SourceExe -Force -ErrorAction SilentlyContinue
 Log "Temp source cleaned up"
 
+# Desktop / Start Menu shortcuts: create if missing, never delete.
+function Ensure-LwUpdateShortcut {
+    param([string]$LnkPath, [string]$Target)
+    if (-not $Target -or -not (Test-Path -LiteralPath $Target)) { return }
+    if (Test-Path -LiteralPath $LnkPath) {
+        Log "Shortcut already present: $LnkPath"
+        return
+    }
+    $dir = Split-Path $LnkPath
+    if ($dir -and -not (Test-Path -LiteralPath $dir)) {
+        New-Item -ItemType Directory -Path $dir -Force | Out-Null
+    }
+    try {
+        $w = New-Object -ComObject WScript.Shell
+        $s = $w.CreateShortcut($LnkPath)
+        $s.TargetPath = $Target
+        $s.WorkingDirectory = Split-Path $Target
+        $s.WindowStyle = 1
+        $s.Description = 'Project LoneWolf Launcher'
+        $s.Save()
+        if (Test-Path -LiteralPath $LnkPath) {
+            $bytes = [System.IO.File]::ReadAllBytes($LnkPath)
+            if ($bytes.Length -gt 0x15) {
+                $bytes[0x15] = $bytes[0x15] -bor 0x20
+                [System.IO.File]::WriteAllBytes($LnkPath, $bytes)
+            }
+        }
+        Log "Created missing shortcut: $LnkPath"
+    } catch {
+        Log "WARN: could not create shortcut $LnkPath : $($_.Exception.Message)"
+    }
+}
+$desk = Join-Path ([Environment]::GetFolderPath('CommonDesktopDirectory')) 'Project LoneWolf Launcher.lnk'
+$sm = Join-Path ([Environment]::GetFolderPath('CommonStartMenu')) 'Programs\Project LoneWolf Launcher.lnk'
+Ensure-LwUpdateShortcut -LnkPath $desk -Target $TargetExe
+Ensure-LwUpdateShortcut -LnkPath $sm -Target $TargetExe
+
 # --- Relaunch as administrator ------------------------------------------------
 Log "Relaunching: $TargetExe"
 try {

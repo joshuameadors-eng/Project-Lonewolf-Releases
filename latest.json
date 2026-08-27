@@ -1,9 +1,10 @@
 {
-    "launcherVersion":  "5.4.7",
+    "launcherVersion":  "5.4.15",
     "payloadVersion":  "5.4.3",
     "channel":  "release",
     "source":  "github-public-source",
     "latestReleaseUrl":  "https://github.com/joshuameadors-eng/Project-Lonewolf-Releases/releases/latest",
+    "installerTag":  "installer",
     "manifestUrl":  "https://raw.githubusercontent.com/joshuameadors-eng/Project-Lonewolf-Releases/main/latest.json",
     "contentsApiUrl":  "https://api.github.com/repos/joshuameadors-eng/Project-Lonewolf-Releases/contents/latest.json",
     "defaultBranch":  "main",
@@ -24,7 +25,7 @@
                    "manifest":  "latest.json"
                },
     "urls":  {
-                 "setup":  "https://github.com/joshuameadors-eng/Project-Lonewolf-Releases/releases/latest/download/LoneWolf-Launcher-Setup.exe",
+                 "setup":  "https://github.com/joshuameadors-eng/Project-Lonewolf-Releases/releases/download/installer/LoneWolf-Launcher-Setup.exe",
                  "portable":  "https://raw.githubusercontent.com/joshuameadors-eng/Project-Lonewolf-Releases/main/bin/LoneWolf-Launcher.exe",
                  "payload":  "https://raw.githubusercontent.com/joshuameadors-eng/Project-Lonewolf-Releases/main/FirstBase-payload.zip",
                  "manifest":  "https://raw.githubusercontent.com/joshuameadors-eng/Project-Lonewolf-Releases/main/latest.json"

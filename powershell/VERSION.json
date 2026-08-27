@@ -2,7 +2,7 @@
     "_comment":  "Product/payload version (version and payloadVersion) is independent of launcherVersion. Packaged launcher versioning uses public GitHub latest.json. The ISO share must not host this file, launcher exe, or script updates.",
     "version":  "5.4.3",
     "payloadVersion":  "5.4.3",
-    "launcherVersion":  "5.4.14",
+    "launcherVersion":  "5.4.15",
     "launcherExeName":  "LoneWolf-Launcher.exe",
     "buildDate":  "2026-08-25",
     "stagingFolderPattern":  "Windows * ({arch})",

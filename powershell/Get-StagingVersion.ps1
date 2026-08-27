@@ -104,6 +104,11 @@ try {
         $output.wimAvailable = $true
         $ts  = $foundWim.LastWriteTimeUtc
         $output.wimLastModified = $ts.ToString('o')
+        $wimYmd = $ts.ToString('yyyy-MM-dd')
+        if ($output.architectures.Contains($wfUpper)) {
+            $output.architectures[$wfUpper].wimBuildDate = $wimYmd
+        }
+        $output.buildDate = $wimYmd
         if ($output.version -eq 'unknown') {
             $output.version = $ts.ToString('yyyyMMdd-HHmmss')
         }
@@ -129,6 +134,12 @@ try {
     if ($isoFiles.Count -gt 0) {
         $output.isoAvailable = $true
         $output.isoFile      = $isoFiles[0].Name
+        $isoYmd = $isoFiles[0].LastWriteTimeUtc.ToString('yyyy-MM-dd')
+        $output.isoLastWrite = $isoFiles[0].LastWriteTimeUtc.ToString('o')
+        $output.buildDate = $isoYmd
+        if ($output.architectures.Contains($wfUpper)) {
+            $output.architectures[$wfUpper].wimBuildDate = $isoYmd
+        }
     }
 } catch { }
 

@@ -144,6 +144,8 @@ function Get-LoneWolfInfo {
         lwScriptVersion = $null
         lwShareLauncherVersion = $null
         lwShareScriptVersion = $null
+        lwImageBuildDate = $null
+        lwWimBuildDate = $null
     }
 
     # Find the largest non-System partition  -  most likely to be WINSETUP NTFS
@@ -203,6 +205,18 @@ function Get-LoneWolfInfo {
                     try {
                         if ($lwJson.PSObject.Properties['shareScriptVersion'] -and $lwJson.shareScriptVersion) {
                             $lwInfo.lwShareScriptVersion = [string]$lwJson.shareScriptVersion
+                        }
+                    } catch {}
+                    try {
+                        if ($lwJson.PSObject.Properties['imageBuildDate'] -and $lwJson.imageBuildDate) {
+                            $lwInfo.lwImageBuildDate = [string]$lwJson.imageBuildDate
+                        }
+                    } catch {}
+                    try {
+                        if ($lwJson.PSObject.Properties['wimBuildDate'] -and $lwJson.wimBuildDate) {
+                            $lwInfo.lwWimBuildDate = [string]$lwJson.wimBuildDate
+                        } elseif ($lwInfo.lwImageBuildDate) {
+                            $lwInfo.lwWimBuildDate = $lwInfo.lwImageBuildDate
                         }
                     } catch {}
                     # Infer Dev when stamped launcher/script is ahead of the share versions recorded at build time.
@@ -270,6 +284,8 @@ try {
                 lwScriptVersion = $lwInfo.lwScriptVersion
                 lwShareLauncherVersion = $lwInfo.lwShareLauncherVersion
                 lwShareScriptVersion = $lwInfo.lwShareScriptVersion
+                lwImageBuildDate = $lwInfo.lwImageBuildDate
+                lwWimBuildDate = $lwInfo.lwWimBuildDate
             }
             [void]$result.Add($entry)
 

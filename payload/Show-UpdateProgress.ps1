@@ -2445,7 +2445,6 @@ function Invoke-FbSplashMaybeReclaimForegroundFromOobe {
         if ($pnLower -eq 'applicationframehost.exe') {
             $titleAfh = ''
             try { $titleAfh = Get-FbSplashWindowText -Hwnd $fg } catch {}
-            if ($titleAfh -match '(?i)setting') { return }
             $isOobeFg = $true
         }
         if (-not $isOobeFg) { return }
@@ -2692,7 +2691,7 @@ try {
             }
             # 2214l/2214m: OOBE Z-order hwndInsertAfter=splash  -  pass=1 after splash HWND_TOPMOST + WS_EX_TOPMOST, before Activate/reclaim.
             Invoke-FbSplashOobe2214lPlaceWwahostRootBehindSplash -RestackPass 1
-            # Operator apps (Settings, Explorer) sit above splash; do not HWND_TOPMOST/Activate the splash over them.
+            # Splash overtakes operator apps. $yield is always false unless F12/topmost-off.
             if ($yield) {
                 try { Invoke-FbSplashHonorOperatorForeground | Out-Null } catch {}
             } else {

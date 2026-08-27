@@ -66,7 +66,7 @@ $FirstBaseScriptVersion = @{
 
     'Build-UsbStick.ps1'               = '1.1.0'
 
-    'Invoke-WindowsUpdateLoop.ps1'       = '1.0.25'
+    'Invoke-WindowsUpdateLoop.ps1'       = '1.0.26'
 
     'SetupComplete.cmd'                = '1.0.6'
 
@@ -76,7 +76,7 @@ $FirstBaseScriptVersion = @{
 
 
 
-    'Show-UpdateProgress.ps1'          = '3.0.12'
+    'Show-UpdateProgress.ps1'          = '3.0.13'
 
 
 

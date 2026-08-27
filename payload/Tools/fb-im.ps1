@@ -28,7 +28,7 @@ param(
 Set-StrictMode -Off
 $ErrorActionPreference = 'SilentlyContinue'
 
-$FbImVersion = '2.0.23'
+$FbImVersion = '2.0.28'
 
 function Initialize-FbImWpf {
     # Must run BEFORE Show-FbImWindow is invoked. Parameter binding resolves
@@ -43,6 +43,11 @@ Initialize-FbImWpf
 # =============================================================================
 # PATHS -- must match Invoke-WindowsUpdateLoop.ps1 / FirstBaseOobeOperatorFinalize.ps1
 # =============================================================================
+$FbImFileDir = $PSScriptRoot
+if (-not $FbImFileDir) {
+    try { $FbImFileDir = Split-Path -Parent $MyInvocation.MyCommand.Path } catch {}
+}
+
 $FbRoot           = 'C:\Windows\Setup\FirstBase'
 $FbStateDir       = Join-Path $FbRoot 'State'
 $FbLogDir         = Join-Path $FbRoot 'Logs'
@@ -551,16 +556,27 @@ function Invoke-FbImRestartUpdates {
 
 function Find-FbDumpScript {
     $candidates = @()
-    if ($PSScriptRoot) {
-        $candidates += (Join-Path $PSScriptRoot 'fb-dump.ps1')
-        $payloadDir = Split-Path -Path $PSScriptRoot -Parent
+    # USB destage first so splash does not keep using a stale C: copy.
+    try {
+        Get-CimInstance -ClassName Win32_LogicalDisk -Filter 'DriveType=2' -ErrorAction SilentlyContinue | ForEach-Object {
+            $root = $_.DeviceID + '\'
+            $candidates += (Join-Path $root 'FirstBase\WUPayload\Tools\fb-dump.ps1')
+            $candidates += (Join-Path $root 'WUPayload\Tools\fb-dump.ps1')
+            $candidates += (Join-Path $root 'Tools\fb-dump.ps1')
+        }
+    } catch {}
+    $toolDir = $FbImFileDir
+    if (-not $toolDir) { $toolDir = $PSScriptRoot }
+    if ($toolDir) {
+        $candidates += (Join-Path $toolDir 'fb-dump.ps1')
+        $payloadDir = Split-Path -Path $toolDir -Parent
         if ($payloadDir) {
             $candidates += (Join-Path $payloadDir 'Tools\fb-dump.ps1')
             $stickRoot = Split-Path -Path $payloadDir -Parent
             if ($stickRoot) { $candidates += (Join-Path $stickRoot 'WUPayload\Tools\fb-dump.ps1') }
         }
         try {
-            $qualifier = Split-Path -Path $PSScriptRoot -Qualifier
+            $qualifier = Split-Path -Path $toolDir -Qualifier
             if ($qualifier) {
                 $volumeRoot = $qualifier + '\'
                 $candidates += (Join-Path $volumeRoot 'FirstBase\WUPayload\Tools\fb-dump.ps1')
@@ -571,9 +587,269 @@ function Find-FbDumpScript {
     $candidates += (Join-Path $FbRoot 'Tools\fb-dump.ps1')
     $candidates += (Join-Path $FbRoot 'WUPayload\Tools\fb-dump.ps1')
     foreach ($c in $candidates) {
-        if (Test-Path -LiteralPath $c) { return $c }
+        if ($c -and (Test-Path -LiteralPath $c)) { return $c }
     }
     return $null
+}
+
+function Write-FbImAsciiNote {
+    param([string]$Path, [string]$Text)
+    if (-not $Path) { return }
+    try {
+        $body = [string]$Text
+        if (-not $body.EndsWith("`r`n") -and -not $body.EndsWith("`n")) { $body = $body + "`r`n" }
+        [System.IO.File]::WriteAllText($Path, $body, [System.Text.Encoding]::ASCII)
+    } catch {}
+}
+
+function Copy-FbImOnDeviceLogs {
+    param([string]$DestFolder)
+    if (-not $DestFolder) { return 0 }
+    try {
+        if (-not (Test-Path -LiteralPath $DestFolder)) {
+            New-Item -ItemType Directory -Path $DestFolder -Force -ErrorAction Stop | Out-Null
+        }
+    } catch { return 0 }
+
+    $copied = 0
+    $copyOne = {
+        param([string]$Source, [string]$DestDir, [string]$Label)
+        $safeLabel = ($Label -replace '[^\w\-]', '-')
+        if (-not $safeLabel) { $safeLabel = 'source' }
+        $missingPath = Join-Path $DestFolder ($safeLabel + '-MISSING.txt')
+        if (-not $Source -or -not (Test-Path -LiteralPath $Source)) {
+            Write-FbImAsciiNote -Path $missingPath -Text ('Source missing: ' + [string]$Source)
+            return 0
+        }
+        $n = 0
+        try { New-Item -ItemType Directory -Path $DestDir -Force -ErrorAction SilentlyContinue | Out-Null } catch {}
+        $files = @()
+        try { $files = @(Get-ChildItem -LiteralPath $Source -Force -Recurse -File -ErrorAction SilentlyContinue) } catch { $files = @() }
+        foreach ($f in $files) {
+            try {
+                $rel = $f.FullName.Substring($Source.Length).TrimStart('\')
+                $target = Join-Path $DestDir $rel
+                $parent = Split-Path -Parent $target
+                if ($parent -and -not (Test-Path -LiteralPath $parent)) {
+                    New-Item -ItemType Directory -Path $parent -Force -ErrorAction SilentlyContinue | Out-Null
+                }
+                Copy-Item -LiteralPath $f.FullName -Destination $target -Force -ErrorAction Stop
+                $n++
+            } catch {
+                $skipPath = Join-Path $DestFolder 'COPY-SKIP.txt'
+                $msg = 'SKIP: ' + $f.FullName + ' :: ' + $_.Exception.Message
+                try { Add-Content -LiteralPath $skipPath -Value $msg -Encoding ASCII -ErrorAction SilentlyContinue } catch {}
+            }
+        }
+        return $n
+    }
+
+    $copied += & $copyOne 'C:\Windows\Setup\FirstBase\Logs' (Join-Path $DestFolder 'Logs') 'Setup-FirstBase-Logs'
+    $copied += & $copyOne 'C:\Windows\Setup\FirstBase\State' (Join-Path $DestFolder 'State') 'Setup-FirstBase-State'
+    $copied += & $copyOne 'C:\ProgramData\FirstBase' (Join-Path $DestFolder 'ProgramData-FirstBase') 'ProgramData-FirstBase'
+    $wuRoot = 'C:\Windows\Setup\FirstBase'
+    $wuDest = Join-Path $DestFolder 'Logs'
+    try { New-Item -ItemType Directory -Path $wuDest -Force -ErrorAction SilentlyContinue | Out-Null } catch {}
+    $extra = @()
+    try {
+        $extra = @(Get-ChildItem -LiteralPath $wuRoot -Force -File -ErrorAction SilentlyContinue |
+            Where-Object { $_.Name -like 'WU-*.log' -or $_.Name -like '*.log' })
+    } catch { $extra = @() }
+    foreach ($f in $extra) {
+        try {
+            Copy-Item -LiteralPath $f.FullName -Destination (Join-Path $wuDest $f.Name) -Force -ErrorAction Stop
+            $copied++
+        } catch {
+            $skipPath = Join-Path $DestFolder 'COPY-SKIP.txt'
+            $msg = 'SKIP: ' + $f.FullName + ' :: ' + $_.Exception.Message
+            try { Add-Content -LiteralPath $skipPath -Value $msg -Encoding ASCII -ErrorAction SilentlyContinue } catch {}
+        }
+    }
+    return $copied
+}
+
+function Copy-FbImDumpExtras {
+    param([string]$DestFolder)
+    if (-not $DestFolder) { return 0 }
+    $n = Copy-FbImOnDeviceLogs -DestFolder $DestFolder
+    $usbRoot = Join-Path $DestFolder 'UsbStickRoot'
+    try { New-Item -ItemType Directory -Path $usbRoot -Force -ErrorAction SilentlyContinue | Out-Null } catch {}
+    try {
+        Get-CimInstance -ClassName Win32_LogicalDisk -Filter 'DriveType=2' -ErrorAction SilentlyContinue | ForEach-Object {
+            $dl = ([string]$_.DeviceID).TrimEnd(':').ToUpper()
+            if (-not $dl -or $dl -eq 'C') { return }
+            foreach ($leaf in @(
+                    'FirstBase-Deploy.log', 'FirstBase-Trace.log', 'FirstBase-DISM.log',
+                    'FirstBase-DISM-wrapper.log', 'FirstBase-winpe.log', 'FirstBase-disksetup.log',
+                    'fb-im-last-launch.log', 'FirstBase-Layout.txt', 'FirstBase-WIPE-PENDING.txt'
+                )) {
+                $src = $dl + ':\' + $leaf
+                if (Test-Path -LiteralPath $src) {
+                    try {
+                        $dstName = [IO.Path]::GetFileNameWithoutExtension($leaf) + '-' + $dl + [IO.Path]::GetExtension($leaf)
+                        Copy-Item -LiteralPath $src -Destination (Join-Path $usbRoot $dstName) -Force -ErrorAction Stop
+                        $n++
+                    } catch {}
+                }
+            }
+        }
+    } catch {}
+    try {
+        $tl = Join-Path $DestFolder 'tasklist.txt'
+        (Get-Process | Select-Object Name, Id, CPU | Format-Table -AutoSize | Out-String) |
+            Set-Content -LiteralPath $tl -Encoding ASCII -ErrorAction SilentlyContinue
+        if (Test-Path -LiteralPath $tl) { $n++ }
+    } catch {}
+    try {
+        $si = Join-Path $DestFolder 'sysinfo.txt'
+        $lines = @(
+            ('Computer=' + $env:COMPUTERNAME)
+            ('Captured=' + (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'))
+            '=== Disk volumes ==='
+        )
+        try {
+            $lines += @(Get-CimInstance Win32_LogicalDisk -ErrorAction SilentlyContinue |
+                ForEach-Object { '{0} {1} {2}' -f $_.DeviceID, $_.VolumeName, $_.FileSystem })
+        } catch {}
+        [System.IO.File]::WriteAllLines($si, $lines, [System.Text.Encoding]::ASCII)
+        $n++
+    } catch {}
+    return $n
+}
+
+function Get-FbImDumpFileCount {
+    param([string]$DestFolder)
+    if (-not $DestFolder -or -not (Test-Path -LiteralPath $DestFolder)) { return 0 }
+    try {
+        return @(Get-ChildItem -LiteralPath $DestFolder -Recurse -File -Force -ErrorAction SilentlyContinue |
+            Where-Object {
+                $_.Name -ne 'FirstBase-Issue.md' -and
+                $_.Name -ne 'DUMP-SUMMARY.txt' -and
+                $_.Name -ne 'fb-dump-host.txt'
+            }).Count
+    } catch { return 0 }
+}
+
+function Start-FbImDumpProcess {
+    param([string]$DumpScript, [string]$DestFolder)
+    $psExe = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+    if (-not (Test-Path -LiteralPath $psExe)) { $psExe = 'powershell.exe' }
+    $workDir = Split-Path -Parent $DumpScript
+    if (-not $workDir) { $workDir = $env:SystemRoot }
+    $esc = {
+        param([string]$s)
+        if ($null -eq $s) { return '' }
+        return ([string]$s).Replace("'", "''")
+    }
+    $dumpQ = & $esc $DumpScript
+    $destQ = & $esc $DestFolder
+    # One -Command string so -Dest binds as a named parameter. Do not use -File:
+    # Start-Process Hidden + -File often dropped -Dest on PS 5.1.
+    $command = "& { & '$dumpQ' -Dest '$destQ' -NoPrompt }"
+    $arg = '-NoProfile -ExecutionPolicy Bypass -NoLogo -NonInteractive -Command "' + $command + '"'
+    $hostLog = Join-Path $DestFolder 'fb-dump-host.txt'
+    $hostLines = @(
+        ('ps=' + $psExe)
+        ('file=' + $DumpScript)
+        ('dest=' + $DestFolder)
+        ('args=' + $arg)
+        ('cwd=' + $workDir)
+        ('started=' + (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'))
+    )
+    try { [System.IO.File]::WriteAllLines($hostLog, $hostLines, [System.Text.Encoding]::ASCII) } catch {}
+    $p = $null
+    try {
+        $psi = New-Object System.Diagnostics.ProcessStartInfo
+        $psi.FileName = $psExe
+        $psi.Arguments = $arg
+        $psi.WorkingDirectory = $workDir
+        $psi.UseShellExecute = $false
+        $psi.CreateNoWindow = $true
+        $p = [System.Diagnostics.Process]::Start($psi)
+    } catch {
+        $p = $null
+    }
+    if (-not $p) {
+        try {
+            $p = Start-Process -FilePath $psExe -ArgumentList $arg -WorkingDirectory $workDir -WindowStyle Hidden -PassThru -ErrorAction Stop
+        } catch {
+            $p = $null
+        }
+    }
+    if (-not $p) {
+        # Last resort: nested runspace so fb-dump's `exit` cannot kill splash ShowDialog.
+        return Start-FbImDumpRunspace -DumpScript $DumpScript -DestFolder $DestFolder
+    }
+    return $p
+}
+
+function Start-FbImDumpRunspace {
+    param([string]$DumpScript, [string]$DestFolder)
+    $rs = [System.Management.Automation.Runspaces.RunspaceFactory]::CreateRunspace()
+    $rs.ApartmentState = [System.Threading.ApartmentState]::MTA
+    $rs.Open()
+    $ps = [System.Management.Automation.PowerShell]::Create()
+    $ps.Runspace = $rs
+    [void]$ps.AddScript(@"
+param(`$DumpScript, `$DestFolder)
+`$ErrorActionPreference = 'Continue'
+& `$DumpScript -Dest `$DestFolder -NoPrompt
+"@).AddArgument($DumpScript).AddArgument($DestFolder)
+    $handle = $ps.BeginInvoke()
+    if (-not $handle) { throw 'Dump helper runspace did not start.' }
+    return [pscustomobject]@{
+        PSObject        = $true
+        IsRunspace      = $true
+        PowerShell      = $ps
+        Handle          = $handle
+        Runspace        = $rs
+        HasExited       = $false
+        ExitCode        = 0
+        Refresh         = $null
+    }
+}
+
+function Update-FbImDumpHandle {
+    param($Handle)
+    if (-not $Handle) { return $null }
+    try {
+        if ($Handle.PSObject.Properties.Name -contains 'IsRunspace' -and $Handle.IsRunspace) {
+            $done = [bool]$Handle.Handle.IsCompleted
+            $Handle.HasExited = $done
+            if ($done) {
+                try { $Handle.PowerShell.EndInvoke($Handle.Handle) | Out-Null } catch {}
+                try { $Handle.ExitCode = 0 } catch {}
+                try { $Handle.PowerShell.Dispose() } catch {}
+                try { $Handle.Runspace.Close(); $Handle.Runspace.Dispose() } catch {}
+            }
+            return $Handle
+        }
+    } catch {}
+    try { $Handle.Refresh() } catch {}
+    return $Handle
+}
+
+function Invoke-FbImImmediateShutdown {
+    $result = [ordered]@{
+        Ok      = $false
+        Message = ''
+    }
+    $shutdown = Join-Path $env:SystemRoot 'System32\shutdown.exe'
+    if (-not (Test-Path -LiteralPath $shutdown)) { $shutdown = 'shutdown.exe' }
+    try {
+        Start-Process -FilePath $shutdown -ArgumentList @('/s', '/f', '/t', '0') -WindowStyle Hidden -ErrorAction Stop | Out-Null
+        $result.Ok = $true
+        $result.Message = 'Shutting down.'
+        return [pscustomobject]$result
+    } catch {}
+    try {
+        Stop-Computer -Force -ErrorAction Stop
+        $result.Ok = $true
+        $result.Message = 'Shutting down.'
+    } catch {
+        $result.Message = $_.Exception.Message
+    }
+    return [pscustomobject]$result
 }
 
 function Get-FbImRemovableDumpRoot {
@@ -910,9 +1186,10 @@ function Show-FbImWindow {
     $rawVer = ''
     if ($FbBuild.Launcher) { $rawVer = [string]$FbBuild.Launcher }
     $rawVer = ($rawVer -replace '[^0-9.]', '').Trim('.')
-    if ([string]::IsNullOrWhiteSpace($rawVer)) { $rawVer = '5.3.15' }
+    if ([string]::IsNullOrWhiteSpace($rawVer)) { $rawVer = '5.4.12' }
     $subtitle = 'v' + $rawVer
     $embedBackVisibility = if ($EmbedHost) { 'Visible' } else { 'Collapsed' }
+    $script:FbImEmbedHosted = [bool]$EmbedHost
     $footerText = 'For Internal Use Only'
 
     [xml]$xaml = @"
@@ -925,9 +1202,19 @@ function Show-FbImWindow {
         Background="#FF02040A"
         FontFamily="Segoe UI"
         ResizeMode="CanResize">
-  <Viewbox Name="FbImScaleBox" Stretch="Uniform" StretchDirection="Both"
-           HorizontalAlignment="Stretch" VerticalAlignment="Stretch">
-  <Grid Name="FbImRoot" Width="1080" Height="640" Margin="16">
+  <!-- ScrollViewer is the embed root. Nested Viewbox plus a fixed 640px canvas
+       clipped notes off the splash DesignCanvas with no wheel target.
+       Fill the host; scroll only if details overflow. -->
+  <ScrollViewer Name="FbImScroller"
+                VerticalScrollBarVisibility="Auto"
+                HorizontalScrollBarVisibility="Disabled"
+                CanContentScroll="False"
+                PanningMode="VerticalOnly"
+                HorizontalAlignment="Stretch"
+                VerticalAlignment="Stretch"
+                Background="#FF02040A"
+                Focusable="True">
+  <Grid Name="FbImRoot" Margin="14,10,14,10" MinWidth="560">
     <Grid.Resources>
     <Style TargetType="Button" x:Key="PrimaryBtn">
       <Setter Property="Background" Value="#FF0A1B33"/>
@@ -994,111 +1281,146 @@ function Show-FbImWindow {
       </StackPanel>
     </DockPanel>
 
-    <!-- Main work area (status + actions) -->
+    <!-- Status | actions on one row; notes take leftover height (on-screen in splash). -->
     <Grid Name="MainWorkArea" Grid.Row="1">
       <Grid.RowDefinitions>
         <RowDefinition Height="Auto"/>
-        <RowDefinition Height="*"/>
+        <RowDefinition Height="*" MinHeight="132"/>
       </Grid.RowDefinitions>
+      <Grid.ColumnDefinitions>
+        <ColumnDefinition Width="268"/>
+        <ColumnDefinition Width="*"/>
+      </Grid.ColumnDefinitions>
 
-    <!-- Status hero -->
-    <Border Grid.Row="0" Name="StatusHero" CornerRadius="8" Padding="14,10" Margin="0,0,0,10"
-            Background="#FF071325" BorderBrush="#FF123154" BorderThickness="1">
+    <Border Grid.Row="0" Grid.Column="0" Name="StatusHero" CornerRadius="8" Padding="12,10"
+            Margin="0,0,10,8" Background="#FF071325" BorderBrush="#FF123154" BorderThickness="1"
+            VerticalAlignment="Stretch">
       <Grid>
-        <Grid.ColumnDefinitions>
-          <ColumnDefinition Width="*"/>
-          <ColumnDefinition Width="Auto"/>
-        </Grid.ColumnDefinitions>
-        <StackPanel Grid.Column="0">
-          <TextBlock Name="StatusLabel" Text="Checking device..." FontSize="11" Foreground="#FF6B8CB0"
-                     FontWeight="SemiBold" Margin="0,0,0,4"/>
-          <TextBlock Name="StatusHeadline" Text="..." FontSize="24" FontWeight="Bold" Foreground="#FFB0C4DE"/>
-          <ItemsControl Name="StatusReasons" Margin="0,6,0,0">
+        <Grid.RowDefinitions>
+          <RowDefinition Height="Auto"/>
+          <RowDefinition Height="Auto"/>
+          <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+        <DockPanel Grid.Row="0" Margin="0,0,0,8">
+          <Ellipse Name="StatusLamp" Width="16" Height="16" Fill="#FF6B8CB0"
+                   Stroke="#FF8FB4D9" StrokeThickness="2"
+                   DockPanel.Dock="Left" VerticalAlignment="Center" Margin="0,0,8,0"/>
+          <Button Name="BtnRefresh" DockPanel.Dock="Right" Content="Check"
+                  Style="{StaticResource QuietBtn}" Padding="8,4" FontSize="11" MinWidth="64"/>
+          <TextBlock Name="StatusLabel" Text="Device" FontSize="11" Foreground="#FF6B8CB0"
+                     FontWeight="SemiBold" VerticalAlignment="Center"/>
+        </DockPanel>
+        <StackPanel Grid.Row="1">
+          <Border Name="StatusSealChipBorder" Padding="8,2" CornerRadius="4" HorizontalAlignment="Left"
+                  Background="#FF1A0A0A" BorderBrush="#FFC62828" BorderThickness="1" Margin="0,0,0,6">
+            <TextBlock Name="StatusSealChip" Text="..." FontSize="10" FontWeight="Bold"
+                       Foreground="#FFEF5350"/>
+          </Border>
+          <TextBlock Name="StatusHeadline" Text="..." FontSize="16" FontWeight="Bold"
+                     Foreground="#FFB0C4DE" TextWrapping="Wrap"/>
+          <TextBlock Name="StatusIdentity" Text="" FontSize="10" Foreground="#FF4A6A88" Margin="0,4,0,6"/>
+          <ItemsControl Name="StatusReasons" MaxHeight="52">
             <ItemsControl.ItemTemplate>
               <DataTemplate>
-                <TextBlock Text="{Binding}" FontSize="13" Foreground="#FFB0C4DE" Margin="0,1,0,1" TextWrapping="Wrap"/>
+                <TextBlock Text="{Binding}" FontSize="11" Foreground="#FFB0C4DE" Margin="0,1,0,1" TextWrapping="Wrap"/>
               </DataTemplate>
             </ItemsControl.ItemTemplate>
           </ItemsControl>
-          <Expander Name="DetailsExpander" Header="Show details" Margin="0,8,0,0"
-                    Foreground="#FF6B8CB0" FontSize="11">
-            <ItemsControl Name="StatusDetails" Margin="0,8,0,0">
-              <ItemsControl.ItemTemplate>
-                <DataTemplate>
-                  <TextBlock Text="{Binding}" FontSize="12" Foreground="#FF6B8CB0" Margin="0,1,0,1" FontFamily="Consolas" TextWrapping="Wrap"/>
-                </DataTemplate>
-              </ItemsControl.ItemTemplate>
-            </ItemsControl>
-          </Expander>
         </StackPanel>
-        <StackPanel Grid.Column="1" VerticalAlignment="Top" Margin="16,0,0,0">
-          <Button Name="BtnRefresh" Content="Check again" Style="{StaticResource QuietBtn}" MinWidth="120"/>
-        </StackPanel>
+        <Expander Grid.Row="2" Name="DetailsExpander" Header="Details" Margin="0,6,0,0"
+                  Foreground="#FF6B8CB0" FontSize="11">
+          <ItemsControl Name="StatusDetails" Margin="0,6,0,0">
+            <ItemsControl.ItemTemplate>
+              <DataTemplate>
+                <TextBlock Text="{Binding}" FontSize="11" Foreground="#FF6B8CB0" Margin="0,1,0,1"
+                           FontFamily="Consolas" TextWrapping="Wrap"/>
+              </DataTemplate>
+            </ItemsControl.ItemTemplate>
+          </ItemsControl>
+        </Expander>
       </Grid>
     </Border>
 
-    <!-- Actions -->
-    <Grid Grid.Row="1">
-      <Grid.ColumnDefinitions>
-        <ColumnDefinition Width="*" MinWidth="180"/>
-        <ColumnDefinition Width="16"/>
-        <ColumnDefinition Width="1.4*" MinWidth="240"/>
-      </Grid.ColumnDefinitions>
-
-      <Border Grid.Column="0" Name="ActionsPanel" CornerRadius="8" Padding="12" Background="#FF071325"
-              BorderBrush="#FF123154" BorderThickness="1" Grid.ColumnSpan="3">
-        <StackPanel>
-          <TextBlock Text="Actions" FontSize="11" Foreground="#FF6B8CB0" FontWeight="SemiBold" Margin="0,0,0,8"/>
-          <Button Name="BtnRestart" Content="Restart updates" Style="{StaticResource PrimaryBtn}"
-                  HorizontalAlignment="Stretch" Margin="0,0,0,6"/>
-          <TextBlock Name="RestartHint" Text="Clears stuck locks and starts updates again."
-                     FontSize="11" Foreground="#FF6B8CB0" TextWrapping="Wrap" Margin="0,0,0,10"/>
-          <Button Name="BtnCollect" Content="Collect logs" Style="{StaticResource PrimaryBtn}"
-                  HorizontalAlignment="Stretch" Margin="0,0,0,6"/>
-          <Button Name="BtnChooseDumpFolder" Content="Choose export folder" Style="{StaticResource QuietBtn}"
-                  HorizontalAlignment="Stretch" Margin="0,0,0,6"/>
-          <TextBlock Name="DumpDestHint" Text="Logs export to a USB stick, or to a folder you choose. Other tools work without a stick."
-                     FontSize="11" Foreground="#FF6B8CB0" TextWrapping="Wrap" Margin="0,0,0,10"/>
-          <Button Name="BtnSeal" Content="Seal device" Style="{StaticResource PrimaryBtn}"
-                  HorizontalAlignment="Stretch" Margin="0,0,0,6"
-                  BorderBrush="#FFEF5350"/>
-          <TextBlock Text="Scrub and seal, then Restart or Shutdown. Both arm customer OOBE."
-                     FontSize="11" Foreground="#FF6B8CB0" TextWrapping="Wrap"/>
-          <TextBlock Name="ActionMessage" Text="" FontSize="12" TextWrapping="Wrap" Margin="0,10,0,0"
-                     Foreground="#FF22D3EE"/>
-        </StackPanel>
-      </Border>
-
-      <Border Grid.Column="2" Name="NotesPanel" CornerRadius="10" Padding="18" Background="#FF071325"
-              BorderBrush="#FF123154" BorderThickness="1" Visibility="Collapsed">
-        <Grid>
-          <Grid.RowDefinitions>
-            <RowDefinition Height="Auto"/>
-            <RowDefinition Height="*"/>
-            <RowDefinition Height="Auto"/>
-            <RowDefinition Height="Auto"/>
-          </Grid.RowDefinitions>
-          <TextBlock Grid.Row="0" Text="What went wrong?" FontSize="14" FontWeight="SemiBold"
-                     Foreground="#FFE8F4FF" Margin="0,0,0,8"/>
-          <TextBox Grid.Row="1" Name="NotesBox" AcceptsReturn="True" TextWrapping="Wrap"
-                   VerticalScrollBarVisibility="Auto" FontSize="14"
-                   Background="#FF030609" Foreground="#FFE8F4FF" BorderBrush="#FF123154"
-                   BorderThickness="1" Padding="10" CaretBrush="#FF22D3EE"/>
-          <ProgressBar Grid.Row="2" Name="CollectProgress" Height="6" Margin="0,12,0,8"
-                       IsIndeterminate="False" Minimum="0" Maximum="100" Value="0"
-                       Background="#FF0A1B33" Foreground="#FF22D3EE" BorderThickness="0"
+    <Border Grid.Row="0" Grid.Column="1" Name="ActionsPanel" CornerRadius="8" Padding="10,10"
+            Margin="0,0,0,8" Background="#FF071325" BorderBrush="#FF123154" BorderThickness="1">
+      <Grid>
+        <Grid.RowDefinitions>
+          <RowDefinition Height="Auto"/>
+          <RowDefinition Height="Auto"/>
+          <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+        <TextBlock Grid.Row="0" Text="Actions" FontSize="11" Foreground="#FF6B8CB0"
+                   FontWeight="SemiBold" Margin="0,0,0,6"/>
+        <UniformGrid Grid.Row="1" Name="ActionsGrid" Rows="2" Columns="2" Margin="0,0,0,4">
+          <StackPanel Margin="0,0,6,6">
+            <Button Name="BtnRestart" Content="Restart updates" Style="{StaticResource PrimaryBtn}"
+                    HorizontalAlignment="Stretch" MinHeight="34"/>
+            <TextBlock Name="RestartHint" Text="Clears stuck locks and starts updates again."
+                       FontSize="10" Foreground="#FF6B8CB0" TextWrapping="Wrap" Margin="0,4,0,0"/>
+          </StackPanel>
+          <StackPanel Margin="6,0,0,6">
+            <Button Name="BtnCollect" Content="Collect logs" Style="{StaticResource PrimaryBtn}"
+                    HorizontalAlignment="Stretch" MinHeight="34"/>
+            <TextBlock Name="DumpDestHint" Text="Export to a USB stick, or a folder you choose."
+                       FontSize="10" Foreground="#FF6B8CB0" TextWrapping="Wrap" Margin="0,4,0,0"/>
+          </StackPanel>
+          <StackPanel Margin="0,6,6,0">
+            <Button Name="BtnChooseDumpFolder" Content="Choose export folder" Style="{StaticResource QuietBtn}"
+                    HorizontalAlignment="Stretch" MinHeight="34"/>
+            <Button Name="BtnShutdown" Content="Shutdown" Style="{StaticResource PrimaryBtn}"
+                    HorizontalAlignment="Stretch" MinHeight="34" Margin="0,6,0,0"
+                    BorderBrush="#FFEF5350" Visibility="Collapsed"/>
+            <TextBlock Name="ShutdownHint" Text="Power off this device."
+                       FontSize="10" Foreground="#FF6B8CB0" TextWrapping="Wrap" Margin="0,4,0,0"
                        Visibility="Collapsed"/>
-          <DockPanel Grid.Row="3">
-            <Button Name="BtnSaveNotes" DockPanel.Dock="Right" Content="Save notes"
-                    Style="{StaticResource QuietBtn}" Margin="12,0,0,0" Visibility="Collapsed"/>
-            <Button Name="BtnOpenFolder" DockPanel.Dock="Right" Content="Open folder"
-                    Style="{StaticResource QuietBtn}" Margin="12,0,0,0" Visibility="Collapsed"/>
-            <TextBlock Name="CollectStatus" Text="Type what happened. Collection is running."
-                       FontSize="12" Foreground="#FF6B8CB0" TextWrapping="Wrap" VerticalAlignment="Center"/>
-          </DockPanel>
-        </Grid>
-      </Border>
-    </Grid>
+          </StackPanel>
+          <StackPanel Margin="6,6,0,0">
+            <Button Name="BtnSeal" Content="Seal device" Style="{StaticResource PrimaryBtn}"
+                    HorizontalAlignment="Stretch" MinHeight="34"
+                    BorderBrush="#FFEF5350"/>
+            <TextBlock Text="Scrub and seal, then Restart or Shutdown. Both arm customer OOBE."
+                       FontSize="10" Foreground="#FF6B8CB0" TextWrapping="Wrap" Margin="0,4,0,0"/>
+          </StackPanel>
+        </UniformGrid>
+        <TextBlock Grid.Row="2" Name="ActionMessage" Text="" FontSize="12" TextWrapping="Wrap" Margin="0,4,0,0"
+                   Foreground="#FF22D3EE"/>
+      </Grid>
+    </Border>
+
+    <Border Grid.Row="1" Grid.Column="0" Grid.ColumnSpan="2" Name="NotesPanel" CornerRadius="8"
+            Padding="12,10" Background="#FF071325" BorderBrush="#FF22D3EE" BorderThickness="1"
+            Visibility="Collapsed" MinHeight="132">
+      <Grid>
+        <Grid.RowDefinitions>
+          <RowDefinition Height="Auto"/>
+          <RowDefinition Height="Auto"/>
+          <RowDefinition Height="*" MinHeight="88"/>
+          <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+        <StackPanel Grid.Row="0" Name="CollectBanner" Margin="0,0,0,8" Visibility="Collapsed">
+          <TextBlock Text="Collecting logs" FontSize="13" FontWeight="SemiBold" Foreground="#FF22D3EE" Margin="0,0,0,6"/>
+          <ProgressBar Name="CollectProgress" Height="8" Margin="0,0,0,6"
+                       IsIndeterminate="False" Minimum="0" Maximum="100" Value="0"
+                       Background="#FF0A1B33" Foreground="#FF22D3EE" BorderThickness="0"/>
+          <TextBlock Name="CollectStatus" Text="Gathering logs... You can type notes below."
+                     FontSize="12" Foreground="#FF6B8CB0" TextWrapping="Wrap"/>
+        </StackPanel>
+        <TextBlock Grid.Row="1" Text="What went wrong?" FontSize="13" FontWeight="SemiBold"
+                   Foreground="#FFE8F4FF" Margin="0,0,0,6"/>
+        <TextBox Grid.Row="2" Name="NotesBox" AcceptsReturn="True" TextWrapping="Wrap"
+                 VerticalScrollBarVisibility="Auto" FontSize="14"
+                 Background="#FF030609" Foreground="#FFE8F4FF" BorderBrush="#FF123154"
+                 BorderThickness="1" Padding="8" CaretBrush="#FF22D3EE" MinHeight="88"/>
+        <DockPanel Grid.Row="3" Margin="0,8,0,0">
+          <Button Name="BtnSaveNotes" DockPanel.Dock="Right" Content="Save notes"
+                  Style="{StaticResource QuietBtn}" Margin="12,0,0,0" Visibility="Collapsed"/>
+          <Button Name="BtnOpenFolder" DockPanel.Dock="Right" Content="Open folder"
+                  Style="{StaticResource QuietBtn}" Margin="12,0,0,0" Visibility="Collapsed"/>
+          <TextBlock Text="Notes save into FirstBase-Issue.md while collection runs."
+                     FontSize="11" Foreground="#FF6B8CB0" TextWrapping="Wrap" VerticalAlignment="Center"/>
+        </DockPanel>
+      </Grid>
+    </Border>
     </Grid>
 
     <!-- Seal page (same window; Restart / Shutdown) -->
@@ -1126,7 +1448,7 @@ function Show-FbImWindow {
                Text="$footerText"/>
 
     <Grid Name="FbImBusyOverlay" Grid.Row="0" Grid.RowSpan="3" Visibility="Collapsed"
-          Background="#CC02040A" Panel.ZIndex="100">
+          Background="#CC02040A" Panel.ZIndex="100" IsHitTestVisible="False">
       <StackPanel VerticalAlignment="Center" HorizontalAlignment="Center" Width="360">
         <TextBlock Name="FbImBusyText" Text="Working..." FontSize="18" FontWeight="SemiBold"
                    Foreground="#FFE8F4FF" HorizontalAlignment="Center" TextAlignment="Center"
@@ -1136,7 +1458,7 @@ function Show-FbImWindow {
       </StackPanel>
     </Grid>
   </Grid>
-  </Viewbox>
+  </ScrollViewer>
 </Window>
 "@
 
@@ -1160,8 +1482,9 @@ function Show-FbImWindow {
     }
     $uiRoot = $window.FindName('FbImRoot')
     if (-not $uiRoot) { $uiRoot = $window.Content }
-    $scaleBox = $null
-    try { $scaleBox = $window.FindName('FbImScaleBox') } catch {}
+    $scroller = $null
+    try { $scroller = $window.FindName('FbImScroller') } catch {}
+    $scaleBox = $scroller
 
     $dispatcher = if ($EmbedHost) { $EmbedHost.Dispatcher } else { $window.Dispatcher }
 
@@ -1203,8 +1526,12 @@ function Show-FbImWindow {
     }
 
     $statusHero     = & $find 'StatusHero'
+    $statusLamp     = & $find 'StatusLamp'
     $statusLabel    = & $find 'StatusLabel'
     $statusHeadline = & $find 'StatusHeadline'
+    $statusSealChip = & $find 'StatusSealChip'
+    $statusSealChipBorder = & $find 'StatusSealChipBorder'
+    $statusIdentity = & $find 'StatusIdentity'
     $statusReasons  = & $find 'StatusReasons'
     $statusDetails  = & $find 'StatusDetails'
     $btnRefresh     = & $find 'BtnRefresh'
@@ -1213,6 +1540,8 @@ function Show-FbImWindow {
     $btnChooseDump  = & $find 'BtnChooseDumpFolder'
     $dumpDestHint   = & $find 'DumpDestHint'
     $btnSeal        = & $find 'BtnSeal'
+    $btnShutdown    = & $find 'BtnShutdown'
+    $shutdownHint   = & $find 'ShutdownHint'
     $btnSealRestart = & $find 'BtnSealRestart'
     $btnSealShutdown = & $find 'BtnSealShutdown'
     $btnSealCancel  = & $find 'BtnSealCancel'
@@ -1224,6 +1553,7 @@ function Show-FbImWindow {
     $actionsPanel   = & $find 'ActionsPanel'
     $notesPanel     = & $find 'NotesPanel'
     $notesBox       = & $find 'NotesBox'
+    $collectBanner  = & $find 'CollectBanner'
     $collectProgress = & $find 'CollectProgress'
     $collectStatus  = & $find 'CollectStatus'
     $mainWorkArea   = & $find 'MainWorkArea'
@@ -1232,14 +1562,83 @@ function Show-FbImWindow {
     $busyOverlay    = & $find 'FbImBusyOverlay'
     $busyText       = & $find 'FbImBusyText'
 
+    # Click handlers resolve names at invoke time. Embed mode used to return from
+    # Show-FbImWindow immediately, so these locals vanished and Collect logs
+    # threw into an empty catch (no notes, no progress, no error). Keep a script
+    # copy for Collect / dump-timer even if the stack frame is gone.
+    $script:FbImUi = @{
+        BtnCollect       = $btnCollect
+        BtnOpenFolder    = $btnOpenFolder
+        BtnSaveNotes     = $btnSaveNotes
+        ActionMessage    = $actionMessage
+        NotesPanel       = $notesPanel
+        NotesBox         = $notesBox
+        CollectBanner    = $collectBanner
+        CollectProgress  = $collectProgress
+        CollectStatus    = $collectStatus
+        BusyOverlay      = $busyOverlay
+        DumpDestHint     = $dumpDestHint
+    }
+
+    if ($statusIdentity) {
+        $idBits = New-Object System.Collections.Generic.List[string]
+        if ($subtitle) { [void]$idBits.Add([string]$subtitle) }
+        if ($FbBuild.Dev) { [void]$idBits.Add('DEV') }
+        $statusIdentity.Text = [string]::Join('  ', @($idBits))
+    }
+
+    $script:FbImFitRoot = {
+        $sv = $script:FbImScroller
+        $root = $script:FbImRootEl
+        if (-not $sv -or -not $root) { return }
+        try {
+            $vh = [double]$sv.ViewportHeight
+            if ($vh -lt 1) { $vh = [double]$sv.ActualHeight }
+            $m = $root.Margin
+            $need = $vh - [double]$m.Top - [double]$m.Bottom
+            if ($need -gt 80) { $root.MinHeight = $need }
+        } catch {}
+    }
+    $script:FbImScroller = $scroller
+    $script:FbImRootEl = $uiRoot
+    if ($scroller) {
+        $scroller.Add_SizeChanged({
+            try { if ($script:FbImFitRoot) { & $script:FbImFitRoot } } catch {}
+        })
+        $scroller.Add_Loaded({
+            try { if ($script:FbImFitRoot) { & $script:FbImFitRoot } } catch {}
+        })
+        $scroller.Add_PreviewMouseWheel({
+            $e = $null
+            try { $e = $args[1] } catch {}
+            if (-not $e) { return }
+            try {
+                $walk = $e.OriginalSource
+                $tb = $null
+                try { if ($script:FbImUi) { $tb = $script:FbImUi.NotesBox } } catch {}
+                while ($walk) {
+                    if ($tb -and [object]::ReferenceEquals($walk, $tb)) { return }
+                    $parent = $null
+                    try { $parent = [System.Windows.Media.VisualTreeHelper]::GetParent($walk) } catch {}
+                    if (-not $parent) { try { $parent = $walk.Parent } catch {} }
+                    $walk = $parent
+                }
+                $scroller.ScrollToVerticalOffset($scroller.VerticalOffset - [double]$e.Delta)
+                $e.Handled = $true
+            } catch {}
+        })
+        try { if ($script:FbImFitRoot) { & $script:FbImFitRoot } } catch {}
+    }
+
     # Reparent after FindName so the Window namescope still resolves controls.
     if ($EmbedHost) {
         try {
             $window.Content = $null
             $EmbedHost.Children.Clear()
-            $toHost = $scaleBox
+            $toHost = $scroller
             if (-not $toHost) { $toHost = $uiRoot }
             [void]$EmbedHost.Children.Add($toHost)
+            try { if ($script:FbImFitRoot) { & $script:FbImFitRoot } } catch {}
             # Close the unused Window shell. ShutdownMode is OnExplicitShutdown
             # so this must not tear down the splash ShowDialog.
             try { $window.Close() } catch {}
@@ -1257,11 +1656,17 @@ function Show-FbImWindow {
         param([string]$Message = 'Working...')
         $script:FbImBusy = $true
         if ($busyText) { $busyText.Text = $Message }
-        if ($busyOverlay) { $busyOverlay.Visibility = 'Visible' }
+        if ($busyOverlay) {
+            $busyOverlay.IsHitTestVisible = $true
+            $busyOverlay.Visibility = 'Visible'
+        }
         try { $dispatcher.Invoke([Action]{}, 'Background') } catch {}
     }
     $hideFbImBusy = {
-        if ($busyOverlay) { $busyOverlay.Visibility = 'Collapsed' }
+        if ($busyOverlay) {
+            $busyOverlay.Visibility = 'Collapsed'
+            $busyOverlay.IsHitTestVisible = $false
+        }
         $script:FbImBusy = $false
         try { $dispatcher.Invoke([Action]{}, 'Background') } catch {}
     }
@@ -1315,86 +1720,149 @@ function Show-FbImWindow {
     }
 
     $showNotesPanel = {
-        $notesPanel.Visibility = 'Visible'
-        $actionsPanel.SetValue([System.Windows.Controls.Grid]::ColumnSpanProperty, 1)
-        try { [void]$notesBox.Focus() } catch {}
+        $ui = $script:FbImUi
+        if (-not $ui) { return }
+        if ($ui.NotesPanel) { $ui.NotesPanel.Visibility = 'Visible' }
+        if ($ui.CollectBanner) { $ui.CollectBanner.Visibility = 'Visible' }
+        if ($ui.CollectProgress) { $ui.CollectProgress.Visibility = 'Visible' }
+        try { if ($script:FbImFitRoot) { & $script:FbImFitRoot } } catch {}
+        try { if ($ui.NotesBox) { [void]$ui.NotesBox.Focus() } } catch {}
+        try { $dispatcher.Invoke([Action]{}, 'Background') } catch {}
     }
 
     $hideNotesPanel = {
-        $notesPanel.Visibility = 'Collapsed'
-        $actionsPanel.SetValue([System.Windows.Controls.Grid]::ColumnSpanProperty, 3)
-        $collectProgress.Visibility = 'Collapsed'
-        $btnOpenFolder.Visibility = 'Collapsed'
-        $btnSaveNotes.Visibility = 'Collapsed'
-        try { $notesBox.Text = '' } catch {}
+        $ui = $script:FbImUi
+        if (-not $ui) { return }
+        if ($ui.NotesPanel) { $ui.NotesPanel.Visibility = 'Collapsed' }
+        if ($ui.CollectBanner) { $ui.CollectBanner.Visibility = 'Collapsed' }
+        if ($ui.CollectProgress) { $ui.CollectProgress.Visibility = 'Collapsed' }
+        if ($ui.BtnOpenFolder) { $ui.BtnOpenFolder.Visibility = 'Collapsed' }
+        if ($ui.BtnSaveNotes) { $ui.BtnSaveNotes.Visibility = 'Collapsed' }
+        try { if ($ui.NotesBox) { $ui.NotesBox.Text = '' } } catch {}
     }
 
     $writeNotesLive = {
+        $ui = $script:FbImUi
         if (-not $script:FbImDumpDest) { return }
-        $text = [string]$notesBox.Text
+        $text = ''
+        try { if ($ui -and $ui.NotesBox) { $text = [string]$ui.NotesBox.Text } } catch {}
         if ([string]::IsNullOrWhiteSpace($text)) { $text = 'No description provided' }
         Write-FbImIssueMarkdown -DestFolder $script:FbImDumpDest -IssueText $text
     }
 
     $restartNotesIdleTimer = {
-        try { $notesHideTimer.Stop() } catch {}
+        $t = $script:FbImNotesHideTimer
+        try { if ($t) { $t.Stop() } } catch {}
         # Only auto-hide after dump finished (or notes were explicitly saved) and
-        # the tech has been idle for 8s — never hide solely because collection ended.
+        # the tech has been idle for 8s - never hide solely because collection ended.
         if (-not $script:FbImNotesIdleArmed) { return }
-        try { $notesHideTimer.Start() } catch {}
+        try { if ($t) { $t.Start() } } catch {}
     }
+    $script:FbImRestartNotesIdleTimer = $restartNotesIdleTimer
 
     $finishNotesKeepOpen = {
         param([string]$StatusText)
+        $ui = $script:FbImUi
         & $writeNotesLive
-        $btnSaveNotes.Visibility = 'Collapsed'
+        if ($ui -and $ui.BtnSaveNotes) { $ui.BtnSaveNotes.Visibility = 'Collapsed' }
         if ($script:FbImDumpDest -and (Test-Path -LiteralPath $script:FbImDumpDest)) {
-            $collectStatus.Text = ('Logs saved to {0}' -f $script:FbImDumpDest)
-            $collectStatus.Foreground = [System.Windows.Media.BrushConverter]::new().ConvertFromString('#FF66BB6A')
-            $btnOpenFolder.Visibility = 'Visible'
-            $actionMessage.Foreground = [System.Windows.Media.BrushConverter]::new().ConvertFromString('#FF66BB6A')
-            if ([string]::IsNullOrWhiteSpace($StatusText)) {
-                $actionMessage.Text = 'Log collection finished. Keep typing notes — they save live; panel hides after 8s idle.'
-            } else {
-                $actionMessage.Text = $StatusText
+            if ($ui -and $ui.CollectStatus) {
+                $ui.CollectStatus.Text = ('Logs saved to {0}' -f $script:FbImDumpDest)
+                $ui.CollectStatus.Foreground = [System.Windows.Media.BrushConverter]::new().ConvertFromString('#FF66BB6A')
+            }
+            if ($ui -and $ui.CollectBanner) { $ui.CollectBanner.Visibility = 'Visible' }
+            if ($ui -and $ui.BtnOpenFolder) { $ui.BtnOpenFolder.Visibility = 'Visible' }
+            if ($ui -and $ui.ActionMessage) {
+                $ui.ActionMessage.Foreground = [System.Windows.Media.BrushConverter]::new().ConvertFromString('#FF66BB6A')
+                if ([string]::IsNullOrWhiteSpace($StatusText)) {
+                    $ui.ActionMessage.Text = 'Log collection finished. Keep typing notes - they save live; panel hides after 8s idle.'
+                } else {
+                    $ui.ActionMessage.Text = $StatusText
+                }
             }
         }
         $script:FbImNotesIdleArmed = $true
-        & $restartNotesIdleTimer
+        if ($script:FbImRestartNotesIdleTimer) { & $script:FbImRestartNotesIdleTimer }
     }
+
+    $script:FbImShowNotesPanel = $showNotesPanel
+    $script:FbImWriteNotesLive = $writeNotesLive
+    $script:FbImFinishNotesKeepOpen = $finishNotesKeepOpen
+    $script:FbImHideBusy = $hideFbImBusy
 
     $notesHideTimer = New-Object System.Windows.Threading.DispatcherTimer
     $notesHideTimer.Interval = [TimeSpan]::FromSeconds(8)
+    $script:FbImNotesHideTimer = $notesHideTimer
     $notesHideTimer.Add_Tick({
-        $notesHideTimer.Stop()
-        & $writeNotesLive
-        & $hideNotesPanel
+        try { $script:FbImNotesHideTimer.Stop() } catch {}
+        if ($script:FbImWriteNotesLive) { & $script:FbImWriteNotesLive }
+        $ui = $script:FbImUi
+        if ($ui) {
+            if ($ui.NotesPanel) { $ui.NotesPanel.Visibility = 'Collapsed' }
+            if ($ui.CollectBanner) { $ui.CollectBanner.Visibility = 'Collapsed' }
+            if ($ui.CollectProgress) { $ui.CollectProgress.Visibility = 'Collapsed' }
+            if ($ui.BtnOpenFolder) { $ui.BtnOpenFolder.Visibility = 'Collapsed' }
+            if ($ui.BtnSaveNotes) { $ui.BtnSaveNotes.Visibility = 'Collapsed' }
+            try { if ($ui.NotesBox) { $ui.NotesBox.Text = '' } } catch {}
+        }
         $script:FbImNotesIdleArmed = $false
     })
 
     if ($notesBox) {
         $notesBox.Add_TextChanged({
-            if ($notesPanel.Visibility -ne 'Visible') { return }
+            $ui = $script:FbImUi
+            if (-not $ui -or -not $ui.NotesPanel) { return }
+            if ($ui.NotesPanel.Visibility -ne 'Visible') { return }
             if (-not $script:FbImDumpDest) { return }
-            & $writeNotesLive
-            if ($script:FbImNotesIdleArmed) { & $restartNotesIdleTimer }
+            if ($script:FbImWriteNotesLive) { & $script:FbImWriteNotesLive }
+            if ($script:FbImNotesIdleArmed -and $script:FbImRestartNotesIdleTimer) {
+                & $script:FbImRestartNotesIdleTimer
+            }
         })
     }
 
     $applyStatus = {
         param($st)
         if (-not $st) { return }
+        $bc = [System.Windows.Media.BrushConverter]::new()
         $statusHeadline.Text = $st.Headline
+        $lampBrush = '#FFEF5350'
+        $headBrush = '#FFEF5350'
+        $heroBg = '#FF1A0A0A'
+        $heroBd = '#FFC62828'
         if ($st.Ready) {
-            $statusLabel.Text = 'Device status'
-            $statusHeadline.Foreground = [System.Windows.Media.BrushConverter]::new().ConvertFromString('#FF66BB6A')
-            $statusHero.BorderBrush = [System.Windows.Media.BrushConverter]::new().ConvertFromString('#FF2E7D32')
-            $statusHero.Background = [System.Windows.Media.BrushConverter]::new().ConvertFromString('#FF0A1F12')
-        } else {
-            $statusLabel.Text = 'Device status'
-            $statusHeadline.Foreground = [System.Windows.Media.BrushConverter]::new().ConvertFromString('#FFEF5350')
-            $statusHero.BorderBrush = [System.Windows.Media.BrushConverter]::new().ConvertFromString('#FFC62828')
-            $statusHero.Background = [System.Windows.Media.BrushConverter]::new().ConvertFromString('#FF1A0A0A')
+            $lampBrush = '#FF66BB6A'
+            $headBrush = '#FF66BB6A'
+            $heroBg = '#FF0A1F12'
+            $heroBd = '#FF2E7D32'
+        } elseif ($st.Sealed) {
+            $lampBrush = '#FFFFB74D'
+            $headBrush = '#FFFFB74D'
+            $heroBg = '#FF1A1408'
+            $heroBd = '#FFF57C00'
+        }
+        $statusLabel.Text = 'Device'
+        $statusHeadline.Foreground = $bc.ConvertFromString($headBrush)
+        if ($statusHero) {
+            $statusHero.BorderBrush = $bc.ConvertFromString($heroBd)
+            $statusHero.Background = $bc.ConvertFromString($heroBg)
+        }
+        if ($statusLamp) {
+            $statusLamp.Fill = $bc.ConvertFromString($lampBrush)
+            $statusLamp.Stroke = $bc.ConvertFromString($heroBd)
+        }
+        if ($statusSealChip -and $statusSealChipBorder) {
+            if ($st.Sealed) {
+                $statusSealChip.Text = 'SEALED'
+                $statusSealChip.Foreground = $bc.ConvertFromString('#FF66BB6A')
+                $statusSealChipBorder.Background = $bc.ConvertFromString('#FF0A1F12')
+                $statusSealChipBorder.BorderBrush = $bc.ConvertFromString('#FF2E7D32')
+            } else {
+                $statusSealChip.Text = 'NOT SEALED'
+                $statusSealChip.Foreground = $bc.ConvertFromString('#FFEF5350')
+                $statusSealChipBorder.Background = $bc.ConvertFromString('#FF1A0A0A')
+                $statusSealChipBorder.BorderBrush = $bc.ConvertFromString('#FFC62828')
+            }
         }
         $statusReasons.ItemsSource = @($st.Reasons)
         $statusDetails.ItemsSource = @($st.Details)
@@ -1409,6 +1877,23 @@ function Show-FbImWindow {
         try { if ($st.PSObject.Properties.Name -contains 'CanSeal') { $canSeal = [bool]$st.CanSeal } } catch {}
         if ($btnSeal) {
             $btnSeal.IsEnabled = [bool]$canSeal
+        }
+        $showShutdown = $true
+        try {
+            if ($script:FbImEmbedHosted) {
+                $showShutdown = [bool]$st.Sealed
+            }
+        } catch { $showShutdown = -not [bool]$script:FbImEmbedHosted }
+        if ($btnShutdown) {
+            $btnShutdown.Visibility = $(if ($showShutdown) { 'Visible' } else { 'Collapsed' })
+        }
+        if ($shutdownHint) {
+            $shutdownHint.Visibility = $(if ($showShutdown) { 'Visible' } else { 'Collapsed' })
+            if ($showShutdown -and $script:FbImEmbedHosted) {
+                $shutdownHint.Text = 'Device is sealed. Power off when you are done.'
+            } elseif ($showShutdown) {
+                $shutdownHint.Text = 'Power off this device.'
+            }
         }
         if (-not $canSeal) {
             $actionMessage.Text = 'Seal/restart is blocked while Windows is committing boot files. Wait for the update loop to reboot.'
@@ -1483,36 +1968,60 @@ function Show-FbImWindow {
 
     $dumpTimer = New-Object System.Windows.Threading.DispatcherTimer
     $dumpTimer.Interval = [TimeSpan]::FromMilliseconds(800)
+    $script:FbImDumpTimer = $dumpTimer
     $dumpTimer.Add_Tick({
         try {
             if (-not $script:FbImDumpProc) { return }
+            $ui = $script:FbImUi
+            $collectStatus = $null
+            $collectProgress = $null
+            $btnCollect = $null
+            $btnOpenFolder = $null
+            if ($ui) {
+                $collectStatus = $ui.CollectStatus
+                $collectProgress = $ui.CollectProgress
+                $btnCollect = $ui.BtnCollect
+                $btnOpenFolder = $ui.BtnOpenFolder
+            }
             try {
-                $script:FbImDumpProc.Refresh()
-                if (-not $script:FbImDumpProc.HasExited) {
-                    $collectStatus.Text = 'Gathering logs... You can keep typing notes.'
+                $script:FbImDumpProc = Update-FbImDumpHandle -Handle $script:FbImDumpProc
+                if ($script:FbImDumpProc -and -not $script:FbImDumpProc.HasExited) {
+                    if ($collectStatus) { $collectStatus.Text = 'Gathering logs... You can keep typing notes.' }
                     return
                 }
             } catch { return }
-            $dumpTimer.Stop()
+            try { $script:FbImDumpTimer.Stop() } catch { try { $dumpTimer.Stop() } catch {} }
             $exitCode = 0
             try { $exitCode = [int]$script:FbImDumpProc.ExitCode } catch {}
             $script:FbImDumpProc = $null
-            $collectProgress.IsIndeterminate = $false
-            $collectProgress.Value = 100
-            & $hideFbImBusy
-            $btnCollect.IsEnabled = $true
+            if ($collectProgress) {
+                $collectProgress.IsIndeterminate = $false
+                $collectProgress.Value = 100
+            }
+            if ($script:FbImHideBusy) { & $script:FbImHideBusy } else { $script:FbImBusy = $false }
+            if ($btnCollect) { $btnCollect.IsEnabled = $true }
+            $summaryPath = $null
+            if ($script:FbImDumpDest) { $summaryPath = Join-Path $script:FbImDumpDest 'DUMP-SUMMARY.txt' }
             $copiedCount = 0
-            try {
-                $copiedCount = @(Get-ChildItem -LiteralPath $script:FbImDumpDest -Recurse -File -Force -EA SilentlyContinue |
-                    Where-Object { $_.Name -ne 'FirstBase-Issue.md' -and $_.Name -ne 'DUMP-SUMMARY.txt' }).Count
-            } catch { $copiedCount = 0 }
+            try { $copiedCount = Get-FbImDumpFileCount -DestFolder $script:FbImDumpDest } catch { $copiedCount = 0 }
+            if ($script:FbImDumpDest -and (-not $summaryPath -or -not (Test-Path -LiteralPath $summaryPath))) {
+                try { $copiedCount = Copy-FbImDumpExtras -DestFolder $script:FbImDumpDest } catch {}
+                try { $copiedCount = Get-FbImDumpFileCount -DestFolder $script:FbImDumpDest } catch { $copiedCount = 0 }
+            } elseif ($copiedCount -le 0 -and $script:FbImDumpDest) {
+                try { $copiedCount = Copy-FbImDumpExtras -DestFolder $script:FbImDumpDest } catch { $copiedCount = 0 }
+                if ($copiedCount -le 0) {
+                    try { $copiedCount = Get-FbImDumpFileCount -DestFolder $script:FbImDumpDest } catch { $copiedCount = 0 }
+                }
+            }
             # Dump finished mid-edit is common — keep the notes panel open and only
             # auto-hide after 8s of inactivity. Live MD writes happen on keystrokes.
             if ($copiedCount -le 0) {
                 $failMsg = 'Dump copied 0 files. Collection failed.'
-                & $finishNotesKeepOpen $failMsg
-                $collectStatus.Text = $failMsg
-                $collectStatus.Foreground = [System.Windows.Media.BrushConverter]::new().ConvertFromString('#FFEF5350')
+                if ($script:FbImFinishNotesKeepOpen) { & $script:FbImFinishNotesKeepOpen $failMsg }
+                if ($collectStatus) {
+                    $collectStatus.Text = $failMsg
+                    $collectStatus.Foreground = [System.Windows.Media.BrushConverter]::new().ConvertFromString('#FFEF5350')
+                }
                 try {
                     if (Get-Command Set-FbSplashTechStatus -ErrorAction SilentlyContinue) {
                         Set-FbSplashTechStatus $failMsg '#FFEF5350'
@@ -1522,9 +2031,13 @@ function Show-FbImWindow {
                     $btnOpenFolder.Visibility = 'Visible'
                 }
             } elseif ($exitCode -eq 0 -and $script:FbImDumpDest -and (Test-Path -LiteralPath $script:FbImDumpDest)) {
-                & $finishNotesKeepOpen 'Log collection finished. Keep typing notes — they save live; panel hides after 8s idle.'
+                if ($script:FbImFinishNotesKeepOpen) {
+                    & $script:FbImFinishNotesKeepOpen 'Log collection finished. Keep typing notes - they save live; panel hides after 8s idle.'
+                }
             } else {
-                & $finishNotesKeepOpen 'Log collection finished with problems. Notes still save live; panel hides after 8s idle.'
+                if ($script:FbImFinishNotesKeepOpen) {
+                    & $script:FbImFinishNotesKeepOpen 'Log collection finished with problems. Notes still save live; panel hides after 8s idle.'
+                }
                 $collectStatus.Text = 'Log collection finished with problems. Check the USB stick for a partial folder.'
                 $collectStatus.Foreground = [System.Windows.Media.BrushConverter]::new().ConvertFromString('#FFFFB74D')
                 if ($script:FbImDumpDest -and (Test-Path -LiteralPath $script:FbImDumpDest)) {
@@ -1556,75 +2069,121 @@ function Show-FbImWindow {
     if ($btnCollect) {
     $btnCollect.Add_Click({
         try {
-            if ($script:FbImBusy) { return }
+            $ui = $script:FbImUi
+            $actionMessage = $null
+            $btnCollectUi = $null
+            $collectProgress = $null
+            $collectStatus = $null
+            $busyOverlay = $null
+            $notesBox = $null
+            if ($ui) {
+                $actionMessage = $ui.ActionMessage
+                $btnCollectUi = $ui.BtnCollect
+                $collectProgress = $ui.CollectProgress
+                $collectStatus = $ui.CollectStatus
+                $busyOverlay = $ui.BusyOverlay
+                $notesBox = $ui.NotesBox
+            }
+            $setMsg = {
+                param($Text, $Color)
+                if (-not $actionMessage) { return }
+                try {
+                    $actionMessage.Foreground = [System.Windows.Media.BrushConverter]::new().ConvertFromString($Color)
+                    $actionMessage.Text = $Text
+                } catch {}
+            }
+            # Immediate UI - never a silent no-op, even if dump dest is missing.
+            if ($script:FbImShowNotesPanel) { & $script:FbImShowNotesPanel }
+            if ($collectProgress) {
+                $collectProgress.Visibility = 'Visible'
+                $collectProgress.IsIndeterminate = $true
+            }
+            if ($collectStatus) {
+                try {
+                    $collectStatus.Foreground = [System.Windows.Media.BrushConverter]::new().ConvertFromString('#FF6B8CB0')
+                    $collectStatus.Text = 'Collecting logs... You can type notes below.'
+                } catch {}
+            }
+            & $setMsg 'Collecting logs. Type notes below.' '#FF22D3EE'
+
+            if ($script:FbImBusy) {
+                & $setMsg 'Wait - another action is still running.' '#FFFFB74D'
+                return
+            }
+
             $dump = Find-FbDumpScript
             if (-not $dump) {
-                $actionMessage.Foreground = [System.Windows.Media.BrushConverter]::new().ConvertFromString('#FFEF5350')
-                $actionMessage.Text = 'Log collector (fb-dump) was not found on this device.'
+                & $setMsg 'Log collector (fb-dump) was not found on this device.' '#FFEF5350'
+                if ($collectStatus) { $collectStatus.Text = 'fb-dump was not found on this device.' }
                 return
             }
             $script:FbImDumpDest = Get-FbImDumpDestFolder
             if (-not $script:FbImDumpDest) {
-                $actionMessage.Foreground = [System.Windows.Media.BrushConverter]::new().ConvertFromString('#FFFFB74D')
-                $actionMessage.Text = 'Plug in a USB stick, or choose an export folder, then Collect logs again.'
+                & $setMsg 'Plug in a USB stick, or choose an export folder, then Collect logs again.' '#FFFFB74D'
                 if (-not (Show-FbImDumpFolderPicker)) { return }
                 $script:FbImDumpDest = Get-FbImDumpDestFolder
                 if (-not $script:FbImDumpDest) { return }
+                & $setMsg 'Collecting logs. Type notes below.' '#FF22D3EE'
             }
             try {
                 if (-not (Test-Path -LiteralPath $script:FbImDumpDest)) {
                     New-Item -ItemType Directory -Path $script:FbImDumpDest -Force -ErrorAction Stop | Out-Null
                 }
             } catch {
-                $actionMessage.Foreground = [System.Windows.Media.BrushConverter]::new().ConvertFromString('#FFEF5350')
-                $actionMessage.Text = 'Could not create the log folder. Choose another export folder or insert a USB stick.'
+                & $setMsg 'Could not create the log folder. Choose another export folder or insert a USB stick.' '#FFEF5350'
                 return
             }
 
-            & $showNotesPanel
+            try { [void](Copy-FbImOnDeviceLogs -DestFolder $script:FbImDumpDest) } catch {}
 
-            # Keep the notes panel interactive during dump — busy flag only (no full-screen overlay).
+            # Keep the notes panel interactive during dump - busy flag only (no full-screen overlay).
             $script:FbImBusy = $true
             $script:FbImNotesIdleArmed = $false
-            $btnCollect.IsEnabled = $false
-            $btnOpenFolder.Visibility = 'Collapsed'
-            $btnSaveNotes.Visibility = 'Collapsed'
-            try { $notesHideTimer.Stop() } catch {}
-            # Seed the MD immediately so keystrokes have a file to update while dump runs.
-            & $writeNotesLive
-            $collectProgress.Visibility = 'Visible'
-            $collectProgress.IsIndeterminate = $true
-            $collectStatus.Foreground = [System.Windows.Media.BrushConverter]::new().ConvertFromString('#FF6B8CB0')
-            $collectStatus.Text = 'Gathering logs... You can keep typing notes.'
-            $actionMessage.Foreground = [System.Windows.Media.BrushConverter]::new().ConvertFromString('#FF22D3EE')
-            $actionMessage.Text = 'Collecting logs in the background.'
+            if ($btnCollectUi) { $btnCollectUi.IsEnabled = $false }
+            if ($ui -and $ui.BtnOpenFolder) { $ui.BtnOpenFolder.Visibility = 'Collapsed' }
+            if ($ui -and $ui.BtnSaveNotes) { $ui.BtnSaveNotes.Visibility = 'Collapsed' }
+            try { if ($script:FbImNotesHideTimer) { $script:FbImNotesHideTimer.Stop() } } catch {}
+            if ($script:FbImWriteNotesLive) { & $script:FbImWriteNotesLive }
+            if ($collectStatus) {
+                $collectStatus.Text = 'Gathering logs... You can keep typing notes.'
+            }
 
-            $psExe = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
-            if (-not (Test-Path -LiteralPath $psExe)) { $psExe = 'powershell.exe' }
-            $dumpArgs = @(
-                '-NoProfile', '-ExecutionPolicy', 'Bypass', '-WindowStyle', 'Hidden',
-                '-File', $dump,
-                '-Dest', $script:FbImDumpDest,
-                '-NoPrompt'
-            )
             try {
-                $script:FbImDumpProc = Start-Process -FilePath $psExe -ArgumentList $dumpArgs -WindowStyle Hidden -PassThru -ErrorAction Stop
-                $dumpTimer.Start()
-                try { [void]$notesBox.Focus() } catch {}
+                $script:FbImDumpProc = Start-FbImDumpProcess -DumpScript $dump -DestFolder $script:FbImDumpDest
+                if ($script:FbImDumpTimer) { $script:FbImDumpTimer.Start() }
+                try { if ($notesBox) { [void]$notesBox.Focus() } } catch {}
             } catch {
                 $script:FbImBusy = $false
-                if ($busyOverlay) { $busyOverlay.Visibility = 'Collapsed' }
-                $btnCollect.IsEnabled = $true
-                $collectProgress.Visibility = 'Collapsed'
-                $actionMessage.Foreground = [System.Windows.Media.BrushConverter]::new().ConvertFromString('#FFEF5350')
-                $actionMessage.Text = 'Could not start log collection.'
+                if ($busyOverlay) {
+                    $busyOverlay.Visibility = 'Collapsed'
+                    try { $busyOverlay.IsHitTestVisible = $false } catch {}
+                }
+                if ($btnCollectUi) { $btnCollectUi.IsEnabled = $true }
+                $fallbackCount = 0
+                try { $fallbackCount = Copy-FbImDumpExtras -DestFolder $script:FbImDumpDest } catch { $fallbackCount = 0 }
+                if ($fallbackCount -le 0) {
+                    try { $fallbackCount = Get-FbImDumpFileCount -DestFolder $script:FbImDumpDest } catch { $fallbackCount = 0 }
+                }
+                if ($fallbackCount -gt 0) {
+                    & $setMsg 'Dump helper did not start; on-device logs were still copied to the export folder.' '#FFFFB74D'
+                    if ($ui -and $ui.BtnOpenFolder) { $ui.BtnOpenFolder.Visibility = 'Visible' }
+                    if ($script:FbImFinishNotesKeepOpen) {
+                        & $script:FbImFinishNotesKeepOpen 'On-device logs were copied. Keep typing notes if needed.'
+                    }
+                } else {
+                    & $setMsg ('Could not start log collection: {0}' -f $_.Exception.Message) '#FFEF5350'
+                    if ($collectStatus) { $collectStatus.Text = 'Could not start log collection.' }
+                }
             }
         } catch {
             try {
                 $script:FbImBusy = $false
-                $btnCollect.IsEnabled = $true
-                $actionMessage.Foreground = [System.Windows.Media.BrushConverter]::new().ConvertFromString('#FFEF5350')
-                $actionMessage.Text = ('Collect logs failed: {0}' -f $_.Exception.Message)
+                $ui2 = $script:FbImUi
+                if ($ui2 -and $ui2.BtnCollect) { $ui2.BtnCollect.IsEnabled = $true }
+                if ($ui2 -and $ui2.ActionMessage) {
+                    $ui2.ActionMessage.Foreground = [System.Windows.Media.BrushConverter]::new().ConvertFromString('#FFEF5350')
+                    $ui2.ActionMessage.Text = ('Collect logs failed: {0}' -f $_.Exception.Message)
+                }
             } catch {}
         }
     })
@@ -1655,7 +2214,7 @@ function Show-FbImWindow {
                 if ($confirm -ne [System.Windows.MessageBoxResult]::Yes) { return }
             }
             $script:FbImNotesIdleArmed = $true
-            & $finishNotesKeepOpen 'Notes saved. Keep typing if needed — panel hides after 8s idle.'
+            & $script:FbImFinishNotesKeepOpen 'Notes saved. Keep typing if needed - panel hides after 8s idle.'
         } catch {
             try {
                 $actionMessage.Foreground = [System.Windows.Media.BrushConverter]::new().ConvertFromString('#FFEF5350')
@@ -1663,6 +2222,30 @@ function Show-FbImWindow {
             } catch {}
         }
     })
+    }
+
+    if ($btnShutdown) {
+        $btnShutdown.Add_Click({
+            try {
+                if ($script:FbImBusy) { return }
+                if ($script:FbImEmbedHosted -and -not (Test-Path -LiteralPath $SealedMarker)) { return }
+                & $showFbImBusy 'Please wait - shutting down...'
+                $actionMessage.Foreground = [System.Windows.Media.BrushConverter]::new().ConvertFromString('#FF22D3EE')
+                $actionMessage.Text = 'Please wait - shutting down...'
+                $r = Invoke-FbImImmediateShutdown
+                if (-not $r.Ok) {
+                    & $hideFbImBusy
+                    $actionMessage.Foreground = [System.Windows.Media.BrushConverter]::new().ConvertFromString('#FFEF5350')
+                    $actionMessage.Text = ('Shutdown did not start. {0}' -f $r.Message)
+                }
+            } catch {
+                try {
+                    & $hideFbImBusy
+                    $actionMessage.Foreground = [System.Windows.Media.BrushConverter]::new().ConvertFromString('#FFEF5350')
+                    $actionMessage.Text = ('Shutdown failed: {0}' -f $_.Exception.Message)
+                } catch {}
+            }
+        })
     }
 
     if ($btnSeal) {
@@ -1722,6 +2305,10 @@ function Show-FbImWindow {
                 }
             } catch {
                 try { Write-Host ("fb-im embed back failed: {0}" -f $_.Exception.Message) } catch {}
+            } finally {
+                try {
+                    if ($script:FbImEmbedFrame) { $script:FbImEmbedFrame.Continue = $false }
+                } catch {}
             }
         })
     } else {
@@ -1738,7 +2325,19 @@ function Show-FbImWindow {
     }
 
     if ($EmbedHost) {
-        & $startUi
+        try { & $startUi } catch {
+            try { Write-Host ("fb-im embed start failed: {0}" -f $_.Exception.Message) } catch {}
+        }
+        # Nested dispatcher frame keeps this function on the stack so other Click
+        # handlers (Restart, Seal, Check again) can still see their locals - the
+        # same reason Collect used to be a silent no-op after an immediate return.
+        $frame = New-Object System.Windows.Threading.DispatcherFrame
+        $script:FbImEmbedFrame = $frame
+        try {
+            [System.Windows.Threading.Dispatcher]::PushFrame($frame)
+        } finally {
+            $script:FbImEmbedFrame = $null
+        }
         return
     }
 

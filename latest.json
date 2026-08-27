@@ -1,32 +1,32 @@
 {
-  "launcherVersion": "5.4.7",
-  "payloadVersion": "5.4.2",
-  "channel": "release",
-  "source": "github-public-source",
-  "latestReleaseUrl": "https://github.com/joshuameadors-eng/Project-Lonewolf-Releases/releases/latest",
-  "manifestUrl": "https://raw.githubusercontent.com/joshuameadors-eng/Project-Lonewolf-Releases/main/latest.json",
-  "contentsApiUrl": "https://api.github.com/repos/joshuameadors-eng/Project-Lonewolf-Releases/contents/latest.json",
-  "defaultBranch": "main",
-  "dotnet": {
-    "id": "windowsdesktop",
-    "major": 8,
-    "arch": "x64",
-    "displayName": ".NET 8 Desktop Runtime",
-    "installerUrl": "https://aka.ms/dotnet/8.0/windowsdesktop-runtime-win-x64.exe"
-  },
-  "assets": {
-    "setup": "LoneWolf-Launcher-Setup.exe",
-    "installer": "LoneWolf-Launcher-Setup.exe",
-    "portable": "bin/LoneWolf-Launcher.exe",
-    "payload": "FirstBase-payload.zip",
-    "payloadDir": "payload/",
-    "powershellDir": "powershell/",
-    "manifest": "latest.json"
-  },
-  "urls": {
-    "setup": "https://github.com/joshuameadors-eng/Project-Lonewolf-Releases/releases/latest/download/LoneWolf-Launcher-Setup.exe",
-    "portable": "https://raw.githubusercontent.com/joshuameadors-eng/Project-Lonewolf-Releases/main/bin/LoneWolf-Launcher.exe",
-    "payload": "https://raw.githubusercontent.com/joshuameadors-eng/Project-Lonewolf-Releases/main/FirstBase-payload.zip",
-    "manifest": "https://raw.githubusercontent.com/joshuameadors-eng/Project-Lonewolf-Releases/main/latest.json"
-  }
+    "launcherVersion":  "5.4.7",
+    "payloadVersion":  "5.4.3",
+    "channel":  "release",
+    "source":  "github-public-source",
+    "latestReleaseUrl":  "https://github.com/joshuameadors-eng/Project-Lonewolf-Releases/releases/latest",
+    "manifestUrl":  "https://raw.githubusercontent.com/joshuameadors-eng/Project-Lonewolf-Releases/main/latest.json",
+    "contentsApiUrl":  "https://api.github.com/repos/joshuameadors-eng/Project-Lonewolf-Releases/contents/latest.json",
+    "defaultBranch":  "main",
+    "dotnet":  {
+                   "id":  "windowsdesktop",
+                   "major":  8,
+                   "arch":  "x64",
+                   "displayName":  ".NET 8 Desktop Runtime",
+                   "installerUrl":  "https://aka.ms/dotnet/8.0/windowsdesktop-runtime-win-x64.exe"
+               },
+    "assets":  {
+                   "setup":  "LoneWolf-Launcher-Setup.exe",
+                   "installer":  "LoneWolf-Launcher-Setup.exe",
+                   "portable":  "bin/LoneWolf-Launcher.exe",
+                   "payload":  "FirstBase-payload.zip",
+                   "payloadDir":  "payload/",
+                   "powershellDir":  "powershell/",
+                   "manifest":  "latest.json"
+               },
+    "urls":  {
+                 "setup":  "https://github.com/joshuameadors-eng/Project-Lonewolf-Releases/releases/latest/download/LoneWolf-Launcher-Setup.exe",
+                 "portable":  "https://raw.githubusercontent.com/joshuameadors-eng/Project-Lonewolf-Releases/main/bin/LoneWolf-Launcher.exe",
+                 "payload":  "https://raw.githubusercontent.com/joshuameadors-eng/Project-Lonewolf-Releases/main/FirstBase-payload.zip",
+                 "manifest":  "https://raw.githubusercontent.com/joshuameadors-eng/Project-Lonewolf-Releases/main/latest.json"
+             }
 }

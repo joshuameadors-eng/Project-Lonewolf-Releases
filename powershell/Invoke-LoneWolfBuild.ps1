@@ -1318,7 +1318,8 @@ $workerDiskBlock = {
         [string] $LauncherVersion,
         [string] $ScriptVersion,
         [string] $ShareLauncherVersion,
-        [string] $ShareScriptVersion
+        [string] $ShareScriptVersion,
+        [string] $ImageBuildDate
     )
 
     $ErrorActionPreference = 'Stop'
@@ -2565,17 +2566,31 @@ $workerDiskBlock = {
             try {
                 $firstBaseDir = Join-Path $dataRoot 'FirstBase'
                 if (-not (Test-Path -LiteralPath $firstBaseDir)) { New-Item -ItemType Directory -Force -Path $firstBaseDir | Out-Null }
+                $stampImageDate = $ImageBuildDate
+                if ($OverlayOnly) {
+                    try {
+                        $existingStampPath = Join-Path $dataRoot 'FirstBase\LW_VERSION.json'
+                        if (Test-Path -LiteralPath $existingStampPath) {
+                            $existingStamp = Get-Content -Raw -LiteralPath $existingStampPath | ConvertFrom-Json
+                            if ($existingStamp.imageBuildDate) { $stampImageDate = [string]$existingStamp.imageBuildDate }
+                            elseif ($existingStamp.wimBuildDate) { $stampImageDate = [string]$existingStamp.wimBuildDate }
+                        }
+                    } catch { }
+                }
                 $versionStamp = [ordered]@{
                     builtBy               = 'LoneWolfLauncher'
                     workflowType          = $WorkflowType
                     version               = $StagingVersion
                     scriptVersion         = $(if ($ScriptVersion) { $ScriptVersion } else { $StagingVersion })
+                    payloadVersion        = $(if ($ScriptVersion) { $ScriptVersion } else { $StagingVersion })
                     builtAt               = (Get-Date -Format 'o')
                     diskNumber            = $DiskNumber
                     devBuild              = [bool]$DevBuild
                     launcherVersion       = $(if ($LauncherVersion) { $LauncherVersion } else { $null })
                     shareLauncherVersion  = $(if ($ShareLauncherVersion) { $ShareLauncherVersion } else { $null })
                     shareScriptVersion    = $(if ($ShareScriptVersion) { $ShareScriptVersion } else { $null })
+                    imageBuildDate        = $(if ($stampImageDate) { $stampImageDate } else { $null })
+                    wimBuildDate          = $(if ($stampImageDate) { $stampImageDate } else { $null })
                 } | ConvertTo-Json -Compress
                 $versionStamp | Out-File -FilePath (Join-Path $dataRoot 'FirstBase\LW_VERSION.json') -Encoding utf8 -Force
             } catch { }
@@ -2637,7 +2652,8 @@ try {
         $bundledVer = Join-Path $PSScriptRoot 'VERSION.json'
         if (($stagingVersion -eq 'unknown' -or [string]::IsNullOrWhiteSpace($stagingVersion)) -and (Test-Path -LiteralPath $bundledVer)) {
             $verJson = Get-Content -Raw -LiteralPath $bundledVer | ConvertFrom-Json
-            if ($verJson.version) { $stagingVersion = [string]$verJson.version }
+            if ($verJson.payloadVersion) { $stagingVersion = [string]$verJson.payloadVersion }
+            elseif ($verJson.version) { $stagingVersion = [string]$verJson.version }
         }
     } catch { }
     if ([string]::IsNullOrWhiteSpace($stagingVersion)) { $stagingVersion = 'unknown' }
@@ -2991,6 +3007,13 @@ try {
         if ($resolvedSet) { $PreSplitSetDir = $resolvedSet }
     }
 
+    $imageBuildDate = ''
+    if ($isoItem) {
+        try { $imageBuildDate = $isoItem.LastWriteTimeUtc.ToString('yyyy-MM-dd') } catch { }
+    } elseif (-not $OverlayOnly -and (Test-Path -LiteralPath $StagingWim)) {
+        try { $imageBuildDate = (Get-Item -LiteralPath $StagingWim).LastWriteTimeUtc.ToString('yyyy-MM-dd') } catch { }
+    }
+
     foreach ($diskNum in $requestedDisks) {
         EmitStart -Disk $diskNum
         if ($Sequential) {
@@ -3021,7 +3044,8 @@ try {
                 $LauncherVersion,
                 $ScriptVersion,
                 $ShareLauncherVersion,
-                $ShareScriptVersion
+                $ShareScriptVersion,
+                $imageBuildDate
             )
 
         if ($Sequential) {

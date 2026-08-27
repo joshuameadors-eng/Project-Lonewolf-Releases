@@ -48,6 +48,9 @@ $output = [ordered]@{
 try {
     $headers = @{ 'User-Agent' = 'LoneWolf-Launcher-UpdateCheck' }
     $vj = Invoke-RestMethod -Uri $LatestJsonUrl -Headers $headers -Method Get
+    if ($vj -is [string]) {
+        $vj = ($vj.TrimStart([char]0xFEFF).Trim() | ConvertFrom-Json)
+    }
     $latestVersion = if ($vj.launcherVersion) { [string]$vj.launcherVersion } else { $CurrentVersion }
     $payload = if ($vj.payloadVersion) { [string]$vj.payloadVersion } else { $null }
     $exeName = 'LoneWolf-Launcher-Setup.exe'

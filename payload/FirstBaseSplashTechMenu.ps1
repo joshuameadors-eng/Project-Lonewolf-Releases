@@ -5,13 +5,14 @@
 
 .DESCRIPTION
     Dotsourced by Show-UpdateProgress.ps1 and FirstBaseHandoffSplash.ps1.
-    Click the wolf for a left/bottom/right arc (fb-im, Close, Restart, UEFI).
+    Click the wolf for a left/bottom/right arc (fb-im, Settings, Close, Restart, FW).
+    Shutdown is on fb-im (splash embed: only when the device is Sealed).
     fb-im loads from C:\Windows\Setup\FirstBase when present - a USB stick is
     not required to open tools. Collect logs still needs a removable stick or
     a folder the operator maps.
 
-    Z-order: keep splash above OOBE (caller still runs HWND_TOPMOST + 2214l).
-    Settings / Explorer sit above the splash. Cmd / conhost stay in the topmost
+    Z-order: splash stays always-on-top and covers operator apps (Settings,
+    Explorer, etc.). F12 still opts out. Cmd / conhost stay in the topmost
     band above OOBE but behind the splash.
 #>
 
@@ -137,8 +138,7 @@ function Get-FbSplashForegroundKind {
 }
 
 function Find-FbSplashYieldWindows {
-    # Visible operator windows that must stay above splash even when splash
-    # is still WS_EX_TOPMOST (Settings, Explorer, etc.). Console is excluded.
+    # Kept for diagnostics. Splash covers operator windows (overtake). Console is excluded.
     $found = New-Object System.Collections.Generic.List[object]
     $splashHw = $script:SplashNativeHwnd
     try { $null = [FbSplashWin32Z] } catch { return @() }
@@ -200,49 +200,33 @@ function Invoke-FbSplashRaiseOperatorAbove {
 }
 
 function Test-FbSplashShouldYieldToOperator {
-    $wins = @(Find-FbSplashYieldWindows)
-    if ($wins.Count -gt 0) { return $true }
-    $fg = Get-FbSplashForegroundKind
-    return ($fg.Kind -eq 'operator')
+    # Splash overtakes open apps. Never skip HWND_TOPMOST / Activate for Settings.
+    return $false
 }
 
 function Invoke-FbSplashHonorOperatorForeground {
-    # Keep Settings / Explorer / other operator windows above splash without
-    # restacking splash to HWND_TOPMOST first (that flash-covers the operator
-    # window on every 1.5s tick). Returns $true if the caller must skip
-    # splash Activate / HWND_TOPMOST refresh this tick. OOBE stays behind via
-    # 2214l. Console stays parked behind splash.
+    # Park console behind splash. Do not raise Settings/Explorer above splash.
+    # Returns $false so the caller keeps HWND_TOPMOST + Activate (overtake).
     try {
         $fg = Get-FbSplashForegroundKind
         if ($fg.Kind -eq 'console') {
             Invoke-FbSplashParkConsoleBehindSplash -FgInfo $fg
         }
-        $wins = New-Object System.Collections.Generic.List[object]
-        foreach ($w in @(Find-FbSplashYieldWindows)) { [void]$wins.Add($w) }
-        if ($fg.Kind -eq 'operator' -and $fg.Hwnd -ne [IntPtr]::Zero) {
-            $already = $false
-            foreach ($w in $wins) {
-                if ($w.Hwnd -eq $fg.Hwnd) { $already = $true; break }
-            }
-            if (-not $already) { [void]$wins.Add($fg) }
-        }
-        if ($wins.Count -lt 1) {
-            $script:FbSplashYieldLatched = $false
-            return $false
-        }
-        $rising = -not [bool]$script:FbSplashYieldLatched
-        $script:FbSplashYieldLatched = $true
-        Invoke-FbSplashRaiseYieldWindows -Windows $wins -ActivateFirst:$rising
-        return $true
+        $script:FbSplashYieldLatched = $false
+        return $false
     } catch { return $false }
 }
 
 function Find-FbSplashFbImScript {
     $cands = New-Object System.Collections.Generic.List[string]
-    foreach ($p in @(
-            'C:\Windows\Setup\FirstBase\Tools\fb-im.ps1',
-            'C:\Windows\Setup\FirstBase\WUPayload\Tools\fb-im.ps1'
-        )) { [void]$cands.Add($p) }
+    # USB destage first (npm start / stick) so splash does not keep a stale C: fb-im.
+    try {
+        Get-CimInstance -ClassName Win32_LogicalDisk -Filter 'DriveType=2' -ErrorAction SilentlyContinue | ForEach-Object {
+            $root = $_.DeviceID + '\'
+            [void]$cands.Add((Join-Path $root 'FirstBase\WUPayload\Tools\fb-im.ps1'))
+            [void]$cands.Add((Join-Path $root 'WUPayload\Tools\fb-im.ps1'))
+        }
+    } catch {}
     if ($PSScriptRoot) {
         [void]$cands.Add((Join-Path $PSScriptRoot 'Tools\fb-im.ps1'))
         [void]$cands.Add((Join-Path $PSScriptRoot 'fb-im.ps1'))
@@ -254,13 +238,10 @@ function Find-FbSplashFbImScript {
             }
         } catch {}
     }
-    try {
-        Get-CimInstance -ClassName Win32_LogicalDisk -Filter 'DriveType=2' -ErrorAction SilentlyContinue | ForEach-Object {
-            $root = $_.DeviceID + '\'
-            [void]$cands.Add((Join-Path $root 'FirstBase\WUPayload\Tools\fb-im.ps1'))
-            [void]$cands.Add((Join-Path $root 'WUPayload\Tools\fb-im.ps1'))
-        }
-    } catch {}
+    foreach ($p in @(
+            'C:\Windows\Setup\FirstBase\Tools\fb-im.ps1',
+            'C:\Windows\Setup\FirstBase\WUPayload\Tools\fb-im.ps1'
+        )) { [void]$cands.Add($p) }
     foreach ($c in $cands) {
         if ($c -and (Test-Path -LiteralPath $c)) { return $c }
     }
@@ -307,49 +288,26 @@ function Set-FbSplashBusyOverlay {
     try { $ov.Visibility = [System.Windows.Visibility]::Visible } catch {}
 }
 
+function Get-FbSplashFrozenBrush {
+    param([string]$Hex)
+    try {
+        $b = [System.Windows.Media.BrushConverter]::new().ConvertFromString($Hex)
+        if ($b -and $b.CanFreeze -and -not $b.IsFrozen) { $b.Freeze() }
+        return $b
+    } catch { return [System.Windows.Media.Brushes]::Transparent }
+}
+
 function Hide-FbSplashRadialMenu {
     $layer = $script:FbSplashRadialLayer
     if (-not $layer) { return }
     if (-not $script:FbSplashRadialOpen -and $layer.Visibility -ne [System.Windows.Visibility]::Visible) { return }
     $script:FbSplashRadialOpen = $false
+    try { $layer.BeginAnimation([System.Windows.UIElement]::OpacityProperty, $null) } catch {}
     try {
-        $easeIn = New-Object System.Windows.Media.Animation.CubicEase
-        $easeIn.EasingMode = [System.Windows.Media.Animation.EasingMode]::EaseIn
-        $fade = New-Object System.Windows.Media.Animation.DoubleAnimation
-        $fade.To = 0.0
-        $fade.Duration = New-Object System.Windows.Duration ([TimeSpan]::FromMilliseconds(160))
-        $fade.EasingFunction = $easeIn
-        $fade.FillBehavior = [System.Windows.Media.Animation.FillBehavior]::HoldEnd
-        $layer.BeginAnimation([System.Windows.UIElement]::OpacityProperty, $fade)
-        foreach ($item in @($script:FbSplashRadialItems)) {
-            $st = $item.Scale
-            if ($st) {
-                $sc = $fade.Clone()
-                $st.BeginAnimation([System.Windows.Media.ScaleTransform]::ScaleXProperty, $sc)
-                $st.BeginAnimation([System.Windows.Media.ScaleTransform]::ScaleYProperty, $sc.Clone())
-            }
-        }
-        $done = New-Object System.Windows.Threading.DispatcherTimer
-        $done.Interval = [TimeSpan]::FromMilliseconds(180)
-        $done.Add_Tick({
-            try { $args[0].Stop() } catch {}
-            try {
-                $ly = $script:FbSplashRadialLayer
-                if ($ly -and -not $script:FbSplashRadialOpen) {
-                    $ly.Visibility = [System.Windows.Visibility]::Collapsed
-                    $ly.IsHitTestVisible = $false
-                    $ly.BeginAnimation([System.Windows.UIElement]::OpacityProperty, $null)
-                    $ly.Opacity = 1
-                }
-                if ($script:FbSplashUpdatesPanel) { $script:FbSplashUpdatesPanel.Effect = $null }
-            } catch {}
-        })
-        $done.Start()
-    } catch {
-        try { $layer.Visibility = [System.Windows.Visibility]::Collapsed } catch {}
-        try { $layer.IsHitTestVisible = $false } catch {}
-        try { if ($script:FbSplashUpdatesPanel) { $script:FbSplashUpdatesPanel.Effect = $null } } catch {}
-    }
+        $layer.Visibility = [System.Windows.Visibility]::Collapsed
+        $layer.IsHitTestVisible = $false
+        $layer.Opacity = 1
+    } catch {}
 }
 
 function Update-FbSplashRadialItemPositions {
@@ -396,74 +354,30 @@ function Show-FbSplashRadialMenu {
     $layer = $script:FbSplashRadialLayer
     if (-not $layer) { return }
     Update-FbSplashRadialItemPositions
-    $cx = [double]$script:FbSplashRadialLogoX
-    $cy = [double]$script:FbSplashRadialLogoY
     try { $layer.BeginAnimation([System.Windows.UIElement]::OpacityProperty, $null) } catch {}
-    $layer.Opacity = 0
-    try { $layer.Visibility = [System.Windows.Visibility]::Visible } catch {}
-    try { $layer.IsHitTestVisible = $true } catch {}
-    $script:FbSplashRadialOpen = $true
-    try {
-        if ($script:FbSplashUpdatesPanel) {
-            $script:FbSplashUpdatesPanel.Effect = (New-Object System.Windows.Media.Effects.BlurEffect -Property @{ Radius = 8 })
-        }
-    } catch {}
-
-    $ease = New-Object System.Windows.Media.Animation.CubicEase
-    $ease.EasingMode = [System.Windows.Media.Animation.EasingMode]::EaseOut
-    $fadeIn = New-Object System.Windows.Media.Animation.DoubleAnimation
-    $fadeIn.From = 0.0
-    $fadeIn.To = 1.0
-    $fadeIn.Duration = New-Object System.Windows.Duration ([TimeSpan]::FromMilliseconds(220))
-    $fadeIn.EasingFunction = $ease
-    $layer.BeginAnimation([System.Windows.UIElement]::OpacityProperty, $fadeIn)
-
-    $i = 0
     foreach ($item in @($script:FbSplashRadialItems)) {
         $btn = $item.Button
         if (-not $btn) { continue }
-        $tx = [double]$item.TargetX
-        $ty = [double]$item.TargetY
-        $startX = $cx - 40.0
-        $startY = $cy - 34.0
+        try { $btn.BeginAnimation([System.Windows.Controls.Canvas]::LeftProperty, $null) } catch {}
+        try { $btn.BeginAnimation([System.Windows.Controls.Canvas]::TopProperty, $null) } catch {}
         try {
-            [System.Windows.Controls.Canvas]::SetLeft($btn, $startX)
-            [System.Windows.Controls.Canvas]::SetTop($btn, $startY)
+            [System.Windows.Controls.Canvas]::SetLeft($btn, [double]$item.TargetX)
+            [System.Windows.Controls.Canvas]::SetTop($btn, [double]$item.TargetY)
         } catch {}
         $st = $item.Scale
         if ($st) {
-            $st.BeginAnimation([System.Windows.Media.ScaleTransform]::ScaleXProperty, $null)
-            $st.BeginAnimation([System.Windows.Media.ScaleTransform]::ScaleYProperty, $null)
-            $st.ScaleX = 0.28
-            $st.ScaleY = 0.28
+            try {
+                $st.BeginAnimation([System.Windows.Media.ScaleTransform]::ScaleXProperty, $null)
+                $st.BeginAnimation([System.Windows.Media.ScaleTransform]::ScaleYProperty, $null)
+            } catch {}
+            $st.ScaleX = 1
+            $st.ScaleY = 1
         }
-        $delay = [TimeSpan]::FromMilliseconds(30 * $i)
-        $moveMs = 280
-        $ax = New-Object System.Windows.Media.Animation.DoubleAnimation
-        $ax.From = $startX
-        $ax.To = $tx
-        $ax.Duration = New-Object System.Windows.Duration ([TimeSpan]::FromMilliseconds($moveMs))
-        $ax.BeginTime = $delay
-        $ax.EasingFunction = $ease
-        $ay = $ax.Clone()
-        $ay.From = $startY
-        $ay.To = $ty
-        $sc = New-Object System.Windows.Media.Animation.DoubleAnimation
-        $sc.From = 0.28
-        $sc.To = 1.0
-        $sc.Duration = New-Object System.Windows.Duration ([TimeSpan]::FromMilliseconds($moveMs))
-        $sc.BeginTime = $delay
-        $sc.EasingFunction = $ease
-        try {
-            $btn.BeginAnimation([System.Windows.Controls.Canvas]::LeftProperty, $ax)
-            $btn.BeginAnimation([System.Windows.Controls.Canvas]::TopProperty, $ay)
-            if ($st) {
-                $st.BeginAnimation([System.Windows.Media.ScaleTransform]::ScaleXProperty, $sc)
-                $st.BeginAnimation([System.Windows.Media.ScaleTransform]::ScaleYProperty, $sc.Clone())
-            }
-        } catch {}
-        $i++
     }
+    $layer.Opacity = 1
+    try { $layer.Visibility = [System.Windows.Visibility]::Visible } catch {}
+    try { $layer.IsHitTestVisible = $true } catch {}
+    $script:FbSplashRadialOpen = $true
 }
 
 function Toggle-FbSplashRadialMenu {
@@ -556,31 +470,138 @@ function Start-FbSplashOpenSettings {
     }
 }
 
+function Stop-FbSplashPowerWatch {
+    try {
+        if ($script:FbSplashPowerWatch) {
+            $script:FbSplashPowerWatch.Stop()
+            $script:FbSplashPowerWatch = $null
+        }
+    } catch { $script:FbSplashPowerWatch = $null }
+}
+
+function Start-FbSplashPowerWatch {
+    param(
+        [object]$Proc,
+        [string]$FallbackKind,
+        [string]$BusyFailText
+    )
+    Stop-FbSplashPowerWatch
+    $script:FbSplashPowerProc = $Proc
+    $script:FbSplashPowerFallbackKind = $FallbackKind
+    $script:FbSplashPowerBusyFail = $BusyFailText
+    $script:FbSplashPowerFallbackTried = $false
+    $script:FbSplashPowerDeadline = [datetime]::UtcNow.AddSeconds(12)
+    $t = New-Object System.Windows.Threading.DispatcherTimer
+    $t.Interval = [TimeSpan]::FromMilliseconds(400)
+    $t.Add_Tick({
+        try {
+            $started = $false
+            try { $started = [bool][System.Environment]::HasShutdownStarted } catch {}
+            if ($started) { Stop-FbSplashPowerWatch; return }
+
+            $p = $script:FbSplashPowerProc
+            $exited = $false
+            $ec = 0
+            if ($p) {
+                try { $p.Refresh() } catch {}
+                try { $exited = [bool]$p.HasExited } catch { $exited = $true }
+                if ($exited) {
+                    try { $ec = [int]$p.ExitCode } catch { $ec = 1 }
+                    $script:FbSplashPowerProc = $null
+                }
+            }
+
+            if ($exited -and $ec -ne 0 -and -not $script:FbSplashPowerFallbackTried) {
+                $script:FbSplashPowerFallbackTried = $true
+                $kind = [string]$script:FbSplashPowerFallbackKind
+                if ($kind -eq 'restart') {
+                    Write-FbSplashTechLog ("firmware restart exit {0}; falling back to /r" -f $ec) 'WARN'
+                    Set-FbSplashBusyOverlay 'Please wait - firmware restart not available; restarting Windows...'
+                    Invoke-FbSplashIssueShutdown -Kind 'restart'
+                    return
+                }
+            }
+
+            if ([datetime]::UtcNow -ge [datetime]$script:FbSplashPowerDeadline) {
+                Stop-FbSplashPowerWatch
+                $msg = [string]$script:FbSplashPowerBusyFail
+                if ([string]::IsNullOrWhiteSpace($msg)) {
+                    $msg = 'Restart did not start. The overlay will close.'
+                }
+                Set-FbSplashBusyOverlay $msg
+                try {
+                    $hide = New-Object System.Windows.Threading.DispatcherTimer
+                    $hide.Interval = [TimeSpan]::FromSeconds(4)
+                    $hide.Add_Tick({
+                        try { $args[0].Stop() } catch {}
+                        Set-FbSplashBusyOverlay -Hide
+                    })
+                    $hide.Start()
+                } catch { Set-FbSplashBusyOverlay -Hide }
+            }
+        } catch {
+            Stop-FbSplashPowerWatch
+            Set-FbSplashBusyOverlay -Hide
+        }
+    })
+    $script:FbSplashPowerWatch = $t
+    $t.Start()
+}
+
+function Invoke-FbSplashIssueShutdown {
+    param(
+        [ValidateSet('restart', 'firmware', 'shutdown')]
+        [string]$Kind
+    )
+    $shutdown = Join-Path $env:SystemRoot 'System32\shutdown.exe'
+    if (-not (Test-Path -LiteralPath $shutdown)) { $shutdown = 'shutdown.exe' }
+    $shutArgs = @()
+    if ($Kind -eq 'firmware') {
+        $shutArgs = @('/r', '/fw', '/f', '/t', '0')
+    } elseif ($Kind -eq 'shutdown') {
+        $shutArgs = @('/s', '/f', '/t', '0')
+    } else {
+        $shutArgs = @('/r', '/f', '/t', '0')
+    }
+    try {
+        return (Start-Process -FilePath $shutdown -ArgumentList $shutArgs -WindowStyle Hidden -PassThru -ErrorAction Stop)
+    } catch {
+        Write-FbSplashTechLog ("shutdown.exe {0} threw: {1}" -f $Kind, $_.Exception.Message) 'WARN'
+        if ($Kind -eq 'restart') {
+            try { Restart-Computer -Force -ErrorAction SilentlyContinue } catch {}
+        } elseif ($Kind -eq 'shutdown') {
+            try { Stop-Computer -Force -ErrorAction SilentlyContinue } catch {}
+        }
+        return $null
+    }
+}
+
 function Start-FbSplashTechRestart {
     param([switch]$Firmware)
     Hide-FbSplashRadialMenu
-    $label = if ($Firmware) { 'Restarting to UEFI...' } else { 'Restarting...' }
+    $label = if ($Firmware) { 'Please wait - restarting to firmware...' } else { 'Please wait - restarting...' }
     Set-FbSplashBusyOverlay $label
     try {
         if (Get-Command Update-FbSplashRebootCountForManualRestart -ErrorAction SilentlyContinue) {
             [void](Update-FbSplashRebootCountForManualRestart)
         }
     } catch {}
-    $shutdown = Join-Path $env:SystemRoot 'System32\shutdown.exe'
-    if (-not (Test-Path -LiteralPath $shutdown)) { $shutdown = 'shutdown.exe' }
-    try {
-        if ($Firmware) {
-            Start-Process -FilePath $shutdown -ArgumentList @('/r', '/fw', '/f', '/t', '0') -WindowStyle Hidden -ErrorAction Stop | Out-Null
-            return
-        }
-    } catch {
-        Write-FbSplashTechLog ("UEFI restart failed, falling back to /r: {0}" -f $_.Exception.Message) 'WARN'
+    $kind = if ($Firmware) { 'firmware' } else { 'restart' }
+    $proc = Invoke-FbSplashIssueShutdown -Kind $kind
+    $fail = if ($Firmware) {
+        'Firmware restart did not start. Overlay closing - try Restart or hold the power button.'
+    } else {
+        'Restart did not start. Overlay closing - hold the power button if needed.'
     }
-    try {
-        Start-Process -FilePath $shutdown -ArgumentList @('/r', '/f', '/t', '0') -WindowStyle Hidden -ErrorAction Stop | Out-Null
-    } catch {
-        try { Restart-Computer -Force -ErrorAction SilentlyContinue } catch {}
-    }
+    $fallback = if ($Firmware) { 'restart' } else { '' }
+    Start-FbSplashPowerWatch -Proc $proc -FallbackKind $fallback -BusyFailText $fail
+}
+
+function Start-FbSplashTechShutdown {
+    Hide-FbSplashRadialMenu
+    Set-FbSplashBusyOverlay 'Please wait - shutting down...'
+    $proc = Invoke-FbSplashIssueShutdown -Kind 'shutdown'
+    Start-FbSplashPowerWatch -Proc $proc -FallbackKind '' -BusyFailText 'Shutdown did not start. Overlay closing - use the power button if needed.'
 }
 
 function New-FbSplashRadialButton {
@@ -589,7 +610,7 @@ function New-FbSplashRadialButton {
     $btn.Width = 80
     $btn.Height = 104
     $btn.Cursor = [System.Windows.Input.Cursors]::Hand
-    $btn.Background = [System.Windows.Media.Brushes]::Transparent
+    $btn.Background = $script:FbSplashBrushTransparent
     $btn.BorderThickness = New-Object System.Windows.Thickness 0
     $btn.Padding = New-Object System.Windows.Thickness 0
     $btn.Focusable = $false
@@ -602,22 +623,16 @@ function New-FbSplashRadialButton {
     $chip.Width = 68
     $chip.Height = 68
     $chip.CornerRadius = New-Object System.Windows.CornerRadius 34
-    $chip.Background = [System.Windows.Media.BrushConverter]::new().ConvertFromString('#FF0A1B33')
-    $chip.BorderBrush = [System.Windows.Media.BrushConverter]::new().ConvertFromString('#FF22D3EE')
+    $chip.Background = $script:FbSplashBrushChip
+    $chip.BorderBrush = $script:FbSplashBrushCyan
     $chip.BorderThickness = New-Object System.Windows.Thickness 1.5
     $chip.HorizontalAlignment = 'Center'
-    $glow = New-Object System.Windows.Media.Effects.DropShadowEffect
-    $glow.Color = [System.Windows.Media.Color]::FromRgb(0x22, 0xD3, 0xEE)
-    $glow.BlurRadius = 14
-    $glow.ShadowDepth = 0
-    $glow.Opacity = 0.55
-    $chip.Effect = $glow
 
     $icon = New-Object System.Windows.Controls.TextBlock
     $icon.Text = $Glyph
-    $icon.FontFamily = New-Object System.Windows.Media.FontFamily 'Segoe MDL2 Assets'
+    $icon.FontFamily = $script:FbSplashFontMdl2
     $icon.FontSize = 22
-    $icon.Foreground = [System.Windows.Media.BrushConverter]::new().ConvertFromString('#FFE8F4FF')
+    $icon.Foreground = $script:FbSplashBrushText
     $icon.HorizontalAlignment = 'Center'
     $icon.VerticalAlignment = 'Center'
     $icon.TextAlignment = 'Center'
@@ -627,7 +642,7 @@ function New-FbSplashRadialButton {
     $label.Text = $Caption
     $label.FontSize = 11
     $label.FontWeight = [System.Windows.FontWeights]::SemiBold
-    $label.Foreground = [System.Windows.Media.BrushConverter]::new().ConvertFromString('#FFE8F4FF')
+    $label.Foreground = $script:FbSplashBrushText
     $label.HorizontalAlignment = 'Center'
     $label.TextAlignment = 'Center'
     $label.Margin = New-Object System.Windows.Thickness 0, 6, 0, 0
@@ -645,13 +660,13 @@ function New-FbSplashRadialButton {
     $btn.Add_MouseEnter({
         try {
             $c = $args[0].RadialChip
-            if ($c) { $c.Background = [System.Windows.Media.BrushConverter]::new().ConvertFromString('#FF123154') }
+            if ($c) { $c.Background = $script:FbSplashBrushChipHover }
         } catch {}
     })
     $btn.Add_MouseLeave({
         try {
             $c = $args[0].RadialChip
-            if ($c) { $c.Background = [System.Windows.Media.BrushConverter]::new().ConvertFromString('#FF0A1B33') }
+            if ($c) { $c.Background = $script:FbSplashBrushChip }
         } catch {}
     })
     $btn.Add_Click($Click)
@@ -686,6 +701,15 @@ function Register-FbSplashTechChrome {
     $script:FbSplashUpdatesPanel = $Window.FindName('UpdatesPanel')
     $script:FbSplashRadialOpen = $false
     $script:FbSplashFbImOpen = $false
+    $script:FbSplashBrushTransparent = [System.Windows.Media.Brushes]::Transparent
+    $script:FbSplashBrushChip = Get-FbSplashFrozenBrush '#FF0A1B33'
+    $script:FbSplashBrushChipHover = Get-FbSplashFrozenBrush '#FF123154'
+    $script:FbSplashBrushCyan = Get-FbSplashFrozenBrush '#FF22D3EE'
+    $script:FbSplashBrushText = Get-FbSplashFrozenBrush '#FFE8F4FF'
+    $script:FbSplashBrushDim = Get-FbSplashFrozenBrush '#CC000000'
+    $script:FbSplashBrushBusy = Get-FbSplashFrozenBrush '#AA02040A'
+    $script:FbSplashBrushHost = Get-FbSplashFrozenBrush '#FF02040A'
+    try { $script:FbSplashFontMdl2 = New-Object System.Windows.Media.FontFamily 'Segoe MDL2 Assets' } catch { $script:FbSplashFontMdl2 = [System.Windows.SystemFonts]::MessageFontFamily }
 
     $canvas = $script:FbSplashDesignCanvas
     if (-not $canvas) {
@@ -702,7 +726,7 @@ function Register-FbSplashTechChrome {
     try { [System.Windows.Controls.Panel]::SetZIndex($layer, 80) } catch {}
 
     $dim = New-Object System.Windows.Shapes.Rectangle
-    $dim.Fill = [System.Windows.Media.BrushConverter]::new().ConvertFromString('#CC000000')
+    $dim.Fill = $script:FbSplashBrushDim
     $dim.Width = 2000
     $dim.Height = 2000
     $dim.IsHitTestVisible = $true
@@ -717,7 +741,7 @@ function Register-FbSplashTechChrome {
         @{ Caption = 'Settings'; Glyph = [string][char]0xE713; Deg = 135; Click = { Start-FbSplashOpenSettings } }
         @{ Caption = 'Close'; Glyph = [string][char]0xE711; Deg = 90; Click = { Hide-FbSplashRadialMenu } }
         @{ Caption = 'Restart'; Glyph = [string][char]0xE72C; Deg = 8; Click = { Start-FbSplashTechRestart } }
-        @{ Caption = 'UEFI'; Glyph = [string][char]0xE950; Deg = 48; Click = { Start-FbSplashTechRestart -Firmware } }
+        @{ Caption = 'FW'; Glyph = [string][char]0xE950; Deg = 48; Click = { Start-FbSplashTechRestart -Firmware } }
     )
     foreach ($s in $spec) {
         $btn = New-FbSplashRadialButton -Caption $s.Caption -Glyph $s.Glyph -Click $s.Click
@@ -733,14 +757,14 @@ function Register-FbSplashTechChrome {
     $script:FbSplashRadialLayer = $layer
 
     $busy = New-Object System.Windows.Controls.Border
-    $busy.Background = [System.Windows.Media.BrushConverter]::new().ConvertFromString('#AA02040A')
+    $busy.Background = $script:FbSplashBrushBusy
     $busy.Visibility = [System.Windows.Visibility]::Collapsed
     $busy.IsHitTestVisible = $false
     $busy.Opacity = 0
     try { [System.Windows.Controls.Panel]::SetZIndex($busy, 200) } catch {}
     $busyText = New-Object System.Windows.Controls.TextBlock
     $busyText.Text = 'Working...'
-    $busyText.Foreground = [System.Windows.Media.BrushConverter]::new().ConvertFromString('#FF22D3EE')
+    $busyText.Foreground = $script:FbSplashBrushCyan
     $busyText.FontSize = 22
     $busyText.FontWeight = [System.Windows.FontWeights]::SemiBold
     $busyText.HorizontalAlignment = 'Center'
@@ -752,7 +776,7 @@ function Register-FbSplashTechChrome {
     $imHost = New-Object System.Windows.Controls.Grid
     $imHost.Name = 'FbImHost'
     $imHost.Visibility = [System.Windows.Visibility]::Collapsed
-    $imHost.Background = [System.Windows.Media.BrushConverter]::new().ConvertFromString('#FF02040A')
+    $imHost.Background = $script:FbSplashBrushHost
     try { [System.Windows.Controls.Panel]::SetZIndex($imHost, 120) } catch {}
     $script:FbSplashFbImHost = $imHost
 

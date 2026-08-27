@@ -2,8 +2,10 @@
 <#
 .SYNOPSIS
     fb-dump.ps1 -- FirstBase diagnostic log collector (PowerShell backend)
-    5.4.24: works without a console (splash Hidden start); dest is
-    USB\FirstBase-Logs\<sn-hhmm-mfr>; copies Setup\FirstBase\Logs including WU-*.log.
+    5.4.25: splash Hidden start; explicit -Dest is not blocked on C:;
+    copies Setup\FirstBase\Logs (WU-*.log) with ASCII missing markers.
+    5.4.26: NoPrompt never uses the console UI; robocopy does not redirect stdout
+    (Hidden dump was exiting before extras / deadlocking).
 .DESCRIPTION
     Full diagnostic collection: build identity, payload state, Panther, Sysprep,
     event logs, Task Scheduler, Defender, CBS/DISM, tasklist, installed programs,
@@ -32,7 +34,7 @@ Set-StrictMode -Off
 $ErrorActionPreference = 'SilentlyContinue'
 $script:FbDumpUi = $false
 try {
-    if ([Console]::WindowWidth -gt 0) { $script:FbDumpUi = $true }
+    if (-not $NoPrompt -and [Console]::WindowWidth -gt 0) { $script:FbDumpUi = $true }
 } catch { $script:FbDumpUi = $false }
 # Splash Collect logs starts this script Hidden with no console. Never
 # call Console.SetCursorPosition unless FbDumpUi is true.
@@ -232,6 +234,16 @@ function Invoke-RobocopyPhase {
 
     $null = New-Item -ItemType Directory -Path $DestDir -Force -ErrorAction SilentlyContinue
 
+    if (-not $script:FbDumpUi) {
+        try {
+            $rcExe = Join-Path $env:SystemRoot 'System32\robocopy.exe'
+            if (-not (Test-Path -LiteralPath $rcExe)) { $rcExe = 'robocopy.exe' }
+            $rcArgs = @($Source, $DestDir, '/E', '/R:1', '/W:1', '/NJH', '/NJS', '/NP', '/COPY:DAT')
+            Start-Process -FilePath $rcExe -ArgumentList $rcArgs -Wait -WindowStyle Hidden -ErrorAction SilentlyContinue | Out-Null
+        } catch {}
+        return
+    }
+
     Show-PhaseLabel -Idx $Idx -Label $Label -Spin '|'
 
     # Launch robocopy; read its stdout line-by-line in real time
@@ -239,7 +251,8 @@ function Invoke-RobocopyPhase {
     $psi.FileName               = 'robocopy'
     $psi.Arguments              = "`"$Source`" `"$DestDir`" /E /R:1 /W:1 /NJH /NJS"
     $psi.RedirectStandardOutput = $true
-    $psi.RedirectStandardError  = $true
+    # Do not redirect stderr: an unread stderr pipe can fill and deadlock robocopy.
+    $psi.RedirectStandardError  = $false
     $psi.UseShellExecute        = $false
     $psi.CreateNoWindow         = $true
 
@@ -327,14 +340,103 @@ function Test-IsBlockedDrive {
 # =============================================================================
 # DESTINATION RESOLUTION
 # =============================================================================
+function Write-FbDumpAsciiNote {
+    param([string]$Path, [string]$Text)
+    if (-not $Path) { return }
+    try {
+        $body = [string]$Text
+        if (-not $body.EndsWith("`r`n") -and -not $body.EndsWith("`n")) { $body = $body + "`r`n" }
+        [System.IO.File]::WriteAllText($Path, $body, [System.Text.Encoding]::ASCII)
+    } catch {}
+}
+
+function Copy-FbDumpOneTree {
+    param(
+        [string]$Source,
+        [string]$DestDir,
+        [string]$Label
+    )
+    $safeLabel = ($Label -replace '[^\w\-]', '-')
+    if (-not $safeLabel) { $safeLabel = 'source' }
+    $missingPath = Join-Path $FbDest ($safeLabel + '-MISSING.txt')
+    if (-not $Source -or -not (Test-Path -LiteralPath $Source)) {
+        Write-FbDumpAsciiNote -Path $missingPath -Text ('Source missing: ' + [string]$Source)
+        return 0
+    }
+    $n = 0
+    try { $null = New-Item -ItemType Directory -Path $DestDir -Force -ErrorAction SilentlyContinue } catch {}
+    $files = @()
+    try { $files = @(Get-ChildItem -LiteralPath $Source -Force -Recurse -File -ErrorAction SilentlyContinue) } catch { $files = @() }
+    foreach ($f in $files) {
+        try {
+            $rel = $f.FullName.Substring($Source.Length).TrimStart('\')
+            $target = Join-Path $DestDir $rel
+            $parent = Split-Path -Parent $target
+            if ($parent -and -not (Test-Path -LiteralPath $parent)) {
+                $null = New-Item -ItemType Directory -Path $parent -Force -ErrorAction SilentlyContinue
+            }
+            Copy-Item -LiteralPath $f.FullName -Destination $target -Force -ErrorAction Stop
+            $n++
+        } catch {
+            $skipPath = Join-Path $FbDest 'COPY-SKIP.txt'
+            $msg = 'SKIP: ' + $f.FullName + ' :: ' + $_.Exception.Message
+            try { Add-Content -LiteralPath $skipPath -Value $msg -Encoding ASCII -ErrorAction SilentlyContinue } catch {}
+        }
+    }
+    return $n
+}
+
+function Copy-FbDumpOnDeviceSources {
+    # Always copy the live on-device log roots. Robocopy later may add more.
+    # Hidden splash start has no console; Copy-Item still runs.
+    $n = 0
+    $n += Copy-FbDumpOneTree -Source 'C:\Windows\Setup\FirstBase\Logs' -DestDir (Join-Path $FbDest 'Logs') -Label 'Setup-FirstBase-Logs'
+    $n += Copy-FbDumpOneTree -Source 'C:\Windows\Setup\FirstBase\State' -DestDir (Join-Path $FbDest 'State') -Label 'Setup-FirstBase-State'
+    $n += Copy-FbDumpOneTree -Source 'C:\ProgramData\FirstBase' -DestDir (Join-Path $FbDest 'ProgramData-FirstBase') -Label 'ProgramData-FirstBase'
+    $wuRoot = 'C:\Windows\Setup\FirstBase'
+    $wuDest = Join-Path $FbDest 'Logs'
+    try { $null = New-Item -ItemType Directory -Path $wuDest -Force -ErrorAction SilentlyContinue } catch {}
+    $extra = @()
+    try {
+        $extra = @(Get-ChildItem -LiteralPath $wuRoot -Force -File -ErrorAction SilentlyContinue |
+            Where-Object { $_.Name -like 'WU-*.log' -or $_.Name -like '*.log' })
+    } catch { $extra = @() }
+    foreach ($f in $extra) {
+        try {
+            Copy-Item -LiteralPath $f.FullName -Destination (Join-Path $wuDest $f.Name) -Force -ErrorAction Stop
+            $n++
+        } catch {
+            $skipPath = Join-Path $FbDest 'COPY-SKIP.txt'
+            $msg = 'SKIP: ' + $f.FullName + ' :: ' + $_.Exception.Message
+            try { Add-Content -LiteralPath $skipPath -Value $msg -Encoding ASCII -ErrorAction SilentlyContinue } catch {}
+        }
+    }
+    return $n
+}
+
 if ($Dest -and $Dest.Trim() -ne '') {
-    $FbDest = $Dest.Trim()
+    $FbDest = $Dest.Trim().TrimEnd('\')
     $explicitDrive = (Split-Path -Qualifier $FbDest -ErrorAction SilentlyContinue).TrimEnd(':').ToUpper()
-    if ($explicitDrive -and (Test-IsBlockedDrive $explicitDrive)) {
-        Write-Host ''
-        Write-Host "  $($script:RED)[ERROR]$($script:RESET) Destination drive ${explicitDrive}: is blocked (C:, FB_ESP, or ESP partition)."
-        Write-Host '         Pass a path on the LoneWolf USB volume instead.'
-        Exit-FbDump -Code 1
+    if ($explicitDrive) {
+        $blockEsp = $false
+        try {
+            $vol = Get-WmiObject Win32_LogicalDisk -Filter "DeviceID='${explicitDrive}:'" -ErrorAction SilentlyContinue
+            if ($vol) {
+                $label = if ($vol.VolumeName) { $vol.VolumeName.Trim() } else { '' }
+                foreach ($blocked in $script:BlockedLabels) {
+                    if ($label -eq $blocked) { $blockEsp = $true }
+                }
+                if ($explicitDrive -ne 'C' -and $vol.FileSystem -eq 'FAT32' -and [long]$vol.Size -lt 2147483648L) {
+                    $blockEsp = $true
+                }
+            }
+        } catch {}
+        if ($blockEsp) {
+            Write-Host ''
+            Write-Host "  $($script:RED)[ERROR]$($script:RESET) Destination drive ${explicitDrive}: is blocked (FB_ESP or ESP partition)."
+            Write-Host '         Pass a path on the LoneWolf USB volume or another writable folder.'
+            Exit-FbDump -Code 1
+        }
     }
 } else {
     $hhmm = (Get-Date).ToString('HHmm')
@@ -442,6 +544,8 @@ if (-not (Test-Path -LiteralPath $FbDest)) {
     Write-Host '  Pass an explicit path:  fb-dump.cmd D:\fb-myrun'
     Exit-FbDump -Code 1
 }
+
+try { [void](Copy-FbDumpOnDeviceSources) } catch {}
 
 # =============================================================================
 # CAPTURE PHASES
@@ -893,39 +997,43 @@ $dumpFiles = @()
 try {
     $dumpFiles = @(Get-ChildItem -LiteralPath $FbDest -Recurse -File -Force -EA SilentlyContinue)
 } catch { $dumpFiles = @() }
-try {
-    $dt    = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
-    $cn    = $env:COMPUTERNAME
-    $files = $dumpFiles |
-             Sort-Object FullName |
-             ForEach-Object { '- ' + $_.FullName.Substring($FbDest.Length + 1).TrimStart('\') }
-    $mdLines = @(
-        '# FirstBase Diagnostic Report'
-        ''
-        "**Date:** $dt"
-        "**Machine:** $cn"
-        ''
-        '**Issue Description:**'
-        $issueDesc
-        ''
-        '## Logs Included'
-    )
-    $mdLines += $files
-    [System.IO.File]::WriteAllLines($issOutPath, $mdLines, [System.Text.Encoding]::UTF8)
-    Write-Host '  Saved: FirstBase-Issue.md'
-} catch {
-    @(
-        '# FirstBase Diagnostic Report'
-        ''
-        "**Date:** $(Get-Date)"
-        "**Machine:** $env:COMPUTERNAME"
-        ''
-        '**Issue Description:**'
-        $issueDesc
-        ''
-        '## Logs Included'
-        '(file list unavailable)'
-    ) | Out-File $issOutPath -Encoding UTF8 -EA SilentlyContinue
+if ($NoPrompt -and (Test-Path -LiteralPath $issOutPath)) {
+    Write-Host '  Kept existing FirstBase-Issue.md (notes from fb-im).'
+} else {
+    try {
+        $dt    = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
+        $cn    = $env:COMPUTERNAME
+        $files = $dumpFiles |
+                 Sort-Object FullName |
+                 ForEach-Object { '- ' + $_.FullName.Substring($FbDest.Length + 1).TrimStart('\') }
+        $mdLines = @(
+            '# FirstBase Diagnostic Report'
+            ''
+            "**Date:** $dt"
+            "**Machine:** $cn"
+            ''
+            '**Issue Description:**'
+            $issueDesc
+            ''
+            '## Logs Included'
+        )
+        $mdLines += $files
+        [System.IO.File]::WriteAllLines($issOutPath, $mdLines, [System.Text.Encoding]::UTF8)
+        Write-Host '  Saved: FirstBase-Issue.md'
+    } catch {
+        @(
+            '# FirstBase Diagnostic Report'
+            ''
+            "**Date:** $(Get-Date)"
+            "**Machine:** $env:COMPUTERNAME"
+            ''
+            '**Issue Description:**'
+            $issueDesc
+            ''
+            '## Logs Included'
+            '(file list unavailable)'
+        ) | Out-File $issOutPath -Encoding UTF8 -EA SilentlyContinue
+    }
 }
 
 $payloadFiles = @($dumpFiles | Where-Object { $_.Name -ne 'FirstBase-Issue.md' -and $_.Name -ne 'DUMP-SUMMARY.txt' })

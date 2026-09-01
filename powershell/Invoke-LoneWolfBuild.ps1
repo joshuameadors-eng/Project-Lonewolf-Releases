@@ -1356,6 +1356,42 @@ $workerDiskBlock = {
         }
     }
 
+    # Job runspaces cannot see script-scope Copy-LwPeBrailleFont on the parent.
+    function Copy-LwPeBrailleFont {
+        param(
+            [string]$OverlayRoot = '',
+            [string]$WimFontsDir = ''
+        )
+        $srcList = New-Object System.Collections.Generic.List[string]
+        if ($ContentRoot) {
+            [void]$srcList.Add((Join-Path $ContentRoot 'Deploy\Fonts\cascadiamono.ttf'))
+        }
+        if ($env:WINDIR) {
+            foreach ($n in @('cascadiamono.ttf', 'CascadiaMono.ttf', 'CascadiaMonoPL.ttf')) {
+                [void]$srcList.Add((Join-Path $env:WINDIR ('Fonts\' + $n)))
+            }
+        }
+        $src = $null
+        foreach ($c in $srcList) {
+            if ($c -and (Test-Path -LiteralPath $c)) { $src = $c; break }
+        }
+        if (-not $src) {
+            J @{ event='log'; disk=$DiskNumber; message='WinPE Braille font: cascadiamono.ttf not found in payload Deploy\Fonts or Windows\Fonts (wolf may show as ?)' }
+            return
+        }
+        if ($OverlayRoot) {
+            $dstDir = Join-Path $OverlayRoot 'FirstBase\Deploy\Fonts'
+            New-Item -ItemType Directory -Force -Path $dstDir | Out-Null
+            Copy-Item -LiteralPath $src -Destination (Join-Path $dstDir 'cascadiamono.ttf') -Force
+            J @{ event='log'; disk=$DiskNumber; message=("WinPE Braille font staged to overlay: {0}" -f (Join-Path $dstDir 'cascadiamono.ttf')) }
+        }
+        if ($WimFontsDir) {
+            New-Item -ItemType Directory -Force -Path $WimFontsDir | Out-Null
+            Copy-Item -LiteralPath $src -Destination (Join-Path $WimFontsDir 'cascadiamono.ttf') -Force
+            J @{ event='log'; disk=$DiskNumber; message=("WinPE Braille font staged into boot.wim Fonts: {0}" -f (Join-Path $WimFontsDir 'cascadiamono.ttf')) }
+        }
+    }
+
     function Reset-LwUsbLogFolder {
         param([string]$VolRoot, [switch]$ClearContents)
         if ([string]::IsNullOrWhiteSpace($VolRoot)) { return }

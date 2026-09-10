@@ -46,6 +46,9 @@ param(
     [ValidateSet('AMD64','ARM64')]
     [string]$WorkflowType    = 'AMD64',
 
+    [ValidateSet('Home','Pro')]
+    [string]$WindowsEdition  = 'Pro',
+
     [switch]$LocalOnly,
 
     [string]$LocalOutputPath = 'C:\LWStaging',
@@ -111,17 +114,24 @@ Write-OK "ISO folder reachable: $IsoRoot"
 # ---------------------------------------------------------------------------
 # Step 2: Find ISO
 # ---------------------------------------------------------------------------
-Write-Step "Locating $wfUpper ISO in $IsoRoot"
+Write-Step "Locating $wfUpper $WindowsEdition ISO in $IsoRoot"
 
-$isoFiles = @(Get-ChildItem -LiteralPath $IsoRoot -File -Filter '*.iso' -ErrorAction SilentlyContinue |
-    Where-Object { $_.Name -like "*($wfUpper).iso" } |
-    Sort-Object LastWriteTime -Descending)
-
-if ($isoFiles.Count -eq 0) {
-    throw "No ISO matching *($wfUpper).iso found in $IsoRoot"
+$isoFile = $null
+$splitLib = Join-Path $PSScriptRoot 'lib\Split-LWImage.ps1'
+if (Test-Path -LiteralPath $splitLib) {
+    . $splitLib
+    $found = Find-LWWindowsIso -StagingRoot $StagingRoot -IsoRoot $IsoRoot -Arch $wfUpper -Edition $WindowsEdition
+    if ($found) { $isoFile = $found }
 }
-
-$isoFile = $isoFiles[0]
+if (-not $isoFile) {
+    if ($WindowsEdition -eq 'Home') {
+        if (Get-Command -Name Get-LWMissingHomeIsoMessage -ErrorAction SilentlyContinue) {
+            throw (Get-LWMissingHomeIsoMessage -Arch $wfUpper -IsoHomeDir $IsoRoot)
+        }
+        throw "No Windows Home ISO for $wfUpper in $IsoRoot. Place a *($wfUpper)*.iso with home in the name under ISO\ (do not use the Pro image)."
+    }
+    throw "No $WindowsEdition ISO matching *($wfUpper).iso found in $IsoRoot (name must include $($WindowsEdition.ToLower()); legacy ISO\$WindowsEdition still read)"
+}
 Write-OK "Found ISO: $($isoFile.Name)  ($([math]::Round($isoFile.Length/1GB,2)) GB)"
 
 # ---------------------------------------------------------------------------

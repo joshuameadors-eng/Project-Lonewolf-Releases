@@ -31,6 +31,7 @@ param(
     [string]$ShareUser        = 'Reflect',
     [string]$SharePassword    = 'mer*HWE0upt*rqe@dud',
     [string]$WorkflowType     = 'AMD64',
+    [string]$WindowsEdition   = 'Pro',  # Home | Pro. Presplit/ISO identity; not LoneWolf vs Quick Install.
     [string]$LocalProjectRoot = ''   # When non-empty: skip share auth and read from this local path instead
 )
 
@@ -49,6 +50,8 @@ function Connect-ShareCredentials {
 }
 
 $wfUpper = $WorkflowType.ToUpper()
+$winEdition = 'Pro'
+if ($WindowsEdition -match '^(?i)home$') { $winEdition = 'Home' }
 
 if (-not [string]::IsNullOrWhiteSpace($LocalProjectRoot)) {
     # Local build mode: read from the bundled Remote\ folder, never touch the share.
@@ -67,6 +70,7 @@ $output = [ordered]@{
     version         = 'unknown'
     buildDate       = ''
     workflowType    = $wfUpper
+    windowsEdition  = $winEdition
     wimLastModified = ''
     changelog       = @()
     architectures   = $null
@@ -78,12 +82,26 @@ $output = [ordered]@{
     preSplitAvailable    = $false
     preSplitMatchesIso   = $false
     preSplitImageVersion = $null
+    isoMissingReason     = $null
 }
 
 # Product/launcher versions come from bundled VERSION.json / GitHub latest.json.
 $output.architectures = [ordered]@{
     AMD64 = [ordered]@{ wimBuildDate = ''; payloadHash = ''; enabled = $true }
-    ARM64 = [ordered]@{ wimBuildDate = ''; payloadHash = ''; enabled = $false }
+    ARM64 = [ordered]@{ wimBuildDate = ''; payloadHash = ''; enabled = $true }
+}
+$verManifest = Join-Path $PSScriptRoot 'VERSION.json'
+if (Test-Path -LiteralPath $verManifest) {
+    try {
+        $vj = Get-Content -Raw -LiteralPath $verManifest | ConvertFrom-Json
+        foreach ($archName in @('AMD64', 'ARM64')) {
+            $block = $null
+            if ($vj.architectures -and $vj.architectures.$archName) { $block = $vj.architectures.$archName }
+            if ($block -and $null -ne $block.enabled) {
+                $output.architectures[$archName].enabled = [bool]$block.enabled
+            }
+        }
+    } catch { }
 }
 
 # --- WIM availability + last-write-time fallback -----------------------------
@@ -115,95 +133,83 @@ try {
     }
 } catch { }
 
-# --- ISO availability: Staging\ISO\ (new) with fallback to Staging\ root ----
+# Shared ISO/SKU helpers (Find-LWWindowsIso, Get-LWImageVersionId, Test-LWPreSplitSet).
+$splitLib = Join-Path $PSScriptRoot 'lib\Split-LWImage.ps1'
+$splitLibLoaded = $false
+if (Test-Path -LiteralPath $splitLib) {
+    try { . $splitLib; $splitLibLoaded = $true } catch { }
+}
+
+# --- ISO availability: Staging\ISO\ (home/pro in filename); legacy ISO\<SKU>\ ----
 try {
-    $isoPattern = "*($wfUpper).iso"
-    $isoFiles   = @()
-    # Primary: new Staging\ISO\ folder
-    if (Test-Path -LiteralPath $isoRoot) {
-        $isoFiles = @(Get-ChildItem -LiteralPath $isoRoot -File -Filter '*.iso' -ErrorAction SilentlyContinue |
-            Where-Object { $_.Name -like $isoPattern } |
-            Sort-Object LastWriteTime -Descending)
+    $foundIso = $null
+    if ($splitLibLoaded -and (Get-Command -Name Find-LWWindowsIso -ErrorAction SilentlyContinue)) {
+        $foundIso = Find-LWWindowsIso -StagingRoot $StagingRoot -IsoRoot $isoRoot -Arch $wfUpper -Edition $winEdition
     }
-    # Fallback: ISOs placed directly in Staging\ root (old layout)
-    if ($isoFiles.Count -eq 0) {
-        $isoFiles = @(Get-ChildItem -LiteralPath $StagingRoot -File -Filter '*.iso' -ErrorAction SilentlyContinue |
-            Where-Object { $_.Name -like $isoPattern } |
-            Sort-Object LastWriteTime -Descending)
-    }
-    if ($isoFiles.Count -gt 0) {
+    if ($foundIso) {
         $output.isoAvailable = $true
-        $output.isoFile      = $isoFiles[0].Name
-        $isoYmd = $isoFiles[0].LastWriteTimeUtc.ToString('yyyy-MM-dd')
-        $output.isoLastWrite = $isoFiles[0].LastWriteTimeUtc.ToString('o')
+        $output.isoFile      = $foundIso.Name
+        $isoYmd = $foundIso.LastWriteTimeUtc.ToString('yyyy-MM-dd')
+        $output.isoLastWrite = $foundIso.LastWriteTimeUtc.ToString('o')
         $output.buildDate = $isoYmd
         if ($output.architectures.Contains($wfUpper)) {
             $output.architectures[$wfUpper].wimBuildDate = $isoYmd
         }
+    } elseif ($winEdition -eq 'Home') {
+        $output.isoMissingReason = "No Windows Home ISO for $wfUpper in $isoRoot. Place a *($wfUpper)*.iso with home in the name under ISO\ (do not use the Pro image)."
     }
 } catch { }
 
-# --- Pre-split staging availability (Option A) ------------------------------
-# Reports whether a pre-split install*.swm set exists for this arch, and whether it
-# matches the newest ISO (i.e. the next build will take the fast-copy path). Uses the
-# SAME shared validator (Test-LWPreSplitSet) + image-version identity (Get-LWImageVersionId)
-# as the builder's Get-LWPreSplitSet so the UI and the build agree.
+# --- Pre-split staging availability ----------------------------------------
+# Identity = arch + Windows version (ISO slug) + Home/Pro. LoneWolf and Quick
+# Install share the same set. Uses Test-LWPreSplitSet + Get-LWImageVersionId.
 try {
-    $splitLib = Join-Path $PSScriptRoot 'lib\Split-LWImage.ps1'
-    if (Test-Path -LiteralPath $splitLib) {
-        . $splitLib
+    if ($splitLibLoaded) {
         $preSplitRoot = Join-Path $StagingRoot 'PreSplit'
-        $archDir      = Join-Path $preSplitRoot $wfUpper
-        if (Test-Path -LiteralPath $archDir) {
-            # Newest ISO for this arch (same selection pattern the builder uses).
-            $psIso      = $null
-            $psIsoFiles = @()
-            if (Test-Path -LiteralPath $isoRoot) {
-                $psIsoFiles = @(Get-ChildItem -LiteralPath $isoRoot -File -Filter '*.iso' -ErrorAction SilentlyContinue |
-                    Where-Object { $_.Name -like "*($wfUpper)*.iso" } | Sort-Object LastWriteTime -Descending)
+        $psIso = $null
+        if ($output.isoFile) {
+            foreach ($dir in @(Get-LWIsoSearchDirs -StagingRoot $StagingRoot -IsoRoot $isoRoot -Edition $winEdition)) {
+                $p = Join-Path $dir $output.isoFile
+                if (Test-Path -LiteralPath $p) { $psIso = Get-Item -LiteralPath $p; break }
             }
-            if ($psIsoFiles.Count -eq 0) {
-                $psIsoFiles = @(Get-ChildItem -LiteralPath $StagingRoot -File -Filter '*.iso' -ErrorAction SilentlyContinue |
-                    Where-Object { $_.Name -like "*($wfUpper)*.iso" } | Sort-Object LastWriteTime -Descending)
-            }
-            if ($psIsoFiles.Count -gt 0) { $psIso = $psIsoFiles[0] }
-            $currentId = if ($psIso) { Get-LWImageVersionId -Iso $psIso } else { $null }
+        }
+        $currentId = if ($psIso) { Get-LWImageVersionId -Iso $psIso -Edition $winEdition } else { $null }
+        $legacyId  = if ($psIso) { Get-LWImageVersionId -Iso $psIso } else { $null }
 
-            # Candidate order: 'current' marker's set first, then newest subfolders.
-            $cands  = New-Object System.Collections.Generic.List[string]
-            $marker = Join-Path $archDir 'current'
-            if (Test-Path -LiteralPath $marker) {
-                try {
-                    $mk = Get-Content -Raw -LiteralPath $marker | ConvertFrom-Json
-                    if ($mk.imageVersion) {
-                        $c = Join-Path $archDir ([string]$mk.imageVersion)
-                        if (Test-Path -LiteralPath $c) { $cands.Add($c) }
-                    }
-                } catch { }
-            }
-            foreach ($d in @(Get-ChildItem -LiteralPath $archDir -Directory -ErrorAction SilentlyContinue |
-                    Sort-Object LastWriteTime -Descending)) {
-                if ($d.Name -like '*.tmp-*') { continue }
-                if (-not ($cands -contains $d.FullName)) { $cands.Add($d.FullName) }
-            }
+        $cands = @(Get-LWPreSplitCandidateDirs -PreSplitRoot $preSplitRoot -Arch $wfUpper -Edition $winEdition)
 
-            foreach ($setDir in $cands) {
-                $chk = Test-LWPreSplitSet -SetDir $setDir
-                if (-not $chk.Valid) { continue }
-                if (-not $output.preSplitAvailable) {
-                    $output.preSplitAvailable    = $true
-                    $output.preSplitImageVersion = [string]$chk.Manifest.imageVersion
+        foreach ($setDir in $cands) {
+            $chk = Test-LWPreSplitSet -SetDir $setDir
+            if (-not $chk.Valid) { continue }
+            $manEd = $null
+            try {
+                if ($chk.Manifest.PSObject.Properties['windowsEdition'] -and $chk.Manifest.windowsEdition) {
+                    $manEd = [string]$chk.Manifest.windowsEdition
+                } elseif ($chk.Manifest.PSObject.Properties['edition'] -and $chk.Manifest.edition) {
+                    $manEd = [string]$chk.Manifest.edition
                 }
-                if ($psIso) {
-                    $src = $chk.Manifest.source
-                    $match = ([string]$src.isoName -eq $psIso.Name) -and
-                             ([long]$src.isoSizeBytes -eq [long]$psIso.Length) -and
-                             ([string]$chk.Manifest.imageVersion -eq $currentId)
-                    if ($match) {
-                        $output.preSplitMatchesIso   = $true
-                        $output.preSplitImageVersion = [string]$chk.Manifest.imageVersion
-                        break
-                    }
+            } catch { }
+            if ($manEd) {
+                $manNorm = if ($manEd -match '^(?i)home$') { 'Home' } else { 'Pro' }
+                if ($manNorm -ne $winEdition) { continue }
+            } elseif ($winEdition -ne 'Pro') {
+                continue
+            }
+            if (-not $output.preSplitAvailable) {
+                $output.preSplitAvailable    = $true
+                $output.preSplitImageVersion = [string]$chk.Manifest.imageVersion
+            }
+            if ($psIso) {
+                $src = $chk.Manifest.source
+                $idOk = ([string]$chk.Manifest.imageVersion -eq $currentId) -or
+                        ($winEdition -eq 'Pro' -and [string]$chk.Manifest.imageVersion -eq $legacyId)
+                $match = $idOk -and
+                         ([string]$src.isoName -eq $psIso.Name) -and
+                         ([long]$src.isoSizeBytes -eq [long]$psIso.Length)
+                if ($match) {
+                    $output.preSplitMatchesIso   = $true
+                    $output.preSplitImageVersion = [string]$chk.Manifest.imageVersion
+                    break
                 }
             }
         }
@@ -211,9 +217,15 @@ try {
 } catch { }
 
 # --- Build mode (WIM preferred over ISO) ------------------------------------
-$output.buildMode = if ($output.wimAvailable) { 'wim' } elseif ($output.isoAvailable) { 'iso' } else { 'none' }
+# Home is ISO-only: a staged WIM is not SKU-aware, so never treat it as a Home source.
+if ($winEdition -eq 'Home' -and -not $output.isoAvailable) {
+    $output.buildMode = 'none'
+} else {
+    $output.buildMode = if ($output.wimAvailable) { 'wim' } elseif ($output.isoAvailable) { 'iso' } else { 'none' }
+}
 
 # Remove null isoFile key if no ISO found (keeps JSON tidy)
 if (-not $output.isoFile) { $output.Remove('isoFile') }
+if (-not $output.isoMissingReason) { $output.Remove('isoMissingReason') }
 
 $output | ConvertTo-Json -Compress -Depth 5

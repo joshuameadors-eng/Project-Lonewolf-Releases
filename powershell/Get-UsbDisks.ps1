@@ -10,7 +10,8 @@
 .OUTPUTS
   JSON array on stdout:
   [{"number":1,"friendlyName":"SanDisk Ultra","sizeGB":28.9,"serial":"AA001","busType":"USB",
-    "isLoneWolfDisk":true,"lwVersion":"1.0.0","lwWorkflowType":"AMD64"},...]
+    "isLoneWolfDisk":true,"lwVersion":"1.0.0","lwWorkflowType":"QUICK-INSTALL-ARM64",
+    "lwArch":"ARM64","lwArchLabel":"Snapdragon"},...]
   Outputs [] if no USB disks found.
   No Write-Host, no interactive prompts. Write-Error only for errors (stderr).
 #>
@@ -19,6 +20,23 @@
 param()
 
 $ErrorActionPreference = 'Stop'
+
+# AMD64 -> Intel/AMD, ARM64 -> Snapdragon. Accepts workflowType (QUICK-INSTALL-ARM64, etc.).
+function Get-LwArchFromWorkflow {
+    param([string]$WorkflowType)
+    if ([string]::IsNullOrWhiteSpace($WorkflowType)) { return $null }
+    $u = $WorkflowType.ToUpperInvariant()
+    if ($u -match 'ARM') { return 'ARM64' }
+    if ($u -match 'AMD' -or $u -match 'X64' -or $u -match 'INTEL') { return 'AMD64' }
+    return $null
+}
+
+function Get-LwArchFriendlyName {
+    param([string]$Arch)
+    if ($Arch -eq 'ARM64') { return 'Snapdragon' }
+    if ($Arch -eq 'AMD64') { return 'Intel/AMD' }
+    return $null
+}
 
 # --- WMI-based USB disk number detection (belt-and-suspenders) --------------
 function Get-DiskNumbersFromUsbWmi {
@@ -117,7 +135,7 @@ function Get-WmiSerialByNumber {
 
 # --- LoneWolf version detection from WINSETUP partition ---------------------
 # Returns $null to signal "skip this disk entirely" (unreadable / < 1 MB with no partitions).
-# Returns an ordered hashtable otherwise (isLoneWolfDisk, lwVersion, lwWorkflowType).
+# Returns an ordered hashtable otherwise (isLoneWolfDisk, lwVersion, lwWorkflowType, lwArch, lwArchLabel).
 function Get-LoneWolfInfo {
     param([int]$DiskNum, [long]$DiskSize)
 
@@ -146,6 +164,9 @@ function Get-LoneWolfInfo {
         lwShareScriptVersion = $null
         lwImageBuildDate = $null
         lwWimBuildDate = $null
+        lwArch = $null
+        lwArchLabel = $null
+        lwWindowsEdition = $null
     }
 
     # Find the largest non-System partition  -  most likely to be WINSETUP NTFS
@@ -180,6 +201,21 @@ function Get-LoneWolfInfo {
                     $lwInfo.isLoneWolfDisk = $true
                     $lwInfo.lwVersion      = [string]$lwJson.version
                     $lwInfo.lwWorkflowType = [string]$lwJson.workflowType
+                    $stampArch = $null
+                    try {
+                        if ($lwJson.PSObject.Properties['arch'] -and $lwJson.arch) {
+                            $stampArch = [string]$lwJson.arch
+                        }
+                    } catch {}
+                    $lwInfo.lwArch = Get-LwArchFromWorkflow -WorkflowType $(if ($stampArch) { $stampArch } else { $lwInfo.lwWorkflowType })
+                    try {
+                        if ($lwJson.PSObject.Properties['archLabel'] -and $lwJson.archLabel) {
+                            $lwInfo.lwArchLabel = [string]$lwJson.archLabel
+                        }
+                    } catch {}
+                    if ([string]::IsNullOrWhiteSpace($lwInfo.lwArchLabel)) {
+                        $lwInfo.lwArchLabel = Get-LwArchFriendlyName -Arch $lwInfo.lwArch
+                    }
                     try {
                         if ($lwJson.PSObject.Properties['devBuild'] -and $lwJson.devBuild) {
                             $lwInfo.lwDevBuild = $true
@@ -217,6 +253,13 @@ function Get-LoneWolfInfo {
                             $lwInfo.lwWimBuildDate = [string]$lwJson.wimBuildDate
                         } elseif ($lwInfo.lwImageBuildDate) {
                             $lwInfo.lwWimBuildDate = $lwInfo.lwImageBuildDate
+                        }
+                    } catch {}
+                    try {
+                        if ($lwJson.PSObject.Properties['windowsEdition'] -and $lwJson.windowsEdition) {
+                            $lwInfo.lwWindowsEdition = [string]$lwJson.windowsEdition
+                        } elseif ($lwJson.PSObject.Properties['edition'] -and $lwJson.edition) {
+                            $lwInfo.lwWindowsEdition = [string]$lwJson.edition
                         }
                     } catch {}
                     # Infer Dev when stamped launcher/script is ahead of the share versions recorded at build time.
@@ -286,6 +329,8 @@ try {
                 lwShareScriptVersion = $lwInfo.lwShareScriptVersion
                 lwImageBuildDate = $lwInfo.lwImageBuildDate
                 lwWimBuildDate = $lwInfo.lwWimBuildDate
+                lwArch         = $lwInfo.lwArch
+                lwArchLabel    = $lwInfo.lwArchLabel
             }
             [void]$result.Add($entry)
 

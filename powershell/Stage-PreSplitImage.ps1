@@ -10,10 +10,17 @@
   /CheckIntegrity via the SHARED helper lib\Split-LWImage.ps1), and stages the
   result as a versioned set on the share (or the local dev tree):
 
-    <Staging>\PreSplit\<ARCH>\<imageVersion>\
+    <Staging>\PreSplit\<imageVersion>\
         install.swm, install2.swm, ...
         presplit-manifest.json
-    <Staging>\PreSplit\<ARCH>\current   (JSON marker naming the active set)
+        current                   (JSON marker inside the set)
+    <Staging>\PreSplit\current.json  (map keyed AMD64-Home / ARM64-Pro / ...)
+
+  imageVersion includes Windows version + Home/Pro + arch, e.g.
+    25h2-home-9-9-amd64-<stamp>  /  25h2-pro-9-9-arm64-<stamp>
+
+  Presplit identity is architecture + Windows version + Home/Pro. Full LoneWolf
+  (updates) and Quick Install share the same set. Workflow type is not a lock.
 
   The builder (Invoke-LoneWolfBuild.ps1) fast-copies this set instead of running
   dism /Split-Image on every build. A missing/mismatched/corrupt set is NEVER
@@ -40,7 +47,10 @@
 
 .PARAMETER IsoPath
   Explicit source ISO. Default: newest *(<ARCH>)*.iso by LastWriteTime in
-  Staging\ISO\ (fallback Staging\ root).
+  Staging\ISO\ (filename must include home or pro and *(<ARCH>)*; legacy ISO\<SKU>\ still read).
+
+.PARAMETER WindowsEdition
+  Home or Pro. Selects ISO by filename token (home/pro) and writes a PreSplit\<imageVersion>\ folder.
 
 .PARAMETER Force
   Re-stage even if a valid set already exists for this image version. The new set
@@ -70,6 +80,9 @@ param(
     [Parameter(Mandatory)]
     [ValidateSet('AMD64','ARM64')]
     [string] $WorkflowType,
+
+    [ValidateSet('Home','Pro')]
+    [string] $WindowsEdition = 'Pro',
 
     [string] $ShareRoot        = '\\WIN-HQ5JDEACV3S\Images\FB Image Creation',
     [string] $ShareUser        = 'Reflect',
@@ -111,6 +124,7 @@ function Connect-ShareCredentials {
 
 # --- Resolve paths (same contract as the builder) -----------------------------
 $wfUpper = $WorkflowType.ToUpper()
+$winEdition = if ($WindowsEdition -match '^(?i)home$') { 'Home' } else { 'Pro' }
 $isLocal = -not [string]::IsNullOrWhiteSpace($LocalProjectRoot)
 if ($isLocal) {
     $ProjectRoot = $LocalProjectRoot
@@ -120,7 +134,7 @@ if ($isLocal) {
 $StagingRoot  = Join-Path $ProjectRoot 'Staging'
 $IsoRoot      = Join-Path $StagingRoot 'ISO'
 $PreSplitRoot = Join-Path $StagingRoot 'PreSplit'
-$ArchPreSplit = Join-Path $PreSplitRoot $wfUpper
+$WriteRoot    = $PreSplitRoot
 
 # Launcher version for the manifest's producedByLauncherVersion field.
 $launcherVersion = 'unknown'
@@ -132,7 +146,7 @@ try {
     }
 } catch { }
 
-Emit @{ event='init'; stagingRoot=$StagingRoot; preSplitRoot=$PreSplitRoot; workflowType=$wfUpper; local=$isLocal }
+Emit @{ event='init'; stagingRoot=$StagingRoot; preSplitRoot=$PreSplitRoot; workflowType=$wfUpper; windowsEdition=$winEdition; local=$isLocal }
 
 # --- Share auth / reachability -----------------------------------------------
 if ($isLocal) {
@@ -149,28 +163,6 @@ if ($isLocal) {
     }
 }
 
-# --- Select source ISO --------------------------------------------------------
-EmitPhase 'stage-mount'
-$isoItem = $null
-if (-not [string]::IsNullOrWhiteSpace($IsoPath)) {
-    if (-not (Test-Path -LiteralPath $IsoPath)) { EmitError "IsoPath not found: $IsoPath"; exit 1 }
-    $isoItem = Get-Item -LiteralPath $IsoPath
-} else {
-    $isoFiles = @()
-    if (Test-Path -LiteralPath $IsoRoot) {
-        $isoFiles = @(Get-ChildItem -Path $IsoRoot -Filter "*($wfUpper)*.iso" -File -ErrorAction SilentlyContinue |
-            Sort-Object LastWriteTime -Descending)
-    }
-    if ($isoFiles.Count -eq 0) {
-        $isoFiles = @(Get-ChildItem -Path $StagingRoot -Filter "*($wfUpper)*.iso" -File -ErrorAction SilentlyContinue |
-            Sort-Object LastWriteTime -Descending)
-    }
-    if ($isoFiles.Count -eq 0) {
-        EmitError "no matching *($wfUpper)*.iso found in $IsoRoot or $StagingRoot"; exit 1
-    }
-    $isoItem = $isoFiles[0]
-}
-
 # --- Dot-source the SHARED split lib (same file the builder job uses) ---------
 $SplitLibPath = Join-Path $PSScriptRoot 'lib\Split-LWImage.ps1'
 if (-not (Test-Path -LiteralPath $SplitLibPath)) {
@@ -178,10 +170,31 @@ if (-not (Test-Path -LiteralPath $SplitLibPath)) {
 }
 . $SplitLibPath
 
+# --- Select source ISO --------------------------------------------------------
+EmitPhase 'stage-mount'
+$isoItem = $null
+if (-not [string]::IsNullOrWhiteSpace($IsoPath)) {
+    if (-not (Test-Path -LiteralPath $IsoPath)) { EmitError "IsoPath not found: $IsoPath"; exit 1 }
+    $isoItem = Get-Item -LiteralPath $IsoPath
+    if (-not (Test-LWIsoMatchesEdition -FullName $isoItem.FullName -Edition $winEdition)) {
+        EmitError "IsoPath '$($isoItem.Name)' is not a $winEdition ISO (arch $wfUpper)"; exit 1
+    }
+} else {
+    $isoItem = Find-LWWindowsIso -StagingRoot $StagingRoot -IsoRoot $IsoRoot -Arch $wfUpper -Edition $winEdition
+    if (-not $isoItem) {
+        if ($winEdition -eq 'Home') {
+            EmitError (Get-LWMissingHomeIsoMessage -Arch $wfUpper -IsoHomeDir $IsoRoot)
+        } else {
+            EmitError "no matching $winEdition *($wfUpper)*.iso found in $IsoRoot (name must include pro; legacy ISO\Pro still read)"
+        }
+        exit 1
+    }
+}
+
 # --- Compute image-version identity + target ----------------------------------
-$imageVersion = Get-LWImageVersionId -Iso $isoItem
-$Target       = Join-Path $ArchPreSplit $imageVersion
-EmitLog "pre-split: iso='$($isoItem.Name)' imageVersion='$imageVersion' target='$Target'"
+$imageVersion = Get-LWImageVersionId -Iso $isoItem -Edition $winEdition
+$Target       = Join-Path $WriteRoot $imageVersion
+EmitLog "pre-split: iso='$($isoItem.Name)' edition='$winEdition' imageVersion='$imageVersion' target='$Target'"
 
 # --- Idempotent no-op when a valid set already exists (unless -Force) ---------
 if ((Test-Path -LiteralPath $Target) -and -not $Force) {
@@ -254,7 +267,7 @@ try {
     # -- Copy the set to a temp sibling of the final target (atomic swap later) --
     EmitPhase 'stage-copy'
     EmitProgress 'stage-copy' 0
-    New-Item -ItemType Directory -Force -Path $ArchPreSplit | Out-Null
+    New-Item -ItemType Directory -Force -Path $WriteRoot | Out-Null
     $tmpTarget = "$Target.tmp-" + [guid]::NewGuid().ToString('N').Substring(0, 8)
     New-Item -ItemType Directory -Force -Path $tmpTarget | Out-Null
     $robPatterns = @('install*.swm', 'install.wim', 'install.esd')
@@ -286,6 +299,7 @@ try {
     $manifest = [ordered]@{
         schema       = 1
         arch         = $wfUpper
+        windowsEdition = $winEdition
         imageVersion = $imageVersion
         source       = [ordered]@{
             isoName         = $isoItem.Name
@@ -324,16 +338,20 @@ try {
     $tmpTarget = ''   # consumed - nothing left to clean up
     EmitProgress 'stage-verify' 90
 
-    # -- Update the 'current' marker --------------------------------------------
-    $currentMarker = Join-Path $ArchPreSplit 'current'
-    $curObj = [ordered]@{ imageVersion = $imageVersion; updatedUtc = $nowUtc }
-    [System.IO.File]::WriteAllText($currentMarker, ($curObj | ConvertTo-Json -Compress),
-        [System.Text.UTF8Encoding]::new($false))
+    # -- Update current markers (root map + inside the set) ---------------------
+    if (Get-Command -Name Write-LWPreSplitCurrentMarkers -ErrorAction SilentlyContinue) {
+        Write-LWPreSplitCurrentMarkers -PreSplitRoot $WriteRoot -SetDir $Target -Arch $wfUpper -Edition $winEdition -ImageVersion $imageVersion -UpdatedUtc $nowUtc
+    } else {
+        $currentMarker = Join-Path $Target 'current'
+        $curObj = [ordered]@{ imageVersion = $imageVersion; windowsEdition = $winEdition; arch = $wfUpper; updatedUtc = $nowUtc }
+        [System.IO.File]::WriteAllText($currentMarker, ($curObj | ConvertTo-Json -Compress),
+            [System.Text.UTF8Encoding]::new($false))
+    }
     EmitProgress 'stage-verify' 100
 
     EmitLog "staged pre-split set at $Target ($($chunkFiles.Count) chunk(s), sourceKind=$sourceKind, imageVersion=$imageVersion)"
     if ($isLocal) {
-        EmitLog "local mode: upload '$ArchPreSplit' to the share to make this set available to network builds"
+        EmitLog "local mode: upload '$WriteRoot' to the share to make this set available to network builds"
     }
     EmitDone $true 'staged'
 
@@ -353,8 +371,8 @@ try {
     }
     # Sweep any leftover .tmp-* siblings from prior interrupted runs.
     try {
-        if (Test-Path -LiteralPath $ArchPreSplit) {
-            Get-ChildItem -LiteralPath $ArchPreSplit -Directory -ErrorAction SilentlyContinue |
+        if (Test-Path -LiteralPath $WriteRoot) {
+            Get-ChildItem -LiteralPath $WriteRoot -Directory -ErrorAction SilentlyContinue |
                 Where-Object { $_.Name -like '*.tmp-*' } |
                 ForEach-Object { Remove-Item -LiteralPath $_.FullName -Recurse -Force -ErrorAction SilentlyContinue }
         }

@@ -2,23 +2,40 @@
     "_comment":  "Product/payload version (version and payloadVersion) is independent of launcherVersion. Packaged launcher versioning uses public GitHub latest.json. The ISO share must not host this file, launcher exe, or script updates.",
     "version":  "5.4.3",
     "payloadVersion":  "5.4.3",
-    "launcherVersion":  "5.4.19",
+    "launcherVersion":  "5.5.27",
     "launcherExeName":  "LoneWolf-Launcher.exe",
-    "buildDate":  "2026-08-25",
+    "buildDate":  "2026-09-10",
     "stagingFolderPattern":  "Windows * ({arch})",
     "architectures":  {
                           "AMD64":  {
-                                        "wimBuildDate":  "2026-06-18",
+                                        "wimBuildDate":  "2026-09-10",
                                         "payloadHash":  "",
                                         "enabled":  true
                                     },
                           "ARM64":  {
-                                        "wimBuildDate":  "",
+                                        "wimBuildDate":  "2026-09-10",
                                         "payloadHash":  "",
-                                        "enabled":  false
+                                        "enabled":  true
                                     }
                       },
     "changelog":  [
+                      {
+                          "version":  "5.5.27",
+                          "date":  "2026-09-10",
+                          "changes":  [
+                                          "Official release 5.5.27 — fifth cut of the v5 line (RELEASE 4→5). Consolidates 5.4.3–5.4.27 development into a shippable build.",
+                                          "Added",
+                                          "USB architecture labels (Intel/AMD vs Snapdragon) and distinct LoneWolf vs Quick Install stick colors",
+                                          "Windows Home and Pro as separate ISO and pre-split identities in a flat Staging\\ISO folder",
+                                          "ARM64 USB ESP boot via bootaa64.efi",
+                                          "WinPE optional components resolved per architecture (WinPE-OCs\\AMD64 and ARM64)",
+                                          "Changed",
+                                          "Quick Update is payload-only; Setup is a one-shot unversioned installer; launcher update replaces the exe in place",
+                                          "Media Creator mounts and writes any ISO as bootable media",
+                                          "ARM64 USB workflow enabled",
+                                          "WIM and ISO build stamps use 2026-09-10 / 9.10"
+                                      ]
+                      },
                       {
                           "version":  "5.4.2",
                           "date":  "2026-08-25",

@@ -15,7 +15,8 @@
     Run Update-Staging.ps1 to convert an ISO to a pre-staged WIM.
 
 .PARAMETER WorkflowType
-  'AMD64' or 'ARM64'
+  'AMD64' or 'ARM64' (ISO glob / arch). Quick Install still passes the bare arch
+  here; LW_VERSION.json stamps QUICK-INSTALL-<arch> when -QuickInstall is set.
 
 .PARAMETER NoPayload
   Build a minimal WIN-INSTALL USB: no WUPayload, no FirstBase post-install scripts.
@@ -144,7 +145,11 @@ param(
     [string] $LauncherVersion = '',
     [string] $ScriptVersion = '',
     [string] $ShareLauncherVersion = '',
-    [string] $ShareScriptVersion = ''
+    [string] $ShareScriptVersion = '',
+    # Windows SKU: Home or Pro. Selects Staging\ISO\ by filename (home/pro + arch)
+    # and PreSplit\<imageVersion>\ (legacy PreSplit\<ARCH>\<SKU>\ still read).
+    # Independent of LoneWolf vs Quick Install. Default Pro (packaged-safe).
+    [string] $WindowsEdition = 'Pro'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -284,6 +289,8 @@ $requestedDisks = @($DiskNumbers -split '[,\s]+' |
 
 # --- Paths --------------------------------------------------------------------
 $wfUpper = $WorkflowType.ToUpper()   # AMD64 or ARM64
+$winEdition = 'Pro'
+if ($WindowsEdition -match '^(?i)home$') { $winEdition = 'Home' }
 
 if (-not [string]::IsNullOrWhiteSpace($LocalProjectRoot)) {
     $ProjectRoot = $LocalProjectRoot
@@ -355,7 +362,7 @@ if (-not $NoPayload -and -not $QuickInstall) {
 $ArchRoot    = Join-Path $StagingRoot $wfUpper          # e.g. Staging\AMD64
 $StagingWim  = Join-Path $ArchRoot    "$wfUpper.wim"    # e.g. Staging\AMD64\AMD64.wim
 $IsoRoot     = Join-Path $StagingRoot 'ISO'             # e.g. Staging\ISO
-$PreSplitRoot = Join-Path $StagingRoot 'PreSplit'       # e.g. Staging\PreSplit  (\<ARCH>\<imageVersion>\)
+$PreSplitRoot = Join-Path $StagingRoot 'PreSplit'       # e.g. Staging\PreSplit  (\<imageVersion>\ at root)
 
 # Shared split-helper lib. Dot-sourced on the MAIN thread here (for Get-LWImageVersionId
 # + Test-LWPreSplitSet used by Get-LWPreSplitSet below), and its full path is ALSO passed
@@ -394,6 +401,74 @@ function Resolve-WpeOcArchRoot {
     return $archRoot
 }
 
+# UEFI removable-media loader is arch-specific (same path for bootmgfw.efi on both):
+#   AMD64 -> efi\boot\bootx64.efi
+#   ARM64 -> efi\boot\bootaa64.efi
+# Some ISOs omit efi\microsoft\boot\bootmgfw.efi and only ship the removable loader.
+# Never synthesise ARM from bootx64 (or AMD from bootaa64) -- those PE images will not boot.
+function Get-LwRemovableBootEfiName {
+    param([string]$WorkflowType)
+    if ([string]$WorkflowType -match 'ARM') { return 'bootaa64.efi' }
+    return 'bootx64.efi'
+}
+
+function Get-LwEfiArchTag {
+    param([string]$WorkflowType)
+    if ([string]$WorkflowType -match 'ARM') { return 'ARM64' }
+    return 'AMD64'
+}
+
+function Get-LwEfiFolderListing {
+    param([string]$Dir)
+    if (-not (Test-Path -LiteralPath $Dir)) { return '(missing)' }
+    $names = @(Get-ChildItem -LiteralPath $Dir -Force -ErrorAction SilentlyContinue | ForEach-Object { $_.Name })
+    if ($names.Count -eq 0) { return '(empty)' }
+    return ($names -join ', ')
+}
+
+# If bootmgfw.efi is missing, copy it from the arch removable loader.
+# If the removable loader is missing, copy it from bootmgfw.efi.
+# Returns the removable EFI filename when bootmgfw was synthesised; otherwise $null.
+function Repair-LwEspBootLoaders {
+    param([string]$EspRoot, [string]$WorkflowType)
+    $efiName = Get-LwRemovableBootEfiName -WorkflowType $WorkflowType
+    $bootmgfw = Join-Path $EspRoot 'efi\microsoft\boot\bootmgfw.efi'
+    $removable = Join-Path $EspRoot ('efi\boot\' + $efiName)
+    $synthFrom = $null
+    if (-not (Test-Path -LiteralPath $bootmgfw) -and (Test-Path -LiteralPath $removable)) {
+        New-Item -ItemType Directory -Force -Path (Split-Path $bootmgfw -Parent) -ErrorAction SilentlyContinue | Out-Null
+        Copy-Item -LiteralPath $removable -Destination $bootmgfw -Force
+        $synthFrom = $efiName
+    }
+    if (-not (Test-Path -LiteralPath $removable) -and (Test-Path -LiteralPath $bootmgfw)) {
+        New-Item -ItemType Directory -Force -Path (Split-Path $removable -Parent) -ErrorAction SilentlyContinue | Out-Null
+        Copy-Item -LiteralPath $bootmgfw -Destination $removable -Force
+    }
+    return $synthFrom
+}
+
+function Get-LwEspBootmgfwMissingMessage {
+    param(
+        [string]$Prefix,
+        [string]$EspRoot,
+        [string]$WorkflowType,
+        [string]$IsoHint = ''
+    )
+    $arch = Get-LwEfiArchTag -WorkflowType $WorkflowType
+    $efiName = Get-LwRemovableBootEfiName -WorkflowType $WorkflowType
+    $isoBit = ''
+    if (-not [string]::IsNullOrWhiteSpace($IsoHint)) { $isoBit = " ISO='$IsoHint'." }
+    $espBoot = Get-LwEfiFolderListing -Dir (Join-Path $EspRoot 'efi\boot')
+    $espMs = Get-LwEfiFolderListing -Dir (Join-Path $EspRoot 'efi\microsoft\boot')
+    $isoExtra = ''
+    if (-not [string]::IsNullOrWhiteSpace($IsoHint)) {
+        $isoBoot = Get-LwEfiFolderListing -Dir (Join-Path $IsoHint 'efi\boot')
+        $isoMs = Get-LwEfiFolderListing -Dir (Join-Path $IsoHint 'efi\microsoft\boot')
+        $isoExtra = " ISO efi\boot: $isoBoot; ISO efi\microsoft\boot: $isoMs."
+    }
+    return ("{0} ({1}): efi\microsoft\boot\bootmgfw.efi missing and efi\boot\{2} unavailable to synthesise it.{3} ESP efi\boot: {4}; ESP efi\microsoft\boot: {5}.{6}" -f $Prefix, $arch, $efiName, $isoBit, $espBoot, $espMs, $isoExtra)
+}
+
 # --- Pre-split fast-copy set detection (main thread) --------------------------
 # Does a VALID, matching pre-split install*.swm set exist for the ISO this build is
 # about to use? Runs once on the main thread (before the per-disk jobs launch); the
@@ -406,6 +481,7 @@ function Get-LWPreSplitSet {
         [Parameter(Mandatory)] [System.IO.FileInfo] $Iso,
         [Parameter(Mandatory)] [string] $PreSplitRoot,
         [Parameter(Mandatory)] [string] $Arch,
+        [string] $Edition = 'Pro',
         [switch] $VerifyHash
     )
     try {
@@ -414,35 +490,53 @@ function Get-LWPreSplitSet {
             EmitLog -Disk 0 -Msg 'presplit: shared split lib not loaded - skipping fast path, using on-the-fly split'
             return $null
         }
-        $archDir = Join-Path $PreSplitRoot $Arch
-        if (-not (Test-Path -LiteralPath $archDir)) {
-            EmitLog -Disk 0 -Msg "presplit: no staged sets folder for $Arch at '$archDir' - on-the-fly split will be used"
+        $ed = if (Get-Command -Name Get-LWWindowsEdition -ErrorAction SilentlyContinue) {
+            Get-LWWindowsEdition $Edition
+        } else { 'Pro' }
+        $scanDirs = if (Get-Command -Name Get-LWPreSplitScanDirs -ErrorAction SilentlyContinue) {
+            @(Get-LWPreSplitScanDirs -PreSplitRoot $PreSplitRoot -Arch $Arch -Edition $ed)
+        } else {
+            @($PreSplitRoot, (Join-Path $PreSplitRoot $Arch))
+        }
+        $anyDir = $false
+        foreach ($d in $scanDirs) { if (Test-Path -LiteralPath $d) { $anyDir = $true; break } }
+        if (-not $anyDir) {
+            EmitLog -Disk 0 -Msg "presplit: no staged sets folder for $Arch $ed under '$PreSplitRoot' - on-the-fly split will be used"
             return $null
         }
-        $currentId = Get-LWImageVersionId -Iso $Iso
+        $currentId = Get-LWImageVersionId -Iso $Iso -Edition $ed
+        $legacyId  = Get-LWImageVersionId -Iso $Iso
 
-        # Candidate order: the 'current' marker's set first, then every <imageVersion>
-        # subfolder newest-first. First candidate that validates AND matches the ISO wins.
         $candidates = New-Object System.Collections.Generic.List[string]
-        $marker = Join-Path $archDir 'current'
-        if (Test-Path -LiteralPath $marker) {
-            try {
-                $mk = Get-Content -Raw -LiteralPath $marker -ErrorAction Stop | ConvertFrom-Json -ErrorAction Stop
-                if ($mk.imageVersion) {
-                    $cand = Join-Path $archDir ([string]$mk.imageVersion)
-                    if (Test-Path -LiteralPath $cand) { $candidates.Add($cand) }
+        if (Get-Command -Name Get-LWPreSplitCandidateDirs -ErrorAction SilentlyContinue) {
+            foreach ($c in @(Get-LWPreSplitCandidateDirs -PreSplitRoot $PreSplitRoot -Arch $Arch -Edition $ed)) {
+                [void]$candidates.Add($c)
+            }
+        } else {
+            foreach ($archDir in $scanDirs) {
+                if (-not (Test-Path -LiteralPath $archDir)) { continue }
+                $marker = Join-Path $archDir 'current'
+                if (Test-Path -LiteralPath $marker) {
+                    try {
+                        $mk = Get-Content -Raw -LiteralPath $marker -ErrorAction Stop | ConvertFrom-Json -ErrorAction Stop
+                        if ($mk.imageVersion) {
+                            $cand = Join-Path $archDir ([string]$mk.imageVersion)
+                            if (Test-Path -LiteralPath $cand) { $candidates.Add($cand) }
+                        }
+                    } catch {
+                        EmitLog -Disk 0 -Msg "presplit: 'current' marker unreadable ($($_.Exception.Message)) - scanning set folders instead"
+                    }
                 }
-            } catch {
-                EmitLog -Disk 0 -Msg "presplit: 'current' marker unreadable ($($_.Exception.Message)) - scanning set folders instead"
+                foreach ($d in @(Get-ChildItem -LiteralPath $archDir -Directory -ErrorAction SilentlyContinue |
+                        Sort-Object LastWriteTime -Descending)) {
+                    if ($d.Name -like '*.tmp-*') { continue }
+                    if ($d.Name -match '^(?i)(AMD64|ARM64|Home|Pro)$') { continue }
+                    if (-not ($candidates -contains $d.FullName)) { $candidates.Add($d.FullName) }
+                }
             }
         }
-        foreach ($d in @(Get-ChildItem -LiteralPath $archDir -Directory -ErrorAction SilentlyContinue |
-                Sort-Object LastWriteTime -Descending)) {
-            if ($d.Name -like '*.tmp-*') { continue }
-            if (-not ($candidates -contains $d.FullName)) { $candidates.Add($d.FullName) }
-        }
         if ($candidates.Count -eq 0) {
-            EmitLog -Disk 0 -Msg "presplit: no staged set folders under '$archDir' - on-the-fly split will be used"
+            EmitLog -Disk 0 -Msg "presplit: no staged set folders for $Arch $ed - on-the-fly split will be used"
             return $null
         }
 
@@ -453,6 +547,21 @@ function Get-LWPreSplitSet {
                 continue
             }
             $m   = $chk.Manifest
+            $manEd = $null
+            try {
+                if ($m.PSObject.Properties['windowsEdition'] -and $m.windowsEdition) { $manEd = [string]$m.windowsEdition }
+                elseif ($m.PSObject.Properties['edition'] -and $m.edition) { $manEd = [string]$m.edition }
+            } catch { }
+            if ($manEd) {
+                $manNorm = if ($manEd -match '^(?i)home$') { 'Home' } else { 'Pro' }
+                if ($manNorm -ne $ed) {
+                    EmitLog -Disk 0 -Msg "presplit: set '$setDir' skipped (edition $manNorm != $ed)"
+                    continue
+                }
+            } elseif ($ed -ne 'Pro') {
+                EmitLog -Disk 0 -Msg "presplit: set '$setDir' skipped (no edition in manifest; Home requires an explicit SKU)"
+                continue
+            }
             $src = $m.source
             $reasons = @()
             if ([string]$src.isoName -ne $Iso.Name) {
@@ -474,19 +583,19 @@ function Get-LWPreSplitSet {
             } else {
                 $reasons += "isoLastWriteUtc unparseable '$([string]$src.isoLastWriteUtc)'"
             }
-            # imageVersion encapsulates name-slug + last-write stamp: a strong secondary guard.
-            if ([string]$m.imageVersion -ne $currentId) {
+            $idOk = ([string]$m.imageVersion -eq $currentId) -or
+                    ($ed -eq 'Pro' -and [string]$m.imageVersion -eq $legacyId)
+            if (-not $idOk) {
                 $reasons += "imageVersion '$([string]$m.imageVersion)' != '$currentId'"
             }
             if ($reasons.Count -gt 0) {
                 EmitLog -Disk 0 -Msg "presplit: set '$setDir' does not match current ISO - $([string]::Join('; ', $reasons))"
                 continue
             }
-            # isoTitleDate is a secondary/informational check only (never fails a match).
-            EmitLog -Disk 0 -Msg "presplit: MATCH - staged set '$setDir' (imageVersion=$currentId); builds will fast-copy install*.swm and skip the on-the-fly split"
+            EmitLog -Disk 0 -Msg "presplit: MATCH - staged set '$setDir' (imageVersion=$currentId, edition=$ed); builds will fast-copy install*.swm and skip the on-the-fly split"
             return $setDir
         }
-        EmitLog -Disk 0 -Msg "presplit: no staged set matched the current ISO '$($Iso.Name)' - falling back to on-the-fly split"
+        EmitLog -Disk 0 -Msg "presplit: no staged set matched the current $ed ISO '$($Iso.Name)' - falling back to on-the-fly split"
         return $null
     } catch {
         EmitLog -Disk 0 -Msg "presplit: detection error ($($_.Exception.Message)) - falling back to on-the-fly split"
@@ -624,31 +733,15 @@ function Build-Cache {
         }
     }
 
-    # Ensure efi\microsoft\boot\bootmgfw.efi exists on the ESP cache.
-    # Some custom ISOs only ship efi\boot\bootx64.efi (same binary, different path).
+    # Ensure efi\microsoft\boot\bootmgfw.efi and the arch removable loader exist.
+    # AMD64 ISOs may only ship efi\boot\bootx64.efi; ARM64 ISOs ship efi\boot\bootaa64.efi.
     # The ISO-sourced BCD uses a `locate` device anchored to \EFI\Microsoft\Boot\bootmgfw.efi
     # to establish the Boot Manager's home partition context.  If that file is absent the
     # locate fails, the ramdisk device for \sources\boot.wim cannot be resolved, and the
     # system shows the 0xc0000098 (STATUS_NO_SUCH_FILE) recovery screen.
-    $bootmgfwDst = Join-Path $espCache 'efi\microsoft\boot\bootmgfw.efi'
-    if (-not (Test-Path -LiteralPath $bootmgfwDst)) {
-        $bootmgfwSrc = Join-Path $espCache 'efi\boot\bootx64.efi'
-        if (Test-Path -LiteralPath $bootmgfwSrc) {
-            New-Item -ItemType Directory -Force -Path (Split-Path $bootmgfwDst -Parent) -ErrorAction SilentlyContinue | Out-Null
-            Copy-Item -LiteralPath $bootmgfwSrc -Destination $bootmgfwDst -Force
-            EmitLog -Disk 0 -Msg 'esp-cache: synthesised efi\microsoft\boot\bootmgfw.efi from efi\boot\bootx64.efi (ISO omitted it)'
-        }
-    }
-
-    # EFI\Boot\bootx64.efi fallback (removable-media UEFI path)
-    $fallbackDir = Join-Path $espCache 'EFI\Boot'
-    $fallbackEfi = Join-Path $fallbackDir 'bootx64.efi'
-    if (-not (Test-Path -LiteralPath $fallbackEfi)) {
-        New-Item -ItemType Directory -Force -Path $fallbackDir | Out-Null
-        $src = Join-Path $espCache 'efi\microsoft\boot\bootmgfw.efi'
-        if (Test-Path -LiteralPath $src) {
-            Copy-Item -LiteralPath $src -Destination $fallbackEfi -Force
-        }
+    $synthFrom = Repair-LwEspBootLoaders -EspRoot $espCache -WorkflowType $WorkflowType
+    if ($synthFrom) {
+        EmitLog -Disk 0 -Msg ("esp-cache: synthesised efi\microsoft\boot\bootmgfw.efi from efi\boot\{0} (ISO omitted it)" -f $synthFrom)
     }
 
     # SetupConfig.ini in ESP cache
@@ -851,31 +944,11 @@ function Build-IsoCache {
         }
     }
 
-    # Ensure efi\microsoft\boot\bootmgfw.efi exists on the ESP cache.
-    # Some custom ISOs only ship efi\boot\bootx64.efi (same binary, different path).
-    # The ISO-sourced BCD uses a `locate` device anchored to \EFI\Microsoft\Boot\bootmgfw.efi
-    # to establish the Boot Manager's home partition context.  If that file is absent the
-    # locate fails, the ramdisk device for \sources\boot.wim cannot be resolved, and the
-    # system shows the 0xc0000098 (STATUS_NO_SUCH_FILE) recovery screen.
-    $bootmgfwDst = Join-Path $espCache 'efi\microsoft\boot\bootmgfw.efi'
-    if (-not (Test-Path -LiteralPath $bootmgfwDst)) {
-        $bootmgfwSrc = Join-Path $espCache 'efi\boot\bootx64.efi'
-        if (Test-Path -LiteralPath $bootmgfwSrc) {
-            New-Item -ItemType Directory -Force -Path (Split-Path $bootmgfwDst -Parent) -ErrorAction SilentlyContinue | Out-Null
-            Copy-Item -LiteralPath $bootmgfwSrc -Destination $bootmgfwDst -Force
-            EmitLog -Disk 0 -Msg 'esp-cache: synthesised efi\microsoft\boot\bootmgfw.efi from efi\boot\bootx64.efi (ISO omitted it)'
-        }
-    }
-
-    # EFI\Boot\bootx64.efi fallback (removable-media UEFI path)
-    $fallbackDir = Join-Path $espCache 'EFI\Boot'
-    $fallbackEfi = Join-Path $fallbackDir 'bootx64.efi'
-    if (-not (Test-Path -LiteralPath $fallbackEfi)) {
-        New-Item -ItemType Directory -Force -Path $fallbackDir | Out-Null
-        $src = Join-Path $espCache 'efi\microsoft\boot\bootmgfw.efi'
-        if (Test-Path -LiteralPath $src) {
-            Copy-Item -LiteralPath $src -Destination $fallbackEfi -Force
-        }
+    # Ensure efi\microsoft\boot\bootmgfw.efi and the arch removable loader exist.
+    # AMD64 ISOs may only ship efi\boot\bootx64.efi; ARM64 ISOs ship efi\boot\bootaa64.efi.
+    $synthFrom = Repair-LwEspBootLoaders -EspRoot $espCache -WorkflowType $WorkflowType
+    if ($synthFrom) {
+        EmitLog -Disk 0 -Msg ("esp-cache: synthesised efi\microsoft\boot\bootmgfw.efi from efi\boot\{0} (ISO omitted it)" -f $synthFrom)
     }
 
     # SetupConfig.ini in ESP cache
@@ -1319,7 +1392,8 @@ $workerDiskBlock = {
         [string] $ScriptVersion,
         [string] $ShareLauncherVersion,
         [string] $ShareScriptVersion,
-        [string] $ImageBuildDate
+        [string] $ImageBuildDate,
+        [string] $WindowsEdition
     )
 
     $ErrorActionPreference = 'Stop'
@@ -1457,6 +1531,63 @@ $workerDiskBlock = {
     # copy path is SHARED by LoneWolf / WIN-INSTALL / QUICK-INSTALL, so messages must reflect
     # the ACTUAL workflow instead of hardcoding 'WIN-INSTALL'.
     $wfLabel = if ($QuickInstall) { 'QUICK-INSTALL' } elseif ($NoPayload) { 'WIN-INSTALL' } else { 'LoneWolf' }
+
+    # Job runspaces cannot see script-scope Get-LwRemovableBootEfiName / Repair-LwEspBootLoaders.
+    function Get-LwRemovableBootEfiName {
+        param([string]$WorkflowType)
+        if ([string]$WorkflowType -match 'ARM') { return 'bootaa64.efi' }
+        return 'bootx64.efi'
+    }
+    function Get-LwEfiArchTag {
+        param([string]$WorkflowType)
+        if ([string]$WorkflowType -match 'ARM') { return 'ARM64' }
+        return 'AMD64'
+    }
+    function Get-LwEfiFolderListing {
+        param([string]$Dir)
+        if (-not (Test-Path -LiteralPath $Dir)) { return '(missing)' }
+        $names = @(Get-ChildItem -LiteralPath $Dir -Force -ErrorAction SilentlyContinue | ForEach-Object { $_.Name })
+        if ($names.Count -eq 0) { return '(empty)' }
+        return ($names -join ', ')
+    }
+    function Repair-LwEspBootLoaders {
+        param([string]$EspRoot, [string]$WorkflowType)
+        $efiName = Get-LwRemovableBootEfiName -WorkflowType $WorkflowType
+        $bootmgfw = Join-Path $EspRoot 'efi\microsoft\boot\bootmgfw.efi'
+        $removable = Join-Path $EspRoot ('efi\boot\' + $efiName)
+        $synthFrom = $null
+        if (-not (Test-Path -LiteralPath $bootmgfw) -and (Test-Path -LiteralPath $removable)) {
+            New-Item -ItemType Directory -Force -Path (Split-Path $bootmgfw -Parent) -ErrorAction SilentlyContinue | Out-Null
+            Copy-Item -LiteralPath $removable -Destination $bootmgfw -Force
+            $synthFrom = $efiName
+        }
+        if (-not (Test-Path -LiteralPath $removable) -and (Test-Path -LiteralPath $bootmgfw)) {
+            New-Item -ItemType Directory -Force -Path (Split-Path $removable -Parent) -ErrorAction SilentlyContinue | Out-Null
+            Copy-Item -LiteralPath $bootmgfw -Destination $removable -Force
+        }
+        return $synthFrom
+    }
+    function Get-LwEspBootmgfwMissingMessage {
+        param(
+            [string]$Prefix,
+            [string]$EspRoot,
+            [string]$WorkflowType,
+            [string]$IsoHint = ''
+        )
+        $arch = Get-LwEfiArchTag -WorkflowType $WorkflowType
+        $efiName = Get-LwRemovableBootEfiName -WorkflowType $WorkflowType
+        $isoBit = ''
+        if (-not [string]::IsNullOrWhiteSpace($IsoHint)) { $isoBit = " ISO='$IsoHint'." }
+        $espBoot = Get-LwEfiFolderListing -Dir (Join-Path $EspRoot 'efi\boot')
+        $espMs = Get-LwEfiFolderListing -Dir (Join-Path $EspRoot 'efi\microsoft\boot')
+        $isoExtra = ''
+        if (-not [string]::IsNullOrWhiteSpace($IsoHint)) {
+            $isoBoot = Get-LwEfiFolderListing -Dir (Join-Path $IsoHint 'efi\boot')
+            $isoMs = Get-LwEfiFolderListing -Dir (Join-Path $IsoHint 'efi\microsoft\boot')
+            $isoExtra = " ISO efi\boot: $isoBoot; ISO efi\microsoft\boot: $isoMs."
+        }
+        return ("{0} ({1}): efi\microsoft\boot\bootmgfw.efi missing and efi\boot\{2} unavailable to synthesise it.{3} ESP efi\boot: {4}; ESP efi\microsoft\boot: {5}.{6}" -f $Prefix, $arch, $efiName, $isoBit, $espBoot, $espMs, $isoExtra)
+    }
 
     # DISM allows only ONE read-write mount per WIM file at a time. This job runspace
     # cannot call script-scope functions, so duplicate the mount-race helpers locally
@@ -1676,7 +1807,7 @@ $workerDiskBlock = {
                             # Dest size looks complete but robocopy is still flushing write-back
                             # to the USB. Cap the reported pct low so the UI Finalizing fake bar
                             # has room to climb (do NOT emit 99 — that made the bar look done).
-                            J @{ event='progress'; disk=$DiskNumber; phase='esp-copy'; pct=88; flushing=$true; label='Finalizing…' }
+                            J @{ event='progress'; disk=$DiskNumber; phase='esp-copy'; pct=88; flushing=$true; label='Finalizing...' }
                         } else {
                             JProgress 'esp-copy' ([math]::Min(88, [int](100 * $espDone / $espTotalBytes)))
                         }
@@ -1692,32 +1823,24 @@ $workerDiskBlock = {
                 }
                 # ISO boot.wim is often ReadOnly; DISM /Commit fails without clearing it first.
                 try { Set-ItemProperty -LiteralPath $bootWimDstW -Name IsReadOnly -Value $false -ErrorAction Stop } catch { }
-                # Synthesise efi\microsoft\boot\bootmgfw.efi from efi\boot\bootx64.efi if absent
+                # Synthesise efi\microsoft\boot\bootmgfw.efi from the arch removable loader if absent
+                # (AMD64: bootx64.efi; ARM64: bootaa64.efi). Do not require bootx64.efi on ARM.
+                $synthFromW = Repair-LwEspBootLoaders -EspRoot $espRoot -WorkflowType $WorkflowType
+                if ($synthFromW) {
+                    J @{ event='log'; disk=$DiskNumber; message=("esp-copy: synthesised efi\microsoft\boot\bootmgfw.efi from efi\boot\{0} ($wfLabel)" -f $synthFromW) }
+                }
                 $bootmgfwDstW = Join-Path $espRoot 'efi\microsoft\boot\bootmgfw.efi'
                 if (-not (Test-Path -LiteralPath $bootmgfwDstW)) {
-                    $bootmgfwSrcW = Join-Path $espRoot 'efi\boot\bootx64.efi'
-                    if (Test-Path -LiteralPath $bootmgfwSrcW) {
-                        New-Item -ItemType Directory -Force -Path (Split-Path $bootmgfwDstW -Parent) -ErrorAction SilentlyContinue | Out-Null
-                        Copy-Item -LiteralPath $bootmgfwSrcW -Destination $bootmgfwDstW -Force
-                        J @{ event='log'; disk=$DiskNumber; message="esp-copy: synthesised efi\microsoft\boot\bootmgfw.efi from efi\boot\bootx64.efi ($wfLabel)" }
-                    }
-                }
-                if (-not (Test-Path -LiteralPath $bootmgfwDstW)) {
-                    throw "$wfLabel ESP copy: efi\microsoft\boot\bootmgfw.efi missing and efi\boot\bootx64.efi unavailable to synthesise it"
+                    throw (Get-LwEspBootmgfwMissingMessage -Prefix "$wfLabel ESP copy" -EspRoot $espRoot -WorkflowType $WorkflowType -IsoHint $IsoDrive)
                 }
                 JProgress 'esp-copy' 100
                 J @{ event='log'; disk=$DiskNumber; message="esp-copy: boot files copied directly from ISO to USB ESP ($wfLabel cache-bypass); boot.wim=$([math]::Round((Get-Item -LiteralPath $bootWimDstW).Length/1MB))MB" }
             } else {
                 Copy-Item -Path "$EspCache\*" -Destination $espRoot -Recurse -Force -ErrorAction SilentlyContinue
                 # Safety net: synthesise bootmgfw after cache copy (staging often omits it)
-                $bootmgfwDstC = Join-Path $espRoot 'efi\microsoft\boot\bootmgfw.efi'
-                if (-not (Test-Path -LiteralPath $bootmgfwDstC)) {
-                    $bootmgfwSrcC = Join-Path $espRoot 'efi\boot\bootx64.efi'
-                    if (Test-Path -LiteralPath $bootmgfwSrcC) {
-                        New-Item -ItemType Directory -Force -Path (Split-Path $bootmgfwDstC -Parent) -ErrorAction SilentlyContinue | Out-Null
-                        Copy-Item -LiteralPath $bootmgfwSrcC -Destination $bootmgfwDstC -Force
-                        J @{ event='log'; disk=$DiskNumber; message='esp-copy: synthesised efi\microsoft\boot\bootmgfw.efi from efi\boot\bootx64.efi (cache path)' }
-                    }
+                $synthFromC = Repair-LwEspBootLoaders -EspRoot $espRoot -WorkflowType $WorkflowType
+                if ($synthFromC) {
+                    J @{ event='log'; disk=$DiskNumber; message=("esp-copy: synthesised efi\microsoft\boot\bootmgfw.efi from efi\boot\{0} (cache path)" -f $synthFromC) }
                 }
                 $espBootWimAfter = Join-Path $espRoot 'sources\boot.wim'
                 if (-not (Test-Path -LiteralPath $espBootWimAfter)) {
@@ -1845,7 +1968,7 @@ $workerDiskBlock = {
                                     # Dest .swm sizes look complete but robocopy is still flushing
                                     # write-back to FAT32 USB (often many minutes). Emit Finalizing
                                     # at 88 — not 99 — so the UI fake bar can keep climbing.
-                                    J @{ event='progress'; disk=$DiskNumber; phase='wim-presplit'; pct=88; flushing=$true; label='Finalizing…' }
+                                    J @{ event='progress'; disk=$DiskNumber; phase='wim-presplit'; pct=88; flushing=$true; label='Finalizing...' }
                                 } else {
                                     $pct = [math]::Min(88, [int](100 * $dstBytes / $psSrcBytes))
                                     JProgress 'wim-presplit' $pct
@@ -2085,14 +2208,9 @@ $workerDiskBlock = {
                 }
                 J @{ event='log'; disk=$DiskNumber; message='esp-populate: SDI boot files copied from data partition to ESP (boot.wim retained from ESP cache)' }
                 # Synthesise bootmgfw after WIM-mode populate (staging often omits it)
-                $bootmgfwDstP = Join-Path $espRoot 'efi\microsoft\boot\bootmgfw.efi'
-                if (-not (Test-Path -LiteralPath $bootmgfwDstP)) {
-                    $bootmgfwSrcP = Join-Path $espRoot 'efi\boot\bootx64.efi'
-                    if (Test-Path -LiteralPath $bootmgfwSrcP) {
-                        New-Item -ItemType Directory -Force -Path (Split-Path $bootmgfwDstP -Parent) -ErrorAction SilentlyContinue | Out-Null
-                        Copy-Item -LiteralPath $bootmgfwSrcP -Destination $bootmgfwDstP -Force
-                        J @{ event='log'; disk=$DiskNumber; message='esp-populate: synthesised efi\microsoft\boot\bootmgfw.efi from efi\boot\bootx64.efi (WIM mode)' }
-                    }
+                $synthFromP = Repair-LwEspBootLoaders -EspRoot $espRoot -WorkflowType $WorkflowType
+                if ($synthFromP) {
+                    J @{ event='log'; disk=$DiskNumber; message=("esp-populate: synthesised efi\microsoft\boot\bootmgfw.efi from efi\boot\{0} (WIM mode)" -f $synthFromP) }
                 }
             } else {
                 # ISO mode: fall back to ISO drive if boot.wim is missing from ESP
@@ -2528,18 +2646,15 @@ $workerDiskBlock = {
             }
         }
 
-        # -- Ensure bootmgfw.efi exists before BCD rebuild ---------------------
+        # -- Ensure bootmgfw.efi + arch removable loader exist before BCD rebuild --
         if (-not $OverlayOnly -and $espRoot) {
+            $synthFromBcd = Repair-LwEspBootLoaders -EspRoot $espRoot -WorkflowType $WorkflowType
+            if ($synthFromBcd) {
+                J @{ event='log'; disk=$DiskNumber; message=("bcd-prep: synthesised efi\microsoft\boot\bootmgfw.efi from efi\boot\{0}" -f $synthFromBcd) }
+            }
             $p2Bootmgfw = Join-Path $espRoot 'efi\microsoft\boot\bootmgfw.efi'
             if (-not (Test-Path -LiteralPath $p2Bootmgfw)) {
-                $p2Bootx64 = Join-Path $espRoot 'efi\boot\bootx64.efi'
-                if (Test-Path -LiteralPath $p2Bootx64) {
-                    New-Item -ItemType Directory -Force -Path (Split-Path $p2Bootmgfw -Parent) -ErrorAction SilentlyContinue | Out-Null
-                    Copy-Item -LiteralPath $p2Bootx64 -Destination $p2Bootmgfw -Force
-                    J @{ event='log'; disk=$DiskNumber; message='bcd-prep: synthesised efi\microsoft\boot\bootmgfw.efi from efi\boot\bootx64.efi' }
-                } else {
-                    throw "efi\microsoft\boot\bootmgfw.efi missing on ESP and efi\boot\bootx64.efi unavailable (USB will not boot)"
-                }
+                throw (Get-LwEspBootmgfwMissingMessage -Prefix 'bcd-prep' -EspRoot $espRoot -WorkflowType $WorkflowType -IsoHint $IsoDrive)
             }
             $p2BootWim = Join-Path $espRoot 'sources\boot.wim'
             if (-not (Test-Path -LiteralPath $p2BootWim)) {
@@ -2554,19 +2669,22 @@ $workerDiskBlock = {
             # Secure Boot validates the loader SIGNATURE, not the partition GPT type, so a
             # Single-layout FAT32 Basic-Data volume boots under Secure Boot as long as the
             # Microsoft-signed loaders copied verbatim from the ISO are present:
-            #   \EFI\Boot\bootx64.efi          - removable-media fallback path (REQUIRED)
-            #   \EFI\Microsoft\Boot\bootmgfw.efi - Windows Boot Manager (verified above)
+            #   AMD64: \EFI\Boot\bootx64.efi     - removable-media fallback (REQUIRED)
+            #   ARM64: \EFI\Boot\bootaa64.efi    - removable-media fallback (REQUIRED)
+            #   both:  \EFI\Microsoft\Boot\bootmgfw.efi - Windows Boot Manager (verified above)
             # These are copied byte-for-byte from the mounted ISO by the esp-copy phase and
-            # are never re-generated or re-signed here. A missing bootx64.efi means firmware
+            # are never re-generated or re-signed here. A missing arch loader means firmware
             # cannot find a loader on removable media and the USB will not boot at all under
             # Secure Boot, so fail the build loudly rather than shipping unbootable media.
-            $p2FallbackEfi = Join-Path $espRoot 'EFI\Boot\bootx64.efi'
+            $p2FallbackName = Get-LwRemovableBootEfiName -WorkflowType $WorkflowType
+            $p2FallbackEfi = Join-Path $espRoot ('EFI\Boot\' + $p2FallbackName)
             if (-not (Test-Path -LiteralPath $p2FallbackEfi)) {
-                throw "SECURE BOOT: removable-media loader \EFI\Boot\bootx64.efi missing on volume $espRoot - USB will not boot under Secure Boot. Aborting (do NOT ship this media)."
+                $p2Arch = Get-LwEfiArchTag -WorkflowType $WorkflowType
+                throw ("SECURE BOOT ({0}): removable-media loader \EFI\Boot\{1} missing on volume {2} - USB will not boot under Secure Boot. Aborting (do NOT ship this media). efi\boot: {3}" -f $p2Arch, $p2FallbackName, $espRoot, (Get-LwEfiFolderListing -Dir (Join-Path $espRoot 'efi\boot')))
             }
             $p2FallbackSize   = (Get-Item -LiteralPath $p2FallbackEfi).Length
             $p2BootmgfwSize   = (Get-Item -LiteralPath $p2Bootmgfw).Length
-            J @{ event='log'; disk=$DiskNumber; message=("secure-boot: signed loaders verified present - \EFI\Boot\bootx64.efi ({0} bytes), \EFI\Microsoft\Boot\bootmgfw.efi ({1} bytes); copied verbatim from ISO (Secure Boot preserved)" -f $p2FallbackSize, $p2BootmgfwSize) }
+            J @{ event='log'; disk=$DiskNumber; message=("secure-boot: signed loaders verified present - \EFI\Boot\{0} ({1} bytes), \EFI\Microsoft\Boot\bootmgfw.efi ({2} bytes); copied verbatim from ISO (Secure Boot preserved)" -f $p2FallbackName, $p2FallbackSize, $p2BootmgfwSize) }
         }
 
         # -- BCD: ship the ISO's own stock BCDs verbatim; NEVER rebuild or edit -----
@@ -2603,6 +2721,13 @@ $workerDiskBlock = {
                 $firstBaseDir = Join-Path $dataRoot 'FirstBase'
                 if (-not (Test-Path -LiteralPath $firstBaseDir)) { New-Item -ItemType Directory -Force -Path $firstBaseDir | Out-Null }
                 $stampImageDate = $ImageBuildDate
+                $stampWf = [string]$WorkflowType
+                if ($QuickInstall -and $stampWf -notmatch '^QUICK-INSTALL-') {
+                    $stampWf = 'QUICK-INSTALL-' + $stampWf
+                }
+                $stampArch = 'AMD64'
+                if ($stampWf -match 'ARM') { $stampArch = 'ARM64' }
+                $stampArchLabel = if ($stampArch -eq 'ARM64') { 'Snapdragon' } else { 'Intel/AMD' }
                 if ($OverlayOnly) {
                     try {
                         $existingStampPath = Join-Path $dataRoot 'FirstBase\LW_VERSION.json'
@@ -2610,12 +2735,20 @@ $workerDiskBlock = {
                             $existingStamp = Get-Content -Raw -LiteralPath $existingStampPath | ConvertFrom-Json
                             if ($existingStamp.imageBuildDate) { $stampImageDate = [string]$existingStamp.imageBuildDate }
                             elseif ($existingStamp.wimBuildDate) { $stampImageDate = [string]$existingStamp.wimBuildDate }
+                            if ($existingStamp.workflowType) { $stampWf = [string]$existingStamp.workflowType }
+                            if ($existingStamp.arch) { $stampArch = [string]$existingStamp.arch }
+                            if ($existingStamp.archLabel) { $stampArchLabel = [string]$existingStamp.archLabel }
+                            if ($existingStamp.windowsEdition) { $WindowsEdition = [string]$existingStamp.windowsEdition }
+                            elseif ($existingStamp.edition) { $WindowsEdition = [string]$existingStamp.edition }
                         }
                     } catch { }
                 }
                 $versionStamp = [ordered]@{
                     builtBy               = 'LoneWolfLauncher'
-                    workflowType          = $WorkflowType
+                    workflowType          = $stampWf
+                    arch                  = $stampArch
+                    archLabel             = $stampArchLabel
+                    windowsEdition        = $(if ($WindowsEdition) { $WindowsEdition } else { 'Pro' })
                     version               = $StagingVersion
                     scriptVersion         = $(if ($ScriptVersion) { $ScriptVersion } else { $StagingVersion })
                     payloadVersion        = $(if ($ScriptVersion) { $ScriptVersion } else { $StagingVersion })
@@ -2655,6 +2788,7 @@ try {
         stagingRoot  = $StagingRoot
         contentRoot  = $ContentRoot
         workflowType = $WorkflowType
+        windowsEdition = $winEdition
         diskNumbers  = @($requestedDisks)
         isoMode      = $false
         sequential   = [bool]$Sequential
@@ -2705,68 +2839,47 @@ try {
     }
     $StagingWindowsDir = $ArchRoot
 
-    # -- ISO fallback: look in Staging\ISO\ first, then Staging\ root ---------
+    # -- ISO: Staging\ISO\ (home/pro in filename); legacy ISO\Home, ISO\Pro -----
     $isoItem    = $null
     $useIsoMode = $false
 
-    # ISO is the unconditional default source for every non-overlay build: always pull the
-    # newest *(arch)*.iso from the share, ignoring any staged WIM. The -ForceIsoMode /
-    # -PreferIso / -NoPayload flags no longer gate this (they only tune the log message).
-    # The staged-WIM path below is kept dormant purely as a fallback for a missing ISO.
+    # ISO is the default source for every non-overlay build. Home never falls back
+    # to a Pro ISO or a SKU-unaware staged WIM.
     if (-not $OverlayOnly) {
-        $isoFiles = @()
-        if (Test-Path -LiteralPath $IsoRoot) {
-            $isoFiles = @(Get-ChildItem -Path $IsoRoot -Filter "*($wfUpper)*.iso" -File -ErrorAction SilentlyContinue |
-                Sort-Object LastWriteTime -Descending)
+        if (Get-Command -Name Find-LWWindowsIso -ErrorAction SilentlyContinue) {
+            $isoItem = Find-LWWindowsIso -StagingRoot $StagingRoot -IsoRoot $IsoRoot -Arch $wfUpper -Edition $winEdition
         }
-        if ($isoFiles.Count -eq 0) {
-            $isoFiles = @(Get-ChildItem -Path $StagingRoot -Filter "*($wfUpper)*.iso" -File -ErrorAction SilentlyContinue |
-                Sort-Object LastWriteTime -Descending)
-        }
-        if ($isoFiles.Count -gt 0) {
-            $isoItem    = $isoFiles[0]
+        if ($isoItem) {
             $useIsoMode = $true
             $isoReason  = if ($ForceIsoMode) {
                 'ForceIsoMode: skipping WIM, mounting ISO directly'
             } elseif ($PreferIso) {
-                "LoneWolf: auto-selected newest ISO '$($isoItem.Name)' from share (ignoring staged WIM)"
+                "LoneWolf: auto-selected newest $winEdition ISO '$($isoItem.Name)' (ignoring staged WIM)"
             } elseif ($NoPayload) {
-                'WIN-INSTALL: preferring ISO over staged WIM (Architecture B)'
+                "WIN-INSTALL: preferring $winEdition ISO over staged WIM (Architecture B)"
             } elseif ($QuickInstall) {
-                'QUICK-INSTALL: preferring ISO over staged WIM (Architecture B)'
+                "QUICK-INSTALL: preferring $winEdition ISO over staged WIM (Architecture B)"
             } else {
-                "Auto-selected newest ISO '$($isoItem.Name)' from share (ISO is the default build source)"
+                "Auto-selected newest $winEdition ISO '$($isoItem.Name)' (ISO is the default build source)"
             }
-            Emit @{ event='iso-mode'; disk=0; isoFile=$isoItem.Name; message=$isoReason }
+            Emit @{ event='iso-mode'; disk=0; isoFile=$isoItem.Name; windowsEdition=$winEdition; message=$isoReason }
+        } elseif ($winEdition -eq 'Home') {
+            $msg = if (Get-Command -Name Get-LWMissingHomeIsoMessage -ErrorAction SilentlyContinue) {
+                Get-LWMissingHomeIsoMessage -Arch $wfUpper -IsoHomeDir $IsoRoot
+            } else {
+                "No Windows Home ISO for $wfUpper in $IsoRoot. Place a *($wfUpper)*.iso with home in the name under ISO\ (do not use the Pro image)."
+            }
+            Emit @{ event='error'; disk=-1; message=$msg }
+            exit 1
         } else {
-            # ISO is the default source but none was found. Do NOT hard-fail: warn and fall
-            # through to the dormant staged-WIM resolution below. If no WIM exists either,
-            # that block emits the final hard error.
             $isoGlob = "*($wfUpper)*.iso"
-            Emit @{ event='log'; disk=-1; message="WARNING: no matching $isoGlob found in $IsoRoot or $StagingRoot - falling back to a staged WIM if one is present" }
+            Emit @{ event='log'; disk=-1; message="WARNING: no matching $winEdition $isoGlob found in $IsoRoot (name must include pro; legacy ISO\Pro still read) - falling back to a staged WIM if one is present" }
         }
     }
 
     if (-not $useIsoMode -and -not $OverlayOnly -and -not (Test-Path -LiteralPath $StagingWim)) {
-        $isoFiles = @()
-        if (Test-Path -LiteralPath $IsoRoot) {
-            $isoFiles = @(Get-ChildItem -Path $IsoRoot -Filter "*($wfUpper)*.iso" -File -ErrorAction SilentlyContinue |
-                Sort-Object LastWriteTime -Descending)
-        }
-        # Fallback: old layout - ISOs in Staging\ root
-        if ($isoFiles.Count -eq 0) {
-            $isoFiles = @(Get-ChildItem -Path $StagingRoot -Filter "*($wfUpper)*.iso" -File -ErrorAction SilentlyContinue |
-                Sort-Object LastWriteTime -Descending)
-        }
-        if ($isoFiles.Count -gt 0) {
-            $isoItem    = $isoFiles[0]
-            $useIsoMode = $true
-            Emit @{ event='iso-mode'; disk=0; isoFile=$isoItem.Name;
-                    message='No pre-staged WIM found  -  mounting ISO directly' }
-        } else {
-            Emit @{ event='error'; disk=-1; message="No WIM at $StagingWim and no ISO in $IsoRoot or $StagingRoot - run Unpack-Staging.ps1 or drop an ISO into Staging\ISO\" }
-            exit 1
-        }
+        Emit @{ event='error'; disk=-1; message="No WIM at $StagingWim and no $winEdition ISO in $IsoRoot (or legacy ISO\$winEdition) - drop an ISO named *$($winEdition.ToLower())*($wfUpper)*.iso into Staging\ISO\" }
+        exit 1
     }
 
     # -- Mount ISO once for the lifetime of this build ------------------------
@@ -3039,7 +3152,7 @@ try {
     # (control flow + output byte-identical to before this feature). Never fatal.
     $PreSplitSetDir = ''
     if ($useIsoMode -and $Layout -eq 'Single' -and -not $OverlayOnly -and $null -ne $isoItem) {
-        $resolvedSet = Get-LWPreSplitSet -Iso $isoItem -PreSplitRoot $PreSplitRoot -Arch $wfUpper -VerifyHash:$VerifyPreSplitHash
+        $resolvedSet = Get-LWPreSplitSet -Iso $isoItem -PreSplitRoot $PreSplitRoot -Arch $wfUpper -Edition $winEdition -VerifyHash:$VerifyPreSplitHash
         if ($resolvedSet) { $PreSplitSetDir = $resolvedSet }
     }
 
@@ -3081,7 +3194,8 @@ try {
                 $ScriptVersion,
                 $ShareLauncherVersion,
                 $ShareScriptVersion,
-                $imageBuildDate
+                $imageBuildDate,
+                $winEdition
             )
 
         if ($Sequential) {

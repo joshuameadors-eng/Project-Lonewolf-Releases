@@ -126,14 +126,17 @@ function Connect-ShareCredentials {
 $wfUpper = $WorkflowType.ToUpper()
 $winEdition = if ($WindowsEdition -match '^(?i)home$') { 'Home' } else { 'Pro' }
 $isLocal = -not [string]::IsNullOrWhiteSpace($LocalProjectRoot)
+$shareLayoutLib = Join-Path $PSScriptRoot 'lib\Resolve-LwShareLayout.ps1'
+if (Test-Path -LiteralPath $shareLayoutLib) { . $shareLayoutLib }
+$shareLayout = Resolve-LwShareLayout -ShareRoot $ShareRoot -LocalProjectRoot $LocalProjectRoot
 if ($isLocal) {
     $ProjectRoot = $LocalProjectRoot
 } else {
     $ProjectRoot = Join-Path $ShareRoot 'Remote'
 }
-$StagingRoot  = Join-Path $ProjectRoot 'Staging'
-$IsoRoot      = Join-Path $StagingRoot 'ISO'
-$PreSplitRoot = Join-Path $StagingRoot 'PreSplit'
+$StagingRoot  = $shareLayout.StagingRoot
+$IsoRoot      = $shareLayout.IsoRoot
+$PreSplitRoot = $shareLayout.PreSplitRoot
 $WriteRoot    = $PreSplitRoot
 
 # Launcher version for the manifest's producedByLauncherVersion field.

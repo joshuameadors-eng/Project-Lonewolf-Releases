@@ -53,18 +53,19 @@ $wfUpper = $WorkflowType.ToUpper()
 $winEdition = 'Pro'
 if ($WindowsEdition -match '^(?i)home$') { $winEdition = 'Home' }
 
-if (-not [string]::IsNullOrWhiteSpace($LocalProjectRoot)) {
-    # Local build mode: read from the bundled Remote\ folder, never touch the share.
-    $StagingRoot = Join-Path $LocalProjectRoot 'Staging'
-} else {
+if ([string]::IsNullOrWhiteSpace($LocalProjectRoot)) {
     $shareHost = 'WIN-HQ5JDEACV3S'
     if ($ShareRoot -match '^\\\\([^\\]+)\\') { $shareHost = $Matches[1] }
     Connect-ShareCredentials -ShareHost $shareHost -User $ShareUser -Pass $SharePassword
-    $StagingRoot = Join-Path $ShareRoot 'Remote\Staging'
 }
-# New fixed-path layout: Staging\AMD64\AMD64.wim  and  Staging\ISO\
+$shareLayoutLib = Join-Path $PSScriptRoot 'lib\Resolve-LwShareLayout.ps1'
+if (Test-Path -LiteralPath $shareLayoutLib) { . $shareLayoutLib }
+$shareLayout = Resolve-LwShareLayout -ShareRoot $ShareRoot -LocalProjectRoot $LocalProjectRoot
+$StagingRoot = $shareLayout.StagingRoot
+$isoRoot     = $shareLayout.IsoRoot
+$preSplitRootResolved = $shareLayout.PreSplitRoot
+# WIM stays under Staging\<ARCH>\<ARCH>.wim (legacy Remote\Staging when that tree exists).
 $wimPath     = Join-Path $StagingRoot "$wfUpper\$wfUpper.wim"
-$isoRoot     = Join-Path $StagingRoot 'ISO'
 
 $output = [ordered]@{
     version         = 'unknown'
@@ -83,6 +84,10 @@ $output = [ordered]@{
     preSplitMatchesIso   = $false
     preSplitImageVersion = $null
     isoMissingReason     = $null
+    shareLayout          = [string]$shareLayout.Layout
+    isoRoot              = $isoRoot
+    preSplitRoot         = $preSplitRootResolved
+    wpeOcRoot            = [string]$shareLayout.WpeOcRoot
 }
 
 # Product/launcher versions come from bundled VERSION.json / GitHub latest.json.
@@ -165,7 +170,8 @@ try {
 # Install share the same set. Uses Test-LWPreSplitSet + Get-LWImageVersionId.
 try {
     if ($splitLibLoaded) {
-        $preSplitRoot = Join-Path $StagingRoot 'PreSplit'
+        $preSplitRoot = $preSplitRootResolved
+        if ([string]::IsNullOrWhiteSpace($preSplitRoot)) { $preSplitRoot = Join-Path $StagingRoot 'PreSplit' }
         $psIso = $null
         if ($output.isoFile) {
             foreach ($dir in @(Get-LWIsoSearchDirs -StagingRoot $StagingRoot -IsoRoot $isoRoot -Edition $winEdition)) {

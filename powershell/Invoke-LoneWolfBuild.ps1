@@ -104,7 +104,7 @@ param(
     [string] $LocalProjectRoot = '',   # When non-empty: skip share auth and use this local path as ProjectRoot
     # WinPE optional-component cabs source. Defaults to the share (NOT a local ADK install).
     # LoneWolf builds pull WinPE-WMI/NetFx/Scripting/PowerShell (+ their _en-us cabs) from here.
-    [string] $WpeOcRoot = '\\WIN-HQ5JDEACV3S\Images\FB Image Creation\Remote\Staging\WinPE-OCs',
+    [string] $WpeOcRoot = '',
     [switch] $PreCacheOnly,
     [switch] $OverlayOnly,
     [switch] $ForceIsoMode,
@@ -292,12 +292,16 @@ $wfUpper = $WorkflowType.ToUpper()   # AMD64 or ARM64
 $winEdition = 'Pro'
 if ($WindowsEdition -match '^(?i)home$') { $winEdition = 'Home' }
 
+$shareLayoutLib = Join-Path $PSScriptRoot 'lib\Resolve-LwShareLayout.ps1'
+if (Test-Path -LiteralPath $shareLayoutLib) { . $shareLayoutLib }
+$shareLayout = Resolve-LwShareLayout -ShareRoot $ShareRoot -LocalProjectRoot $LocalProjectRoot
+
 if (-not [string]::IsNullOrWhiteSpace($LocalProjectRoot)) {
     $ProjectRoot = $LocalProjectRoot
 } else {
     $ProjectRoot = Join-Path $ShareRoot 'Remote'
 }
-$StagingRoot = Join-Path $ProjectRoot 'Staging'
+$StagingRoot = $shareLayout.StagingRoot
 
 # Deploy overlay root  -  prefer payload bundled inside the .exe (AppResourcesPath\payload),
 # fall back to Staging\Payload on the share when the bundled path is absent.
@@ -361,8 +365,8 @@ if (-not $NoPayload -and -not $QuickInstall) {
 # New fixed-path layout: Staging\AMD64\ and Staging\AMD64\AMD64.wim
 $ArchRoot    = Join-Path $StagingRoot $wfUpper          # e.g. Staging\AMD64
 $StagingWim  = Join-Path $ArchRoot    "$wfUpper.wim"    # e.g. Staging\AMD64\AMD64.wim
-$IsoRoot     = Join-Path $StagingRoot 'ISO'             # e.g. Staging\ISO
-$PreSplitRoot = Join-Path $StagingRoot 'PreSplit'       # e.g. Staging\PreSplit  (\<imageVersion>\ at root)
+$IsoRoot     = $shareLayout.IsoRoot                     # share-root ISO\ or legacy Staging\ISO
+$PreSplitRoot = $shareLayout.PreSplitRoot               # share-root PreSplit\ or legacy Staging\PreSplit
 
 # Shared split-helper lib. Dot-sourced on the MAIN thread here (for Get-LWImageVersionId
 # + Test-LWPreSplitSet used by Get-LWPreSplitSet below), and its full path is ALSO passed
@@ -380,7 +384,7 @@ $WpeOcSource = if (-not [string]::IsNullOrWhiteSpace($LocalProjectRoot) -and
 } elseif (-not [string]::IsNullOrWhiteSpace($WpeOcRoot)) {
     $WpeOcRoot
 } else {
-    Join-Path $StagingRoot 'WinPE-OCs'
+    $shareLayout.WpeOcRoot
 }
 
 # The WinPE-OCs share was restructured into per-architecture subfolders

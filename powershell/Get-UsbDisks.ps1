@@ -169,22 +169,17 @@ function Get-LoneWolfInfo {
         lwWindowsEdition = $null
     }
 
-    # Find the largest non-System partition  -  most likely to be WINSETUP NTFS
-    $part = $partitions |
-        Where-Object { $_.Type -ne 'System' } |
-        Sort-Object Size -Descending |
-        Select-Object -First 1
-
-    if (-not $part) { return $lwInfo }
+    # Probe every non-System volume with a drive letter. Volume label is NOT a
+    # gate: Quick Install often stamps a date (e.g. 9.10.2026) instead of LoneWolf.
+    $probeParts = @($partitions | Where-Object { $_.Type -ne 'System' } | Sort-Object Size -Descending)
+    if (-not $probeParts -or $probeParts.Count -eq 0) { return $lwInfo }
 
     try {
-        $vol = $part | Get-Volume -ErrorAction SilentlyContinue
-        # Current label is 'LoneWolf' (FAT32 reads it back uppercase as 'LONEWOLF'); -eq is
-        # case-insensitive so both match. Legacy 'Project LoneWolf' / 'WINSETUP' still detected.
-        if ($vol -and ($vol.FileSystemLabel -eq 'LoneWolf' -or $vol.FileSystemLabel -eq 'Project LoneWolf' -or $vol.FileSystemLabel -eq 'WINSETUP') -and $vol.DriveLetter) {
-            # The payload is nested under <vol>\FirstBase\; legacy sticks stamped
-            # LW_VERSION.json at the volume root, so probe both in that order.
-            $lwVersionFile = $null
+        $lwVersionFile = $null
+        foreach ($probePart in $probeParts) {
+            $vol = $null
+            try { $vol = $probePart | Get-Volume -ErrorAction SilentlyContinue } catch { $vol = $null }
+            if (-not $vol -or -not $vol.DriveLetter) { continue }
             foreach ($candidate in @(
                 "$($vol.DriveLetter):\FirstBase\LW_VERSION.json",
                 "$($vol.DriveLetter):\LW_VERSION.json"
@@ -194,7 +189,9 @@ function Get-LoneWolfInfo {
                     break
                 }
             }
-            if ($lwVersionFile) {
+            if ($lwVersionFile) { break }
+        }
+        if ($lwVersionFile) {
                 $lwJson = Get-Content -Raw -LiteralPath $lwVersionFile -ErrorAction SilentlyContinue |
                           ConvertFrom-Json -ErrorAction SilentlyContinue
                 if ($lwJson) {
@@ -280,7 +277,6 @@ function Get-LoneWolfInfo {
                         } catch {}
                     }
                 }
-            }
         }
     } catch { }
 
@@ -331,6 +327,7 @@ try {
                 lwWimBuildDate = $lwInfo.lwWimBuildDate
                 lwArch         = $lwInfo.lwArch
                 lwArchLabel    = $lwInfo.lwArchLabel
+                lwWindowsEdition = $lwInfo.lwWindowsEdition
             }
             [void]$result.Add($entry)
 

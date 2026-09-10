@@ -32,8 +32,56 @@ function Log {
     Write-Host $line
     try { Add-Content -LiteralPath $LogFile -Value $line -Encoding utf8 } catch {}
 }
+function Get-LwInstallIdentity {
+    $candidates = @(
+        (Join-Path $PSScriptRoot 'install-identity.json'),
+        (Join-Path (Split-Path $PSScriptRoot -Parent) 'updater\install-identity.json'),
+        (Join-Path (Split-Path $PSScriptRoot -Parent) 'src\updater\install-identity.json')
+    )
+    foreach ($c in $candidates) {
+        if ($c -and (Test-Path -LiteralPath $c)) {
+            try { return Get-Content -Raw -LiteralPath $c | ConvertFrom-Json } catch { }
+        }
+    }
+    return [pscustomobject]@{
+        channel         = 'release'
+        productName     = 'Project LoneWolf Launcher'
+        exeName         = 'LoneWolf-Launcher.exe'
+        installDirName  = 'Project LoneWolf Launcher'
+        shortcutStem    = 'Project LoneWolf Launcher'
+        setupName       = 'LoneWolf-Launcher-Setup.exe'
+    }
+}
+
+function Get-LwIdentityFromPath {
+    param([string]$Path)
+    $p = [string]$Path
+    if ($p -match '(?i)Launcher-Dev\.exe$' -or $p -match '(?i)Launcher Dev\\' -or $p -match '(?i)Setup-Dev\.exe$') {
+        return [pscustomobject]@{
+            channel         = 'dev'
+            productName     = 'Project LoneWolf Launcher Dev'
+            exeName         = 'LoneWolf-Launcher-Dev.exe'
+            installDirName  = 'Project LoneWolf Launcher Dev'
+            shortcutStem    = 'Project LoneWolf Launcher Dev'
+            setupName       = 'LoneWolf-Launcher-Setup-Dev.exe'
+        }
+    }
+    return $null
+}
+
 function Get-LwStableLauncherExe {
-    return (Join-Path ${env:ProgramFiles} 'Project LoneWolf Launcher\LoneWolf-Launcher.exe')
+    param([string]$HintPath = '')
+    $fromHint = Get-LwIdentityFromPath -Path $HintPath
+    $id = if ($fromHint) { $fromHint } else { Get-LwInstallIdentity }
+    if ($HintPath) {
+        $p = [string]$HintPath
+        $expected = Join-Path ${env:ProgramFiles} (Join-Path $id.installDirName $id.exeName)
+        if ($p -ieq $expected) { return $p }
+        if ($p -match [regex]::Escape($id.installDirName) -and $p -match [regex]::Escape($id.exeName) -and $p -notmatch '(?i)\\Temp\\') {
+            return $p
+        }
+    }
+    return (Join-Path ${env:ProgramFiles} (Join-Path $id.installDirName $id.exeName))
 }
 
 function Test-LwUnstableLauncherPath {
@@ -42,23 +90,26 @@ function Test-LwUnstableLauncherPath {
     $p = [string]$Path
     if ($p -match '(?i)\\Temp\\') { return $true }
     if ($p -match '(?i)\\Downloads\\') { return $true }
-    if ($p -match '(?i)LoneWolf-Launcher-Setup\.exe$') { return $true }
+    if ($p -match '(?i)LoneWolf-Launcher-Setup(-Dev)?\.exe$') { return $true }
     if ($p -match '(?i)\.(new|incoming)$') { return $true }
     return $false
 }
 
-$stableExe = Get-LwStableLauncherExe
+$stableExe = Get-LwStableLauncherExe -HintPath $TargetExe
 if (Test-LwUnstableLauncherPath -Path $TargetExe) {
-    Log "TargetExe was unstable ($TargetExe) - using Program Files path"
+    Log "TargetExe was unstable ($TargetExe) - using Program Files path $stableExe"
+    $TargetExe = $stableExe
 }
-$TargetExe = $stableExe
 
 Log "=== LoneWolf Installer started ==="
 Log "SourceExe : $SourceExe"
 Log "TargetExe : $TargetExe"
 Log "OldPid    : $OldPid"
 
-# --- Dev-mode safety guard ----------------------------------------------------
+$script:lwIdentity = Get-LwIdentityFromPath -Path $TargetExe
+if (-not $script:lwIdentity) { $script:lwIdentity = Get-LwInstallIdentity }
+$script:lwShortcutStem = [string]$script:lwIdentity.shortcutStem
+$script:lwProductName = [string]$script:lwIdentity.productName
 if ($TargetExe -match 'electron\.exe$' -or $TargetExe -match 'node\.exe$') {
     Log "Dev mode detected - skipping replacement"
     exit 0
@@ -208,7 +259,7 @@ function Ensure-LwUpdateShortcut {
         $s.TargetPath = $Target
         $s.WorkingDirectory = Split-Path $Target
         $s.WindowStyle = 1
-        $s.Description = 'Project LoneWolf Launcher'
+        $s.Description = $script:lwProductName
         $s.Save()
         if (Test-Path -LiteralPath $LnkPath) {
             $bytes = [System.IO.File]::ReadAllBytes($LnkPath)
@@ -222,8 +273,8 @@ function Ensure-LwUpdateShortcut {
         Log "WARN: could not create shortcut $LnkPath : $($_.Exception.Message)"
     }
 }
-$desk = Join-Path ([Environment]::GetFolderPath('CommonDesktopDirectory')) 'Project LoneWolf Launcher.lnk'
-$sm = Join-Path ([Environment]::GetFolderPath('CommonStartMenu')) 'Programs\Project LoneWolf Launcher.lnk'
+$desk = Join-Path ([Environment]::GetFolderPath('CommonDesktopDirectory')) "$($script:lwShortcutStem).lnk"
+$sm = Join-Path ([Environment]::GetFolderPath('CommonStartMenu')) "Programs\$($script:lwShortcutStem).lnk"
 Ensure-LwUpdateShortcut -LnkPath $desk -Target $TargetExe
 Ensure-LwUpdateShortcut -LnkPath $sm -Target $TargetExe
 

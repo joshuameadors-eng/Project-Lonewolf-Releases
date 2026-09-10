@@ -1,8 +1,22 @@
 # Project LoneWolf Releases
 
-Official **installer files** for Project LoneWolf / FirstBase. Application source stays private.
+Official **public files** for Project LoneWolf / FirstBase. Application source stays private.
+
+**No GitHub account is required.** Use [raw.githubusercontent.com](https://raw.githubusercontent.com/joshuameadors-eng/Project-Lonewolf-Releases/main/latest.json) or the GitHub Contents API for `latest.json`, payload, and the portable exe.
 
 **[Installer (one URL)](https://github.com/joshuameadors-eng/Project-Lonewolf-Releases/releases/download/installer/LoneWolf-Launcher-Setup.exe)** — `LoneWolf-Launcher-Setup.exe` is the **only** file on the Releases page (stable tag `installer`, overwritten in place).
+
+## Where files live
+
+| File | Location |
+| --- | --- |
+| **`LoneWolf-Launcher-Setup.exe`** | **Releases only** (tag `installer`). Unversioned LoneWolf / FirstBase installer (one UAC). Installs **.NET 8 Desktop Runtime (x64)** if missing, then **downloads the latest portable** from `latest.json` / `bin/LoneWolf-Launcher.exe`, copies it to `C:\Program Files\Project LoneWolf Launcher\`, and creates desktop + Start Menu shortcuts (Run as Administrator). This file is not launcher 5.4.x. |
+| **`bin/LoneWolf-Launcher.exe`** | **Git tree** (portable / desktop exe). Not a release asset. |
+| **`payload/`** and **`powershell/`** | **Git tree** (scripts). Independent of the launcher exe version. |
+| **`FirstBase-payload.zip`** | **Git tree** (zip of those folders for Quick Update). Not a release asset. |
+| **`latest.json`** | **Git tree.** Packaged apps use this as the **source of versioning** (`launcherVersion` vs `payloadVersion`). |
+
+Installer sources (PowerShell bootstrapper + compile script) also live in this repository under `installer/` so they can be cloned or downloaded without an account.
 
 ## Install
 

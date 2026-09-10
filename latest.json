@@ -1,13 +1,13 @@
 {
-    "launcherVersion":  "5.5.27",
+    "launcherVersion":  "5.5.28",
     "payloadVersion":  "5.4.3",
-    "channel":  "release",
+    "channel":  "dev",
     "source":  "github-public-source",
     "latestReleaseUrl":  "https://github.com/joshuameadors-eng/Project-Lonewolf-Releases/releases/latest",
     "installerTag":  "installer",
-    "manifestUrl":  "https://raw.githubusercontent.com/joshuameadors-eng/Project-Lonewolf-Releases/main/latest.json",
-    "contentsApiUrl":  "https://api.github.com/repos/joshuameadors-eng/Project-Lonewolf-Releases/contents/latest.json",
-    "defaultBranch":  "main",
+    "manifestUrl":  "https://raw.githubusercontent.com/joshuameadors-eng/Project-Lonewolf-Releases/dev/latest.json",
+    "contentsApiUrl":  "https://api.github.com/repos/joshuameadors-eng/Project-Lonewolf-Releases/contents/latest.json?ref=dev",
+    "defaultBranch":  "dev",
     "dotnet":  {
                    "id":  "windowsdesktop",
                    "major":  8,
@@ -16,18 +16,18 @@
                    "installerUrl":  "https://aka.ms/dotnet/8.0/windowsdesktop-runtime-win-x64.exe"
                },
     "assets":  {
-                   "setup":  "LoneWolf-Launcher-Setup.exe",
-                   "installer":  "LoneWolf-Launcher-Setup.exe",
-                   "portable":  "bin/LoneWolf-Launcher.exe",
+                   "setup":  "LoneWolf-Launcher-Setup-Dev.exe",
+                   "installer":  "LoneWolf-Launcher-Setup-Dev.exe",
+                   "portable":  "bin/LoneWolf-Launcher-Dev.exe",
                    "payload":  "FirstBase-payload.zip",
                    "payloadDir":  "payload/",
                    "powershellDir":  "powershell/",
                    "manifest":  "latest.json"
                },
     "urls":  {
-                 "setup":  "https://github.com/joshuameadors-eng/Project-Lonewolf-Releases/releases/download/installer/LoneWolf-Launcher-Setup.exe",
-                 "portable":  "https://raw.githubusercontent.com/joshuameadors-eng/Project-Lonewolf-Releases/main/bin/LoneWolf-Launcher.exe",
-                 "payload":  "https://raw.githubusercontent.com/joshuameadors-eng/Project-Lonewolf-Releases/main/FirstBase-payload.zip",
-                 "manifest":  "https://raw.githubusercontent.com/joshuameadors-eng/Project-Lonewolf-Releases/main/latest.json"
+                 "setup":  "https://raw.githubusercontent.com/joshuameadors-eng/Project-Lonewolf-Releases/dev/bin/LoneWolf-Launcher-Setup-Dev.exe",
+                 "portable":  "https://raw.githubusercontent.com/joshuameadors-eng/Project-Lonewolf-Releases/dev/bin/LoneWolf-Launcher-Dev.exe",
+                 "payload":  "https://raw.githubusercontent.com/joshuameadors-eng/Project-Lonewolf-Releases/dev/FirstBase-payload.zip",
+                 "manifest":  "https://raw.githubusercontent.com/joshuameadors-eng/Project-Lonewolf-Releases/dev/latest.json"
              }
 }

@@ -2,7 +2,7 @@
     "_comment":  "Product/payload version (version and payloadVersion) is independent of launcherVersion. npm start destage staging product version (chips, image dates, changelog, arch enablement) always comes from this file. Packaged Dev and production changelog/update feeds use public GitHub latest.json (main) or latest-dev.json (packaged Dev). The ISO share and Drive VERSION.json must not host launcher exe, payload zip, or live version overlay.",
     "version":  "6.0.0",
     "payloadVersion":  "6.0.0",
-    "launcherVersion":  "6.0.2",
+    "launcherVersion":  "6.0.4",
     "launcherExeName":  "LoneWolf-Launcher.exe",
     "dev":  {
                 "_comment":  "npm start destage always versions from this checkout VERSION.json (local ISO, HQ UNC, Drive Desktop, or any other media). Packaged Dev uses the public dev branch / latest-dev.json. Packaged production uses main / latest.json. ISO/PreSplit/WinPE-OCs are filesystem-only: Google Drive for Desktop if mounted, else HQ UNC. A Drive folder URL is never ShareRoot. Do not publish exe/zip to Drive. Do not overlay Drive HTTPS VERSION.json on destage.",

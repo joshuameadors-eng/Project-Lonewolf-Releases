@@ -16,11 +16,12 @@
       [1] USB root listing (visible vs hidden)
       [2] WinPE banner - Updates + DEV
       [3] WinPE banner - No Updates + release
-      [4] fb-im WPF status (clean host)
-      [5] fb-im WPF status (simulated sealed)
+      [4] fb-im WPF status (host: Red/Orange/Green/Purple headline)
+      [5] fb-im WPF status (simulated sealed / READY when clean)
       [6] fb-im WPF full window
       [7] fb-im WPF restart-updates focus
       [8] fb-im WPF collect-logs focus
+      [9] fb-im WPF hardware-fail then Pass hardware check
 
     Use -NoLaunch to only build the mock tree and print its path.
 #>
@@ -116,13 +117,15 @@ $stamp = [ordered]@{
     scriptVersion        = '5.3.1'
     builtAt              = (Get-Date -Format 'o')
     diskNumber           = 0
+    destage              = $true
+    channel              = 'destage'
     devBuild             = $true
     launcherVersion      = '5.3.1'
     shareLauncherVersion = '5.3.0'
     shareScriptVersion   = '5.3.0'
 } | ConvertTo-Json -Compress
 Set-Content -LiteralPath (Join-Path $fb 'LW_VERSION.json') -Value $stamp -Encoding utf8
-$devMarker = "devBuild=1`r`nlauncherVersion=5.3.1`r`nscriptVersion=5.3.1`r`n"
+$devMarker = "devBuild=1`r`ndestage=1`r`nchannel=destage`r`nlauncherVersion=5.3.1`r`nscriptVersion=5.3.1`r`n"
 [System.IO.File]::WriteAllText((Join-Path $fb 'WUPayload\.dev-build'), $devMarker)
 
 # Release stamp sibling for banner release test
@@ -131,7 +134,7 @@ New-FbDir $releaseDir
 Copy-Item (Join-Path $PayloadRoot 'Deploy\Show-DeployBanner.ps1') (Join-Path $releaseDir 'Show-DeployBanner.ps1') -Force
 $relStamp = [ordered]@{
     builtBy = 'LoneWolfLauncher'; version = '5.3.0'; scriptVersion = '5.3.0'
-    devBuild = $false; launcherVersion = '5.3.0'
+    destage = $false; channel = $null; devBuild = $false; launcherVersion = '5.3.0'
     shareLauncherVersion = '5.3.0'; shareScriptVersion = '5.3.0'
 } | ConvertTo-Json -Compress
 Set-Content -LiteralPath (Join-Path $Root '_release-stamp-parent\LW_VERSION.json') -Value $relStamp -Encoding utf8
@@ -155,7 +158,7 @@ foreach ($keep in @('fb-im.cmd')) {
 }
 
 # Harness helpers stay on disk but hidden so TEST 1 matches the real operator view
-foreach ($helper in @('_list-root.ps1', '_status-sealed.ps1', '_release-stamp-parent')) {
+foreach ($helper in @('_list-root.ps1', '_status-sealed.ps1', '_status-hw-fail.ps1', '_release-stamp-parent')) {
     $p = Join-Path $Root $helper
     if (Test-Path -LiteralPath $p) {
         & attrib.exe +H +S $p /D 2>$null | Out-Null
@@ -235,6 +238,22 @@ try {
 }
 '@ | Set-Content -LiteralPath $sealedScript -Encoding UTF8
 
+$hwFailScript = Join-Path $Root '_status-hw-fail.ps1'
+@'
+param([string]$ImPs1)
+$ErrorActionPreference = "Continue"
+$pd = "C:\ProgramData\FirstBase"
+if (-not (Test-Path $pd)) { New-Item -ItemType Directory -Path $pd -Force | Out-Null }
+$fail = Join-Path $pd ".hardware-gate-fail-restart"
+$hadFail = Test-Path $fail
+try {
+    Set-Content -LiteralPath $fail -Value ("hardware-gate FAIL at {0} visual-test" -f (Get-Date -Format "o")) -Force
+    & $ImPs1 -Action Menu
+} finally {
+    if (-not $hadFail) { Remove-Item -LiteralPath $fail -Force -ErrorAction SilentlyContinue }
+}
+'@ | Set-Content -LiteralPath $hwFailScript -Encoding UTF8
+
 if ($NoLaunch) {
     Write-Host ("  Mock path: {0}" -f $Root)
     return $Root
@@ -311,16 +330,22 @@ Start-FbTestWindow -Sta 'TEST 8 - fb-im WPF collect logs' (
     "& '$imPs1' -Action Dump"
 )
 
+# 9. Hardware fail - Pass hardware check then auto-recheck
+Start-FbTestWindow -Sta 'TEST 9 - fb-im WPF hardware fail (Pass hardware check)' (
+    "& '$hwFailScript' -ImPs1 '$imPs1'"
+)
+
 Write-Host ''
-Write-Host '  Eight test windows opened:' -ForegroundColor Green
+Write-Host '  Nine test windows opened:' -ForegroundColor Green
 Write-Host '    [1] USB root visible vs hidden'
 Write-Host '    [2] WinPE banner  DEV + Updates'
 Write-Host '    [3] WinPE banner  release + No Updates'
 Write-Host '    [4] fb-im WPF status  (not sealed)'
-Write-Host '    [5] fb-im WPF status  (simulated sealed / READY TO PACK)'
+Write-Host '    [5] fb-im WPF status  (simulated sealed / READY when clean)'
 Write-Host '    [6] fb-im WPF technician window'
 Write-Host '    [7] fb-im WPF restart updates  (focus + auto-start attempt)'
 Write-Host '    [8] fb-im WPF collect logs  (notes box focused)'
+Write-Host '    [9] fb-im WPF hardware fail  (Pass hardware check + auto-recheck)'
 Write-Host ''
 Write-Host ("  Mock stick: {0}" -f $Root) -ForegroundColor DarkGray
 Write-Host '  Explorer tip: open that folder with "Hidden items" OFF to see operator view.' -ForegroundColor Yellow

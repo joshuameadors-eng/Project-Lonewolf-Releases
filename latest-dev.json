@@ -1,6 +1,6 @@
 {
-    "launcherVersion":  "5.5.28",
-    "payloadVersion":  "5.4.3",
+    "launcherVersion":  "6.0.0",
+    "payloadVersion":  "6.0.0",
     "channel":  "dev",
     "source":  "github-public-source",
     "latestReleaseUrl":  "https://github.com/joshuameadors-eng/Project-Lonewolf-Releases/releases/latest",

@@ -1,24 +1,25 @@
 ﻿<#
     Show-DeployBanner.ps1  (Project LoneWolf)
 
-    ScriptVersion: 1.1.4  (5.4.24: private-load cascadiamono.ttf then Braille)
+    ScriptVersion: 1.1.5  (destage: red text+wolf, no DEV tag)
 
     Animated, colored WinPE deploy banner. Rendered with Write-Host
     -ForegroundColor so it works in the WinPE PowerShell console with no
-    VT/ANSI dependency. Framed "PROJECT / LONEWOLF" title on the left, a blue
+    VT/ANSI dependency. Framed "PROJECT / LONEWOLF" title on the left, a
     Braille wolf on the right, a top-down line-by-line reveal, then a blinking
     subtitle.
 
       -Subtitle : workflow tag under the title (e.g. "Updates" / "No Updates").
-      -Dev      : Auto (detect from the stick), Yes or No. Auto is the default;
-                  Yes/No exist so the banner can be previewed off a stick.
+      -Dev      : Auto (detect destage from the stick), Yes or No. Auto is the
+                  default; Yes/No exist so destage chrome can be previewed off
+                  a stick.
 
-    2318: a dev-built stick shows a red DEV tag beside the workflow tag and a red
-    version footer. Detection is self-contained - the banner reads LW_VERSION.json
-    from the payload root (the parent of this Deploy folder, i.e. FirstBase\ on a
-    nested stick), which both workflows stamp, and falls back to
-    WUPayload\.dev-build, which only Updates builds carry. Nothing is passed in
-    from TechInstall.cmd.
+    Destage sticks (npm start) stamp LW_VERSION.json destage=true / channel=destage
+    (plus legacy devBuild). Packaged Launcher Dev and production do not. Destage
+    chrome is red banner text and a red wolf (console Red, matching launcher
+    destage red). There is no DEV tag on this banner - neon cyan DEV is npm
+    start Electron only. Production / packaged-Dev USB keep cyan text + blue wolf.
+    Detection is self-contained via FirstBaseBuildIdentity.ps1.
 
     NOTE: the wolf is the original Braille silhouette (U+28xx) built from code
     points so this file stays ASCII. Frames are box-drawing from code points
@@ -310,6 +311,7 @@ public static class FbPeConFont {
 function Get-FbBannerBuildInfo {
     $info = [ordered]@{
         Dev           = $false
+        Destage       = $false
         Launcher      = ''
         Script        = ''
         ShareLauncher = ''
@@ -325,6 +327,7 @@ function Get-FbBannerBuildInfo {
         $resolved = Get-FbBuildIdentityForScript -ScriptRoot $PSScriptRoot -Layout Deploy
         if ($resolved) {
             $info.Dev           = [bool]$resolved.Dev
+            $info.Destage       = [bool]$resolved.Destage
             $info.Launcher      = [string]$resolved.Launcher
             $info.Script        = [string]$resolved.Script
             $info.ShareLauncher = [string]$resolved.ShareLauncher
@@ -337,12 +340,14 @@ function Get-FbBannerBuildInfo {
 
 $build = Get-FbBannerBuildInfo
 switch ($Dev) {
-    'Yes' { $isDev = $true }
-    'No'  { $isDev = $false }
-    default { $isDev = [bool]$build.Dev }
+    'Yes' { $isDestage = $true }
+    'No'  { $isDestage = $false }
+    default { $isDestage = [bool]$build.Destage -or [bool]$build.Dev }
 }
+$textColor = if ($isDestage) { 'Red' } else { 'Cyan' }
+$wolfColor = if ($isDestage) { 'Red' } else { 'Blue' }
 
-# --- Blue wolf (always U+28xx Braille; keep in sync with DeployUi) ----------
+# --- Wolf (always U+28xx Braille; keep in sync with DeployUi) --------------
 function Get-FbDeployWolfLines {
     $rows = @(
         @(0x2880, 0x28FF, 0x28C6),
@@ -383,15 +388,10 @@ function New-FbFrameLine([string] $s) {
 $fTop = ([char]0x2554) + ([string]([char]0x2550) * $innerW) + ([char]0x2557)
 $fBot = ([char]0x255A) + ([string]([char]0x2550) * $innerW) + ([char]0x255D)
 
-# The subtitle row is the only one drawn in pieces, so the DEV tag can be red
-# while the frame around it stays cyan. Both pieces are kept here so the reveal
-# and the blink render identical text.
 $subLabel = '   [ ' + $Subtitle + ' ]'
-$subTag   = if ($isDev) { '  DEV' } else { '' }
-if (($subLabel.Length + $subTag.Length) -gt $innerW) {
-    $subLabel = $subLabel.Substring(0, [Math]::Max($innerW - $subTag.Length, 0))
+if ($subLabel.Length -gt $innerW) {
+    $subLabel = $subLabel.Substring(0, $innerW)
 }
-$subFill = ' ' * [Math]::Max($innerW - ($subLabel.Length + $subTag.Length), 0)
 
 $title = @(
     $fTop,
@@ -399,7 +399,7 @@ $title = @(
     (New-FbFrameLine '   P R O J E C T'),
     (New-FbFrameLine '   L O N E W O L F'),
     (New-FbFrameLine ''),
-    (New-FbFrameLine ($subLabel + $subTag)),
+    (New-FbFrameLine $subLabel),
     (New-FbFrameLine ''),
     $fBot
 )
@@ -419,14 +419,10 @@ $lmax   = $innerW + 2
 $pad    = '  '
 $gap    = '   '
 
-# Writes the subtitle row without a trailing newline: frame + label in $Color,
-# the DEV tag always red. Column widths match the single-write rows above.
-$bar = [string][char]0x2551
 function Write-FbSubtitleRow {
     param([string] $Color = 'Cyan')
-    Write-Host ($pad + $bar + $subLabel) -ForegroundColor $Color -NoNewline
-    if ($subTag) { Write-Host $subTag -ForegroundColor Red -NoNewline }
-    Write-Host ($subFill + $bar) -ForegroundColor $Color -NoNewline
+    $lt = $left[$subRow]; if ($null -eq $lt) { $lt = '' }
+    Write-Host ($pad + $lt.PadRight($lmax)) -ForegroundColor $Color -NoNewline
 }
 
 # --- Reveal top-down --------------------------------------------------------
@@ -434,19 +430,16 @@ Clear-Host
 Write-Host ''
 for ($r = 0; $r -lt $rows; $r++) {
     $lt = $left[$r]; if ($null -eq $lt) { $lt = '' }
-    if ($r -eq $subRow) {
-        Write-FbSubtitleRow -Color Cyan
-    } else {
-        Write-Host ($pad + $lt.PadRight($lmax)) -ForegroundColor Cyan -NoNewline
-    }
-    Write-Host ($gap + $wolf[$r]) -ForegroundColor Blue
+    Write-Host ($pad + $lt.PadRight($lmax)) -ForegroundColor $textColor -NoNewline
+    Write-Host ($gap + $wolf[$r]) -ForegroundColor $wolfColor
     Start-Sleep -Milliseconds 20
 }
 
 # --- Blink the subtitle a few times -----------------------------------------
 try {
     $blinkRow = 1 + $subRow
-    foreach ($c in @('DarkCyan', 'White', 'DarkCyan', 'White', 'Cyan')) {
+    $blinkColors = if ($isDestage) { @('DarkRed', 'White', 'DarkRed', 'White', 'Red') } else { @('DarkCyan', 'White', 'DarkCyan', 'White', 'Cyan') }
+    foreach ($c in $blinkColors) {
         [Console]::SetCursorPosition(0, $blinkRow)
         Write-FbSubtitleRow -Color $c
         Start-Sleep -Milliseconds 150
@@ -463,19 +456,16 @@ $verParts = @()
 if ($build.Launcher) { $verParts += ('launcher ' + $build.Launcher) }
 if ($build.Script)   { $verParts += ('scripts '  + $build.Script) }
 if ($verParts.Count -gt 0) {
-    if ($isDev) {
+    if ($isDestage) {
         $shareParts = @()
         if ($build.ShareLauncher) { $shareParts += $build.ShareLauncher }
         if ($build.ShareScript)   { $shareParts += $build.ShareScript }
-        $line = '  [ DEV BUILD ]  ' + ($verParts -join '   ')
+        $line = '  ' + ($verParts -join '   ')
         if ($shareParts.Count -gt 0) { $line += ('   (share ' + ($shareParts -join ' / ') + ')') }
         Write-Host $line -ForegroundColor Red
     } else {
         Write-Host ('  ' + ($verParts -join '   ')) -ForegroundColor DarkGray
     }
-    Write-Host ''
-} elseif ($isDev) {
-    Write-Host '  [ DEV BUILD ]' -ForegroundColor Red
     Write-Host ''
 }
 

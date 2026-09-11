@@ -2,11 +2,13 @@
 <#
 .SYNOPSIS
   Reads ISO/WIM availability from the deployment share (ISO staging).
-  Product and launcher versioning are not read from the share.
+  HQ share does not host VERSION.json. npm start destage product version comes from
+  this script's sidecar VERSION.json (live src/powershell/VERSION.json). Packaged
+  changelog and update feeds use GitHub latest.json in the launcher.
 
 .DESCRIPTION
   Registers credentials for the share, then scans Staging for WIM and ISO files.
-  Does not require VERSION.json on the share (that file is not hosted there).
+  Does not require VERSION.json on the HQ share. A Drive folder URL is not ShareRoot.
 
   Also scans for pre-staged WIM and ISO files and reports build-mode availability:
     buildMode = "wim"   -  pre-staged WIM found (fastest, preferred)
@@ -22,7 +24,9 @@
    "wimAvailable":true,"isoAvailable":true,
    "isoFile":"25h2_updates_6.18(amd64).ISO","buildMode":"wim"}
 
-  Share layout: Remote\Staging\ISO\ (and optional WIM / PreSplit). No launcher exe or VERSION.json.
+  Share layout: share-root ISO / PreSplit / WinPE-OCs (or legacy Remote\Staging).
+  HQ share does not host launcher exe or VERSION.json. Destage product version is
+  this script's VERSION.json; packaged feeds use GitHub latest.json in main.js.
 #>
 
 [CmdletBinding()]
@@ -36,6 +40,20 @@ param(
 )
 
 $ErrorActionPreference = 'SilentlyContinue'
+
+if ($ShareRoot -match '^(?i)https?://') {
+    [ordered]@{
+        version        = 'unknown'
+        buildDate      = ''
+        workflowType   = ($WorkflowType.ToUpper())
+        windowsEdition = $(if ($WindowsEdition -match '^(?i)home$') { 'Home' } else { 'Pro' })
+        buildMode      = 'none'
+        isoAvailable   = $false
+        wimAvailable   = $false
+        error          = 'A Google Drive folder URL is not a Windows filesystem ShareRoot. Use Google Drive for Desktop or the HQ UNC share.'
+    } | ConvertTo-Json -Compress -Depth 5
+    return
+}
 
 # --- Share authentication -----------------------------------------------------
 function Connect-ShareCredentials {
@@ -53,7 +71,7 @@ $wfUpper = $WorkflowType.ToUpper()
 $winEdition = 'Pro'
 if ($WindowsEdition -match '^(?i)home$') { $winEdition = 'Home' }
 
-if ([string]::IsNullOrWhiteSpace($LocalProjectRoot)) {
+if ([string]::IsNullOrWhiteSpace($LocalProjectRoot) -and $ShareRoot -match '^\\\\') {
     $shareHost = 'WIN-HQ5JDEACV3S'
     if ($ShareRoot -match '^\\\\([^\\]+)\\') { $shareHost = $Matches[1] }
     Connect-ShareCredentials -ShareHost $shareHost -User $ShareUser -Pass $SharePassword
@@ -90,7 +108,11 @@ $output = [ordered]@{
     wpeOcRoot            = [string]$shareLayout.WpeOcRoot
 }
 
-# Product/launcher versions come from bundled VERSION.json / GitHub latest.json.
+# Product version and arch enablement come from this script's VERSION.json
+# (live src/powershell/VERSION.json on npm start; bundled copy when packaged).
+# Image dates stay ISO/WIM last-write here (rebuild detection). Destage overlay in
+# main.js fills payload version from local VERSION.json but does not overwrite ISO dates.
+# Packaged changelog/update feeds use GitHub latest.json.
 $output.architectures = [ordered]@{
     AMD64 = [ordered]@{ wimBuildDate = ''; payloadHash = ''; enabled = $true }
     ARM64 = [ordered]@{ wimBuildDate = ''; payloadHash = ''; enabled = $true }
@@ -99,6 +121,16 @@ $verManifest = Join-Path $PSScriptRoot 'VERSION.json'
 if (Test-Path -LiteralPath $verManifest) {
     try {
         $vj = Get-Content -Raw -LiteralPath $verManifest | ConvertFrom-Json
+        $pv = $null
+        if ($vj.PSObject.Properties['payloadVersion'] -and $vj.payloadVersion) {
+            $pv = [string]$vj.payloadVersion
+        } elseif ($vj.version) {
+            $pv = [string]$vj.version
+        }
+        if ($pv) {
+            $output.version = $pv
+            $output.payloadVersion = $pv
+        }
         foreach ($archName in @('AMD64', 'ARM64')) {
             $block = $null
             if ($vj.architectures -and $vj.architectures.$archName) { $block = $vj.architectures.$archName }

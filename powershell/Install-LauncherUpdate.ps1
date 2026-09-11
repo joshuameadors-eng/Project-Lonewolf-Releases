@@ -4,9 +4,13 @@
 
 .DESCRIPTION
   Waits for the old Electron process to exit, copies the new exe over the old
-  one (with retry), then launches the new version as administrator.
-  Spawned by the Electron app in a hidden window just before app.quit().
-  All steps are logged to %TEMP%\lonewolf-installer.log for diagnostics.
+  one (with retry), then starts the new exe with a plain Start-Process.
+  Do not use a hidden RunAs verb: that UAC wait never returns from a
+  windowsHide parent, so the launcher never restarts. This script is already
+  elevated when spawned from the packaged admin launcher, so the new process
+  inherits that token. If elevation is missing, the exe manifest shows a
+  visible UAC. Spawned by Electron just before app.quit().
+  Logs to C:\ProgramData\LoneWolf\installer.log.
 
   Dev-mode safety: if $TargetExe resolves to an Electron or Node binary (not a
   packaged portable exe), the copy step is skipped and the script exits cleanly.
@@ -278,17 +282,18 @@ $sm = Join-Path ([Environment]::GetFolderPath('CommonStartMenu')) "Programs\$($s
 Ensure-LwUpdateShortcut -LnkPath $desk -Target $TargetExe
 Ensure-LwUpdateShortcut -LnkPath $sm -Target $TargetExe
 
-# --- Relaunch as administrator ------------------------------------------------
-Log "Relaunching: $relaunchExe"
+# --- Relaunch (no hidden RunAs / UAC wait) ------------------------------------
+Log "Relaunching (plain Start-Process, no RunAs): $relaunchExe"
+$workDir = Split-Path $relaunchExe
 try {
-    Start-Process -FilePath $relaunchExe -Verb RunAs -ErrorAction Stop
-    Log "Relaunch succeeded"
+    Start-Process -FilePath $relaunchExe -WorkingDirectory $workDir -ErrorAction Stop
+    Log "Relaunch started"
 } catch {
-    # Verb RunAs may fail in some contexts - fall back to plain launch
-    Log "RunAs relaunch failed ($($_.Exception.Message)) - trying plain launch"
+    Log "Start-Process failed ($($_.Exception.Message)) - trying cmd start"
     try {
-        Start-Process -FilePath $relaunchExe
-        Log "Plain relaunch succeeded"
+        $cmd = Join-Path $env:SystemRoot 'System32\cmd.exe'
+        Start-Process -FilePath $cmd -ArgumentList @('/c', 'start', '', $relaunchExe) -WorkingDirectory $workDir -ErrorAction Stop
+        Log "cmd start relaunch started"
     } catch {
         Log "ERROR: All relaunch attempts failed: $($_.Exception.Message)"
         exit 1

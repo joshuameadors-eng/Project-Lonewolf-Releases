@@ -8,21 +8,10 @@
     documented Microsoft.Update.Session COM API directly. There is NO
     runtime dependency on PSWindowsUpdate.
 
-    Iteration order (per scan, greedy install):
-      Bucket 1: Critical / Security / Definition
-      Bucket 2: Drivers
-      Bucket 3: Cumulative / Update Rollups / Servicing Stack
-      Bucket 4: Optional / remaining software updates
-      Final  : verification scan, then sysprep handoff
-
-    Each iteration runs ONE unfiltered online scan and applies ALL FOUR
-    buckets back-to-back, even when an earlier bucket reports
-    RebootRequired. We only hard-stop the iteration when WUA returns
-    an HResult in $ExplicitRebootHResults (e.g. ERROR_SUCCESS_REBOOT_-
-    REQUIRED) - in that case the install genuinely cannot make further
-    progress without a reboot. For every other failure mode (including
-    unknown HResults that just need retrying) we continue to the next
-    bucket so we install everything we can before consuming a reboot.
+    Each pass runs ONE unfiltered online scan, then ONE download/install
+    cycle for every offered update (quality, feature, drivers, cumulative).
+    Classifier labels on scan rows are log-only; they do not skip a class
+    until a later pass. End-of-pass reboot/convergence still applies.
 
     Convergence guarantees (2026-05-11):
       - Retry counter keyed on KB article when available, so cumulative
@@ -1647,6 +1636,151 @@ function Set-FbDefenderRealtime {
 # Invoke-FbOobeHandoff. Also sets $script:FbDebugBypassActive so the STAGE 1
 # convergence gate inside Invoke-FbOobeHandoff skips the residual scan check
 # (the flag file is removed here; the gate reads the script-level variable).
+function Clear-FbProgramDataFirstBaseHidden {
+    # Hidden+System on this folder looks like a stealth drop to AV (not a normal Windows install path).
+    param([string]$Path = $FbProgramDataFirstBase)
+    if ([string]::IsNullOrWhiteSpace($Path)) { $Path = 'C:\ProgramData\FirstBase' }
+    try {
+        if (-not (Test-Path -LiteralPath $Path)) { return }
+        $item = Get-Item -LiteralPath $Path -Force -ErrorAction Stop
+        $mask = [IO.FileAttributes]::Hidden -bor [IO.FileAttributes]::System
+        $newAttr = $item.Attributes -band (-bnot $mask)
+        if ($item.Attributes -ne $newAttr) { $item.Attributes = $newAttr }
+        try { & attrib.exe -H -S $Path 2>$null | Out-Null } catch {}
+    } catch {}
+}
+
+function Test-FbTechStopUpdates {
+    # Destage technician sentinel from fb-im / splash Stop updates. Does not
+    # force OOBE; exits the FirstBase WU loop so in-flight work can be cancelled.
+    $flagPath = Join-Path $FbStateDir '.wu-tech-stop'
+    if (Test-Path -LiteralPath $flagPath) { return $true }
+    return $false
+}
+
+function Get-FbHandoffPendingMarkerPath {
+    return (Join-Path $FbProgramDataFirstBase '.wu-handoff-pending')
+}
+
+function Get-FbHardwareGateCompletePath {
+    return (Join-Path $FbProgramDataFirstBase '.hardware-gate-complete')
+}
+
+function Test-FbHardwareGateComplete {
+    try { return [bool](Test-Path -LiteralPath (Get-FbHardwareGateCompletePath)) } catch { return $false }
+}
+
+function Write-FbHandoffPendingMarker {
+    param([string]$Reason = 'updates complete; hardware gate still required')
+    try {
+        if (-not (Test-Path -LiteralPath $FbProgramDataFirstBase)) {
+            New-Item -ItemType Directory -Path $FbProgramDataFirstBase -Force -ErrorAction SilentlyContinue | Out-Null
+        }
+        $line = ('handoff-pending at {0} pid={1} reason={2}' -f (Get-Date -Format 'o'), $PID, $Reason)
+        Set-Content -LiteralPath (Get-FbHandoffPendingMarkerPath) -Value $line -Encoding ascii -Force
+    } catch {}
+}
+
+function Clear-FbHandoffPendingMarker {
+    try {
+        $p = Get-FbHandoffPendingMarkerPath
+        if (Test-Path -LiteralPath $p) { Remove-Item -LiteralPath $p -Force -ErrorAction SilentlyContinue }
+    } catch {}
+}
+
+function Test-FbWuStatusRowInstalling {
+    param([string]$Status)
+    if ([string]::IsNullOrWhiteSpace($Status)) { return $false }
+    # Word-bounded. Must not treat 'Installed' as installing.
+    return [bool]($Status -match '(?i)^(downloading|download|installing)(\b|$)')
+}
+
+function Test-FbWuInstallInProgress {
+    # True only while WU is actually downloading/installing or CBS is committing
+    # boot files. Stale wu-status.json phase=Rebooting/Installing, leftover
+    # .wu-tech-stop, and rows whose Status is Installed are NOT in-progress.
+    $hbFresh = $false
+    try {
+        if (Test-Path -LiteralPath $HeartbeatFile) {
+            $age = (Get-Date) - (Get-Item -LiteralPath $HeartbeatFile).LastWriteTime
+            if ($age.TotalSeconds -ge 0 -and $age.TotalSeconds -lt 90) { $hbFresh = $true }
+        }
+    } catch {}
+    $phase = ''
+    try {
+        if (Test-Path -LiteralPath $StatusFile) {
+            $obj = Get-Content -LiteralPath $StatusFile -Raw -ErrorAction Stop | ConvertFrom-Json -ErrorAction Stop
+            if ($obj) {
+                $phase = [string]$obj.phase
+                foreach ($u in @($obj.updates)) {
+                    if (-not $u) { continue }
+                    if (Test-FbWuStatusRowInstalling -Status ([string]$u.Status)) { return $true }
+                }
+            }
+        }
+    } catch {}
+    if ($hbFresh -and ($phase -match '(?i)^(downloading|download|installing)(\b|$)')) { return $true }
+    try {
+        foreach ($p in @(Get-Process -Name 'poqexec','dismhost' -ErrorAction SilentlyContinue)) {
+            if ($p) { return $true }
+        }
+    } catch {}
+    return $false
+}
+
+function Clear-FbStaleUpdateRunningMarkers {
+    param([string]$Reason = 'stuck complete without hardware gate')
+    $techStop = Join-Path $FbStateDir '.wu-tech-stop'
+    try {
+        if (Test-Path -LiteralPath $techStop) {
+            Remove-Item -LiteralPath $techStop -Force -ErrorAction SilentlyContinue
+            Write-FbLog ("Cleared leftover .wu-tech-stop ({0})." -f $Reason) 'WARN'
+        }
+    } catch {}
+    try {
+        Set-UiPhase -Phase 'HardwareGate' -Message 'Updates complete; starting hardware check.'
+    } catch {
+        try {
+            $payload = @{
+                phase     = 'HardwareGate'
+                message   = 'Updates complete; starting hardware check.'
+                updatedAt = (Get-Date).ToString('o')
+                updates   = @()
+            }
+            if (Test-Path -LiteralPath $StatusFile) {
+                try {
+                    $prev = Get-Content -LiteralPath $StatusFile -Raw -ErrorAction Stop | ConvertFrom-Json
+                    if ($prev -and $prev.updates) { $payload.updates = @($prev.updates) }
+                } catch {}
+            }
+            ($payload | ConvertTo-Json -Depth 6) | Set-Content -LiteralPath $StatusFile -Encoding UTF8 -Force
+        } catch {}
+    }
+}
+
+function Test-FbStuckCompleteWithoutHandoff {
+    if (Test-FbHardwareGateComplete) { return $false }
+    if (Test-FbWuInstallInProgress) { return $false }
+    $complete = $false
+    try { if (Test-Path -LiteralPath $CompleteMarker) { $complete = $true } } catch {}
+    try { if (Test-Path -LiteralPath $WaitMarker) { $complete = $true } } catch {}
+    try { if (Test-Path -LiteralPath (Get-FbHandoffPendingMarkerPath)) { $complete = $true } } catch {}
+    return [bool]$complete
+}
+
+function Invoke-FbPrepareHardwareGateRecovery {
+    param([string]$Reason = 'complete without hardware gate')
+    if (Test-FbWuInstallInProgress) {
+        Write-FbLog ("Hardware-gate recovery skipped; Windows Update is still installing ({0})." -f $Reason) 'WARN'
+        return $false
+    }
+    if (Test-FbHardwareGateComplete) { return $false }
+    Write-FbHandoffPendingMarker -Reason $Reason
+    Clear-FbStaleUpdateRunningMarkers -Reason $Reason
+    Write-FbLog ("Hardware-gate recovery armed ({0})." -f $Reason) 'WARN'
+    return $true
+}
+
 function Test-FbDebugForceOobeHandoff {
     # [DEBUG] Returns $true if the developer pressed Ctrl+Shift+End to bypass updates
     $flagPath = Join-Path $FbProgramDataFirstBase '.debug-force-oobe-handoff'
@@ -1660,6 +1794,7 @@ function Test-FbDebugForceOobeHandoff {
 }
 
 Write-FbLog ("Engine=NativeCOM product={0} script={1} payload={2} FinalizeToOobe={3}" -f $script:FirstBaseProductVersion, $ScriptVersion, $script:FirstBasePayloadRevision, [bool]$FinalizeToOobe)
+try { Clear-FbProgramDataFirstBaseHidden } catch {}
 
 # ============================================================================
 # 2026.05.13.2213k-real-single-instance-and-real-multipass-and-builder-pathfix
@@ -2619,6 +2754,8 @@ try {
     $buildMarkerLines += '5.4.22: Dumps PF2X3W8J-0934 / PF12VZ2W-0937 / 5CD930865J-0938 (all 5.4.20). SetupComplete treated HKLM InstallDate churn as FRESH and deleted wu-state mid-Audit (ledger, RI, BootCount). Preserve live pipeline state; skip re-apply of success-ledger rows; timeout of an already-completed row must not Invoke-FbReboot the bucket. Empty work queue plus no OS reboot is not a 0-pending restart loop. MaxRebootIterations still defers to OOBE and must not zero counters. Loop 1.0.22->1.0.23. Engine 1.0.5->1.0.6. SetupComplete 1.0.4->1.0.5.'
     $buildMarkerLines += '5.4.24: WinPE wolf private-loads Deploy\Fonts\cascadiamono.ttf (no raster U+28xx ?). Splash dump copies Setup\FirstBase\Logs (WU-*.log) to USB FirstBase-Logs\<sn-time>; Hidden dump no longer dies on Console. Splash BG error=dark red, reboot/warn=orange, install=black. Loop 1.0.24->1.0.25. Show-UpdateProgress 3.0.11->3.0.12.'
     $buildMarkerLines += '5.4.2: Official release. Consolidates USB (no post-apply disarm, Explorer icon, hide FirstBase, FirstBase-Logs), WinPE Braille wolf + Cascadia private-load, hardware-gate PnP, operator close then sysprep /oobe /reboot, and WU pipeline fixes since 5.4.1. Loop 1.0.25.'
+    $buildMarkerLines += '5.4.10: Complete-without-handoff recovery - when WU is idle (no pending install) but hardware gate never started, clear stale Rebooting/Stopped markers and route to hardware gate. Do not treat Installed rows as installing. Loop 1.0.26->1.0.27.'
+    $buildMarkerLines += '5.4.11: SD00HN3W-1126-LENOVO - hardware probes passed (camera/wifi/sound) but missing Edge/Chrome painted Fail Settings. PASS YouTube falls back to Sound settings confirmation; do not treat browser-missing as a hardware fail. Loop 1.0.27->1.0.28. OpenSettingsAndFinish 1.1.6->1.1.7.'
     [System.IO.File]::WriteAllLines($buildMarkerPath, $buildMarkerLines, [System.Text.Encoding]::UTF8)
     Write-FbLog ("Build marker written: {0} (LoopVersion={1})" -f $buildMarkerPath, $loopVer) 'INFO'
 } catch {
@@ -10701,6 +10838,7 @@ function Ensure-FbDeferredOobeSoundProgramDataKit {
         if (-not (Test-Path -LiteralPath $pdDir)) {
             New-Item -ItemType Directory -Path $pdDir -Force | Out-Null
         }
+        Clear-FbProgramDataFirstBaseHidden -Path $pdDir
     } catch {
         Write-FbLog ("2237: could not create ProgramData dir for kit ({0}): {1}" -f $Reason, $_.Exception.Message) 'ERROR'
         return 0
@@ -12686,9 +12824,18 @@ function Invoke-FbOperatorSettingsGateInSession {
         if ($YouTubePass) {
             try {
                 $browserAlive = @(Get-CimInstance -ClassName Win32_Process -ErrorAction SilentlyContinue | Where-Object {
-                    $_.Name -match '^(msedge|chrome)\.exe$' -and $_.CommandLine -and ($_.CommandLine -like '*FirstBaseHwGateBrowser*')
+                    $_.Name -match '^(msedge|chrome)\.exe$' -and (
+                        (-not $_.CommandLine) -or
+                        ($_.CommandLine -like '*FirstBaseHwGateBrowser*') -or
+                        ($_.CommandLine -like '*youtube.com*') -or
+                        ($_.CommandLine -like '*microsoft-edge:*')
+                    )
                 })
                 if ($browserAlive.Count -gt 0) { $seen = $true }
+            } catch {}
+            try {
+                $ssAlive = @(Get-Process -Name 'SystemSettings' -ErrorAction SilentlyContinue)
+                if ($ssAlive.Count -gt 0) { $seen = $true }
             } catch {}
         } else {
             $alive = @(Get-Process -Name 'SystemSettings' -ErrorAction SilentlyContinue)
@@ -13072,6 +13219,7 @@ function Invoke-FbHardwareGateOperatorStep {
             }
             try { Set-Content -LiteralPath $failMarker -Value ('hardware-gate FAIL at {0} summary=cbs-pending-uncommitted-drivers' -f (Get-Date -Format 'o')) -Encoding ascii -Force } catch {}
             try { Set-Content -LiteralPath $doneMarker -Value ('hardware-gate FAIL at {0} settings-closed cbs-pending' -f (Get-Date -Format 'o')) -Encoding ascii -Force } catch {}
+            try { Clear-FbHandoffPendingMarker } catch {}
             try { Start-FbHandoffSplashIndicator -Phase 'gate-fail-restart' -AutoCloseSeconds 90 } catch {}
             Write-FbLog 'Hardware gate FAIL: CBS reboot still pending; Settings (not YouTube).' 'WARN'
             return $false
@@ -13100,10 +13248,25 @@ function Invoke-FbHardwareGateOperatorStep {
         try { $reason = [string]$yt.Reason } catch { $reason = '' }
         $seen = $false
         try { $seen = [bool]$yt.Seen } catch { $seen = $false }
-        # Pass only on a real operator close. close-timeout is NOT confirmation (C875N44).
-        # Browser missing / never appeared is NOT a silent pass — fall through to Settings (Fail).
+        # Pass on a real operator close of YouTube (C875N44: close-timeout is NOT confirmation).
+        # Hardware probes already passed. Missing Edge/Chrome is NOT a hardware fail
+        # (SD00HN3W-1126-LENOVO: camera/wifi/sound present; Fail UI was browser-missing).
+        # OpenSettingsAndFinish falls back to Sound settings as PASS confirmation.
         if ($reason -eq 'window-closed') {
             $youtubeOk = $true
+        } elseif ($hwPassed -and ($reason -eq 'browser-missing' -or $reason -eq 'browser-launch-failed' -or $reason -eq 'window-never-appeared')) {
+            Write-FbLog ("Hardware gate: probes passed; YouTube unavailable (reason={0} seen={1}). Opening Sound settings as PASS confirmation (not Fail)." -f $reason, $seen) 'WARN'
+            $st = $null
+            try { $st = Invoke-FbOperatorSettingsGateInSession } catch {
+                Write-FbLog ("Hardware gate PASS Settings fallback threw: {0}" -f $_.Exception.Message) 'ERROR'
+            }
+            $stReason = ''
+            try { $stReason = [string]$st.Reason } catch { $stReason = '' }
+            if ($stReason -eq 'window-closed' -or $stReason -eq 'process-exit') {
+                $youtubeOk = $true
+            } else {
+                Write-FbLog ("Hardware gate: PASS Settings fallback did not complete (reason={0}); keeping Fail path." -f $stReason) 'WARN'
+            }
         } else {
             Write-FbLog ("Hardware gate: YouTube PASS path did not complete (reason={0} seen={1}); opening Settings (Fail)." -f $reason, $seen) 'WARN'
         }
@@ -13113,6 +13276,7 @@ function Invoke-FbHardwareGateOperatorStep {
         $script:FbHardwareGateFailed = $false
         try {
             Set-Content -LiteralPath $doneMarker -Value ('hardware-gate PASS at {0} youtube-closed' -f (Get-Date -Format 'o')) -Encoding ascii -Force
+            Clear-FbHandoffPendingMarker
         } catch {}
         try { Start-FbHandoffSplashIndicator -Phase 'sealing' -AutoCloseSeconds 90 } catch {}
         Write-FbLog 'Hardware gate PASS: private YouTube closed; continuing seal + sysprep /oobe /reboot (customer OOBE).' 'INFO'
@@ -13131,6 +13295,7 @@ function Invoke-FbHardwareGateOperatorStep {
     }
     try {
         Set-Content -LiteralPath $doneMarker -Value ('hardware-gate FAIL at {0} settings-closed' -f (Get-Date -Format 'o')) -Encoding ascii -Force
+        Clear-FbHandoffPendingMarker
     } catch {}
     try { Start-FbHandoffSplashIndicator -Phase 'gate-fail-restart' -AutoCloseSeconds 90 } catch {}
     Write-FbLog 'Hardware gate FAIL: Settings closed; continuing scrub + sysprep /oobe /reboot (not shutdown, not YouTube).' 'WARN'
@@ -13179,6 +13344,7 @@ function Invoke-FbOobeHandoff {
     param([string]$Reason = 'cascade exhausted; handing off to OOBE')
 
     Write-FbLog ("OOBE handoff invoked: {0}" -f $Reason) 'ERROR'
+    Write-FbHandoffPendingMarker -Reason $Reason
     try { Clear-FbWuLoopPaintingMarker } catch {}
     $script:FbWuLoopPaintingActive = $false
     try {
@@ -13190,6 +13356,7 @@ function Invoke-FbOobeHandoff {
         try { $handoffRebootPending = [bool](Test-FbWuRebootRequired) } catch {}
         if ($handoffRebootPending -and -not $handoffPendingSysprep) {
             Write-FbLog '5.4.19: OOBE handoff refused; OS pending reboot and not at seal. Invoking reboot ladder instead of leaving CloudExperienceHost on Just a moment.' 'ERROR'
+            Write-FbHandoffPendingMarker -Reason '5.4.19 pending reboot before hardware gate'
             if (Test-FbWuSkipCascadeUnsafe -State $handoffSkipState) {
                 Clear-FbStaleInstallsCompletedLatch -State $handoffSkipState -Reason 'OOBE handoff pending reboot; cascade not exhausted'
             }
@@ -13198,6 +13365,11 @@ function Invoke-FbOobeHandoff {
     } catch {
         Write-FbLog ("5.4.19: OOBE handoff pending-reboot probe threw: {0}" -f $_.Exception.Message) 'WARN'
     }
+    try {
+        if (-not (Test-FbWuInstallInProgress)) {
+            Clear-FbStaleUpdateRunningMarkers -Reason 'OOBE handoff: hardware gate next'
+        }
+    } catch {}
     try {
         $handoffReal = 0
         try { $handoffReal = [int]$script:RealInstallsThisBoot } catch { $handoffReal = 0 }
@@ -14225,6 +14397,7 @@ function Invoke-FbOobeHandoff {
         if (Test-Path -LiteralPath $fbHwDone) {
             $script:FbHardwareGateFailed = [bool](Test-Path -LiteralPath $fbHwFail)
             Write-FbLog ("Hardware gate already complete (fail={0}); skipping operator step." -f $script:FbHardwareGateFailed) 'INFO'
+            try { Clear-FbHandoffPendingMarker } catch {}
         } else {
             try {
                 Invoke-FbHardwareGateOperatorStep | Out-Null
@@ -14647,11 +14820,10 @@ function Invoke-UsoScanKick {
 }
 
 function Get-PassDefinitions {
-    # Bucket order applied per iteration. Filters live in the engine
-    # (Invoke-FbWuScan) classifier; this list is for UI/log labels only.
-    # Order is Critical -> Driver -> Cumulative -> Optional.
+    # Legacy classifier names kept for scan-log mix counts only.
+    # Install is a single per-pass cycle; these are not apply partitions.
     return @(
-        @{ Name = 'Critical';   HaltOnFailure = $true  },
+        @{ Name = 'Critical';   HaltOnFailure = $false },
         @{ Name = 'Driver';     HaltOnFailure = $false },
         @{ Name = 'Cumulative'; HaltOnFailure = $false },
         @{ Name = 'Optional';   HaltOnFailure = $false }
@@ -14688,6 +14860,8 @@ function Complete-And-Exit {
 
     if ($FinalizeToOobe) {
         Write-FbLog 'Complete-And-Exit: routing to Invoke-FbOobeHandoff so hardware checks + Pass/Fail operator step run before seal/sysprep.' 'INFO'
+        Write-FbHandoffPendingMarker -Reason 'Complete-And-Exit: updates complete; hardware gate + seal + sysprep.'
+        [void](Invoke-FbPrepareHardwareGateRecovery -Reason 'Complete-And-Exit')
         Invoke-FbOobeHandoff -Reason 'Complete-And-Exit: updates complete; hardware gate + seal + sysprep.'
         try { Stop-Transcript | Out-Null } catch {}
         exit 0
@@ -15496,6 +15670,13 @@ if ($script:UiUpdates.Count -eq 0) {
     try { Update-FbHeartbeat -Phase $script:UiPhase } catch {}
 }
 
+if ($FinalizeToOobe -and -not (Test-Path $CompleteMarker) -and (Test-FbStuckCompleteWithoutHandoff)) {
+    Write-FbLog 'Stuck complete-without-handoff: completion marker missing; writing marker so hardware gate can run.' 'WARN'
+    try {
+        Set-Content -Path $CompleteMarker -Value ("Completed at {0} (stuck-complete recovery)" -f (Get-Date -Format s)) -Encoding ASCII -Force
+    } catch {}
+}
+
 if (Test-Path $CompleteMarker) {
     Write-FbLog "Completion marker already present from prior run." 'INFO'
     # 2026.05.13.2213c-onlogon-primary-and-defender-disable: bulletproof
@@ -15507,11 +15688,17 @@ if (Test-Path $CompleteMarker) {
     Set-FbDefenderRealtime -Enabled $true -Reason 'completion-marker-relaunch'
     if ($FinalizeToOobe) {
         $fbHwDoneRelaunch = Join-Path $FbProgramDataFirstBase '.hardware-gate-complete'
+        $fbHandoffPendingRelaunch = $false
+        try { $fbHandoffPendingRelaunch = [bool](Test-Path -LiteralPath (Get-FbHandoffPendingMarkerPath)) } catch {}
         if (-not (Test-Path -LiteralPath $fbHwDoneRelaunch)) {
             Write-FbLog 'CompletionMarker relaunch: hardware gate not complete; routing to Invoke-FbOobeHandoff so checks + Pass/Fail run before sysprep.' 'WARN'
+            [void](Invoke-FbPrepareHardwareGateRecovery -Reason 'CompletionMarker relaunch: hardware checks still required before sysprep.')
             Invoke-FbOobeHandoff -Reason 'CompletionMarker relaunch: hardware checks still required before sysprep.'
             try { Stop-Transcript | Out-Null } catch {}
             exit 0
+        }
+        if ($fbHandoffPendingRelaunch) {
+            try { Clear-FbHandoffPendingMarker } catch {}
         }
         # 2026.05.13.1900-two-stage-sysprep-handoff: relaunch after a
         # prior Invoke-FbOobeHandoff that dropped CompleteMarker.
@@ -15758,11 +15945,8 @@ function Invoke-FbWuInlineRetryPass {
 
     Write-FbLog ("[inline-retry] Running inline retry pass BEFORE reboot. Reason='{0}'." -f $Reason) 'WARN'
 
-    # Run a fresh scan to see what is still on offer. We classify the
-    # results into the same 4 buckets as the main loop and call
-    # Invoke-FbBucketApply on each non-empty one. The bucket apply
-    # already runs per-update serialized (Bug M engine) with retry,
-    # so this is a real chance to converge before reboot.
+    # Run a fresh scan to see what is still on offer. One apply cycle
+    # installs everything still applicable (no class partitions).
     $scanRows = @()
     try {
         $scanRows = @(Invoke-FbWuScan -TimeoutSeconds $RescanTimeoutSec)
@@ -15794,52 +15978,33 @@ function Invoke-FbWuInlineRetryPass {
         try { Write-FbLog ("[inline-retry] Invoke-FbSoftGivenUpEvaluate threw: {0}; continuing with pre-evaluation GivenUpSet." -f $_.Exception.Message) 'WARN' } catch {}
     }
 
-    # Bucket the offered updates. Get-PassDefinitions provides the
-    # canonical bucket order (Critical, Driver, Cumulative, Optional).
-    $passes = Get-PassDefinitions
-    $bucketed = @{}
-    foreach ($p in $passes) { $bucketed[$p.Name] = @() }
-    foreach ($u in $scanRows) {
-        $bk = [string]$u.Bucket
-        if ($bucketed.ContainsKey($bk)) { $bucketed[$bk] += ,$u }
-    }
-
+    # One download/install cycle for every offered update this pass.
     $result.Attempted = $true
     $totalInstalled = 0
     $totalStillFailed = 0
-
-    foreach ($p in $passes) {
-        $bucketRows = @($bucketed[$p.Name])
-        if ($bucketRows.Count -eq 0) { continue }
-        Write-FbLog ("[inline-retry] Bucket {0}: applying {1} update(s) inline (no reboot interleaved)." -f $p.Name, $bucketRows.Count) 'WARN'
-        $bucketRes = $null
-        try {
-            $bucketRes = Invoke-FbBucketApply `
-                -BucketName $p.Name `
-                -BucketUpdates $bucketRows `
-                -RetryMap $RetryMap `
-                -GivenUpSet $GivenUpSet `
-                -StartTime $StartTime `
-                -FailureCount $FailureCount `
-                -HaltOnFailure $false `
-                -BootCountByKey $BootCountByKey `
-                -ForceHiddenSet $ForceHiddenSet `
-                -BootCount $BootCount `
-                -RebootIterations $RebootIterations `
-                -SysprepRetryCount $SysprepRetryCount `
-                -UpdateRetryBudget $UpdateRetryBudget
-        } catch {
-            Write-FbLog ("[inline-retry] Invoke-FbBucketApply threw for bucket {0}: {1}; continuing to next bucket." -f $p.Name, $_.Exception.Message) 'WARN'
-            continue
-        }
-        if ($bucketRes) {
-            $totalInstalled += [int]$bucketRes.Succeeded
-            $totalStillFailed += [int]$bucketRes.Failed
-            if ($bucketRes.RebootRequired -or $bucketRes.ForcePendingRestart) {
-                Write-FbLog ("[inline-retry] Bucket {0} signalled reboot required after apply; halting inline retry." -f $p.Name) 'WARN'
-                break
-            }
-        }
+    Write-FbLog ("[inline-retry] Applying {0} update(s) in one cycle (no class partitions)." -f $scanRows.Count) 'WARN'
+    $bucketRes = $null
+    try {
+        $bucketRes = Invoke-FbBucketApply `
+            -BucketName 'Updates' `
+            -BucketUpdates @($scanRows) `
+            -RetryMap $RetryMap `
+            -GivenUpSet $GivenUpSet `
+            -StartTime $StartTime `
+            -FailureCount $FailureCount `
+            -HaltOnFailure $false `
+            -BootCountByKey $BootCountByKey `
+            -ForceHiddenSet $ForceHiddenSet `
+            -BootCount $BootCount `
+            -RebootIterations $RebootIterations `
+            -SysprepRetryCount $SysprepRetryCount `
+            -UpdateRetryBudget $UpdateRetryBudget
+    } catch {
+        Write-FbLog ("[inline-retry] Invoke-FbBucketApply threw: {0}." -f $_.Exception.Message) 'WARN'
+    }
+    if ($bucketRes) {
+        $totalInstalled += [int]$bucketRes.Succeeded
+        $totalStillFailed += [int]$bucketRes.Failed
     }
 
     $result.Installed = $totalInstalled
@@ -15996,6 +16161,12 @@ function Invoke-FbBucketApply {
     if (-not $BucketUpdates -or $BucketUpdates.Count -eq 0) {
         Write-FbLog "[$BucketName] no updates in this bucket; skipping."
         return $outcome
+    }
+
+    if (Test-FbTechStopUpdates) {
+        Write-FbLog ("[$BucketName] destage Stop updates sentinel present; skipping apply.") 'WARN'
+        try { Set-UiPhase -Phase 'Stopped' -Message 'Updates stopped by technician (destage). Restart updates from fb-im to resume.' } catch {}
+        exit 0
     }
 
     # Filter out anything we have already given up on. We check membership
@@ -17563,6 +17734,12 @@ if ($preInstallDefenderState -eq 'disabled') {
 while ($iter -lt $maxIterations) {
     $iter++
 
+    if (Test-FbTechStopUpdates) {
+        Write-FbLog ('Destage Stop updates sentinel present at iteration {0}; exiting Windows Update loop. Restart updates from fb-im to resume.' -f $iter) 'WARN'
+        try { Set-UiPhase -Phase 'Stopped' -Message 'Updates stopped by technician (destage). Restart updates from fb-im to resume.' } catch {}
+        exit 0
+    }
+
     # 2026.05.13.2200-fullscope-multipass-progress: this iteration
     # is now ALSO a "Pass" in the multi-pass full-scope model. The
     # pass index is exposed on the dashboard via the activity-bar
@@ -17685,6 +17862,12 @@ while ($iter -lt $maxIterations) {
         break
     }
 
+    if (Test-FbTechStopUpdates) {
+        Write-FbLog ('Destage Stop updates sentinel present before scan (iteration {0}); exiting Windows Update loop.' -f $iter) 'WARN'
+        try { Set-UiPhase -Phase 'Stopped' -Message 'Updates stopped by technician (destage). Restart updates from fb-im to resume.' } catch {}
+        exit 0
+    }
+
     Wait-ForInternet -SleepSeconds 30
     Disable-FbRecallFeatureOnce
 
@@ -17699,15 +17882,8 @@ while ($iter -lt $maxIterations) {
     }
 
     try {
-        # 2026.05.13.2200-fullscope-multipass-progress: every pass
-        # MUST start with a fresh online scan (no filters; the
-        # tolerant Invoke-FbWuScan classifier puts each result into
-        # one of Critical|Driver|Cumulative|Optional). The result
-        # count is persisted as $state.LastScanResultCount and the
-        # WorkQueue is rebuilt from it - this is what powers the
-        # convergence-confirm rescan: a clean pass followed by a
-        # fresh scan returning 0 applicable updates declares full
-        # convergence and routes to STAGE 1 sysprep handoff.
+        # Every pass starts with a fresh unfiltered online scan. Classifier
+        # labels on rows are log-only; the pass installs everything offered.
         Write-FbLog "[Pass $iter] Single unfiltered online scan (IsInstalled=0 and IsHidden=0)"
         $available = Invoke-FbWuScan -TimeoutSeconds $ScanTimeoutSec
         $count = ($available | Measure-Object).Count
@@ -17774,65 +17950,41 @@ while ($iter -lt $maxIterations) {
             break
         }
 
-        $byBucket = @{}
-        foreach ($pass in $passes) { $byBucket[$pass.Name] = @() }
+        # Classifier mix is log-only. This pass downloads and installs every
+        # offered update in one cycle (no Critical-then-Driver skip).
+        $classCounts = @{}
         foreach ($u in @($available)) {
-            $bucket = [string]$u.Bucket
-            if (-not $byBucket.ContainsKey($bucket)) {
-                Write-FbLog "[Pass $iter] Unknown bucket '$bucket' for update '$($u.Title)'; routing to Optional." 'WARN'
-                $bucket = 'Optional'
-            }
-            $byBucket[$bucket] += $u
+            $bk = [string]$u.Bucket
+            if ([string]::IsNullOrWhiteSpace($bk)) { $bk = 'Optional' }
+            if (-not $classCounts.ContainsKey($bk)) { $classCounts[$bk] = 0 }
+            $classCounts[$bk]++
         }
-
-        $summary = ($passes | ForEach-Object { ("{0}={1}" -f $_.Name, $byBucket[$_.Name].Count) }) -join ' '
-        Write-FbLog "[Pass $iter] Bucket counts: $summary"
-        Set-UiPhase -Phase 'Scanning' -Message ("Pass {0} scan complete: {1}" -f $iter, $summary)
+        $mixKeys = @($classCounts.Keys | Sort-Object)
+        $summary = ($mixKeys | ForEach-Object { ('{0}={1}' -f $_, $classCounts[$_]) }) -join ' '
+        Write-FbLog ("[Pass {0}] Offered mix (labels only, not install partitions): {1}" -f $iter, $summary)
+        Set-UiPhase -Phase 'Installing' -Message ("Pass {0}: installing {1} update(s)" -f $iter, $count)
         $script:UiPendingUpdates = $count
+        $script:UiCurrentBucket = 'Updates'
 
         $iterationRebootRequired = $false
         $iterationForcePendingRestart = $false
-        $haltedBucket = $null
-        # Track per-bucket outcomes so we can render a single greedy-install
-        # summary line at the end of this iteration.
-        $bucketSummary = [ordered]@{
-            Critical   = @{ Targeted=0; Succeeded=0; Failed=0; Skipped=0 }
-            Driver     = @{ Targeted=0; Succeeded=0; Failed=0; Skipped=0 }
-            Cumulative = @{ Targeted=0; Succeeded=0; Failed=0; Skipped=0 }
-            Optional   = @{ Targeted=0; Succeeded=0; Failed=0; Skipped=0 }
-        }
         $rebootingForBuckets = @()
 
-        foreach ($pass in $passes) {
-            $bucketUpdates = @($byBucket[$pass.Name])
-            $script:UiCurrentBucket = $pass.Name
-            if ($bucketUpdates.Count -eq 0) {
-                Write-FbLog "===== Pass $iter Bucket: $($pass.Name) (0 updates, skipping) ====="
-                continue
-            }
-
-            Write-FbLog "===== Pass $iter Bucket: $($pass.Name) ($($bucketUpdates.Count) update(s)) ====="
-            Set-UiPhase -Phase $pass.Name -Message ("Pass {0} | {1}: {2} update(s) queued" -f $iter, $pass.Name, $bucketUpdates.Count)
-            $script:WuApplyAttempted = $true
-
-            # 2026.05.13.2200-fullscope-multipass-progress: HaltOnFailure
-            # is now ALWAYS $false. The user's spec is explicit:
-            # "No halt on Critical failure - Critical failures route
-            # through the same per-update outcome routing as other
-            # buckets and the pass continues to Driver/Cumulative/
-            # Optional." Even if the bucket sets Halted=true (explicit
-            # reboot signal), we now PROCESS all 4 buckets in the same
-            # pass; the end-of-pass decision handles the reboot at a
-            # single point.
-            # 5.4.18: do not run DISM/CBS cleanup while Driver COM
-            # Install() is on the stack (Recall/FoD enumerate during a
-            # hung OEM driver is what pinned HP ~20 min).
-            $isDriverBucket = ($pass.Name -eq 'Driver')
-            if ($isDriverBucket) { $script:FbWuDriverApplyActive = $true }
-            try {
+        $allUpdates = @($available)
+        $script:WuApplyAttempted = $true
+        $hasDriver = $false
+        foreach ($u in $allUpdates) {
+            $b = [string]$u.Bucket
+            $t = [string]$u.Type
+            if ($b -eq 'Driver' -or $t -eq 'Driver') { $hasDriver = $true; break }
+        }
+        if ($hasDriver) { $script:FbWuDriverApplyActive = $true }
+        $bucketResult = $null
+        try {
+            Write-FbLog ("===== Pass {0} applying {1} update(s) in one search/download/install cycle =====" -f $iter, $allUpdates.Count)
             $bucketResult = Invoke-FbBucketApply `
-                -BucketName $pass.Name `
-                -BucketUpdates $bucketUpdates `
+                -BucketName 'Updates' `
+                -BucketUpdates $allUpdates `
                 -RetryMap $updateRetryMap `
                 -GivenUpSet $givenUpSet `
                 -StartTime $startTime `
@@ -17844,115 +17996,49 @@ while ($iter -lt $maxIterations) {
                 -RebootIterations $rebootIterations `
                 -SysprepRetryCount $sysprepRetryCount `
                 -UpdateRetryBudget $updateRetryBudgetMap
-            } finally {
-                if ($isDriverBucket) { $script:FbWuDriverApplyActive = $false }
-            }
+        } finally {
+            $script:FbWuDriverApplyActive = $false
+        }
 
-            if ($bucketSummary.Contains($pass.Name)) {
-                $bucketSummary[$pass.Name].Targeted  = [int]$bucketResult.Targeted
-                $bucketSummary[$pass.Name].Succeeded = [int]$bucketResult.Succeeded
-                $bucketSummary[$pass.Name].Failed    = [int]$bucketResult.Failed
-                $bucketSummary[$pass.Name].Skipped   = [int]$bucketResult.Skipped
-            }
-
+        if ($bucketResult) {
             if ($bucketResult.RebootRequired)      { $iterationRebootRequired = $true }
             if ($bucketResult.ForcePendingRestart) { $iterationForcePendingRestart = $true }
             if ($bucketResult.RebootRequired -or $bucketResult.ForcePendingRestart) {
-                $rebootingForBuckets += $pass.Name
+                $rebootingForBuckets += 'Updates'
             }
-
-            # 2026.05.13.2200-fullscope-multipass-progress: refresh
-            # the persistent WorkQueue from this bucket's per-update
-            # results. Updates with Reboot/Transient/Unknown
-            # outcomes stay on the queue for the next pass; updates
-            # with Success/Terminal outcomes are removed. The queue
-            # is the system-of-record the EndOfPass decision uses
-            # to declare convergence.
             try {
-                # 2026.05.13.2210-fullscope-multipass-progress-fixes
-                # Critical Fix 3: pass [ref]$givenUpSet so any
-                # Class=Terminal outcome adds the UpdateId +
-                # retry-key to the same GivenUp hashset that the
-                # Save-State sweep below writes via -GivenUpUpdateIds.
                 Update-FbWuWorkQueueFromBucketResults `
-                    -BucketName $pass.Name `
-                    -BucketUpdates $bucketUpdates `
+                    -BucketName 'Updates' `
+                    -BucketUpdates $allUpdates `
                     -BucketApplyResult $bucketResult `
                     -WorkQueueRef ([ref]$passWorkQueue) `
                     -BootCount $bootCount `
                     -RetryBudgetMap $updateRetryBudgetMap `
                     -GivenUpSetRef ([ref]$givenUpSet)
             } catch {
-                Write-FbLog ("Update-FbWuWorkQueueFromBucketResults threw for bucket {0}: {1}. Queue not advanced this bucket." -f $pass.Name, $_.Exception.Message) 'WARN'
+                Write-FbLog ("Update-FbWuWorkQueueFromBucketResults threw: {0}. Queue not advanced this pass." -f $_.Exception.Message) 'WARN'
             }
-
-            # Persist the running WorkQueue + LastScanResultCount
-            # after each bucket so a mid-pass crash leaves the disk
-            # state coherent for the next boot's pass-start probe.
-            try {
-                # 2026.05.13.2210-fullscope-multipass-progress-fixes
-                # Critical Fix 3: persist GivenUpUpdateIds so any
-                # Terminal outcomes added by Update-FbWuWorkQueue-
-                # FromBucketResults survive a mid-pass crash and
-                # are honored by the next boot's pass-start probe.
-                Save-State -EmptySweepCount 0 -LastPass ('pass-{0}-bucket-{1}' -f $iter, $pass.Name) `
-                    -StartTime $startTime -FailureCount $failureCount `
-                    -BootCount $bootCount `
-                    -WorkQueue $passWorkQueue `
-                    -LastScanResultCount $count `
-                    -GivenUpUpdateIds @($givenUpSet)
-            } catch {}
-            $script:UiPendingUpdates = ($passWorkQueue | Measure-Object).Count
-
-            # 5.4.18: pending reboot wins over keep installing drivers.
-            # After any bucket, if the OS wants a reboot AND this boot
-            # actually installed something, reboot before a long Driver
-            # (or later) serial pass. Bug R still skips the PRE-loop
-            # reboot when RealInstallsTotal=0 (image Edge PFRO).
-            $osPendingAfterBucket = $false
-            try { $osPendingAfterBucket = [bool](Test-FbWuRebootRequired) } catch {
-                $osPendingAfterBucket = [bool]$bucketResult.RebootRequired
-            }
-            $realThisBootNow = 0
-            try { $realThisBootNow = [int]$script:RealInstallsThisBoot } catch { $realThisBootNow = 0 }
-            if ($osPendingAfterBucket -and $realThisBootNow -gt 0) {
-                $laterBucketsWithWork = @()
-                $pastCurrent = $false
-                foreach ($laterPass in $passes) {
-                    if (-not $pastCurrent) {
-                        if ($laterPass.Name -eq $pass.Name) { $pastCurrent = $true }
-                        continue
-                    }
-                    $laterN = 0
-                    try { $laterN = @($byBucket[$laterPass.Name]).Count } catch { $laterN = 0 }
-                    if ($laterN -gt 0) { $laterBucketsWithWork += $laterPass.Name }
-                }
-                if ($laterBucketsWithWork.Count -gt 0) {
-                    Write-FbLog ("Pending reboot after bucket {0} with RealInstallsThisBoot={1}; not starting remaining buckets ({2}). Invoking Invoke-FbReboot." -f $pass.Name, $realThisBootNow, ($laterBucketsWithWork -join ',')) 'WARN'
-                    Invoke-FbRebootWithFreshStateCheck -Reason ("pending reboot after {0} real installs this boot; remaining buckets: {1}" -f $pass.Name, ($laterBucketsWithWork -join ','))
-                }
-            }
-
-            # 2026.05.13.2200-fullscope-multipass-progress: NO
-            # break here on Halted unless 5.4.18 pending-reboot rail
-            # above already invoked reboot. Remaining buckets still
-            # run when OSPendingReboot is false or this boot installed
-            # nothing (Bug R image baggage).
         }
 
-        # Render the greedy-install summary so the user can see
-        # (without log access) exactly what got installed in this
-        # pass before the EndOfPass decision routes the reboot.
-        $summaryParts = @()
+        try {
+            Save-State -EmptySweepCount 0 -LastPass ('pass-{0}-apply' -f $iter) `
+                -StartTime $startTime -FailureCount $failureCount `
+                -BootCount $bootCount `
+                -WorkQueue $passWorkQueue `
+                -LastScanResultCount $count `
+                -GivenUpUpdateIds @($givenUpSet)
+        } catch {}
+        $script:UiPendingUpdates = ($passWorkQueue | Measure-Object).Count
+
         $totalApplied = 0
-        foreach ($name in @('Critical','Driver','Cumulative','Optional')) {
-            $row = $bucketSummary[$name]
-            $applied = [int]$row.Succeeded + [int]$row.Skipped
-            $totalApplied += $applied
-            $summaryParts += ('{0}={1}' -f $name, $applied)
+        $targetedN = $count
+        if ($bucketResult) {
+            $totalApplied = [int]$bucketResult.Succeeded + [int]$bucketResult.Skipped
+            $targetedN = [int]$bucketResult.Targeted
         }
         $passQueueCountForSummary = ($passWorkQueue | Measure-Object).Count
-        $passSummaryMsg = ("Pass {0} complete: applied {1} update(s) ({2}); WorkQueue={3} pending; reboot signalled by buckets: {4}" -f $iter, $totalApplied, ($summaryParts -join ' '), $passQueueCountForSummary, ($rebootingForBuckets -join ',' | ForEach-Object { if ([string]::IsNullOrWhiteSpace($_)) { '(none)' } else { $_ } }))
+        $rebootNote = if ($rebootingForBuckets.Count -gt 0) { 'yes' } else { 'none' }
+        $passSummaryMsg = ("Pass {0} complete: applied {1} of {2} update(s); WorkQueue={3} pending; reboot signalled={4}" -f $iter, $totalApplied, $targetedN, $passQueueCountForSummary, $rebootNote)
         Write-FbLog $passSummaryMsg 'INFO'
         Set-UiPhase -Phase 'PassSummary' -Message $passSummaryMsg
 

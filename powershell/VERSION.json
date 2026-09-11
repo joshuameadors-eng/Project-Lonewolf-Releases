@@ -1,9 +1,15 @@
 {
-    "_comment":  "Product/payload version (version and payloadVersion) is independent of launcherVersion. Packaged launcher versioning uses public GitHub latest.json. The ISO share must not host this file, launcher exe, or script updates.",
-    "version":  "5.4.3",
-    "payloadVersion":  "5.4.3",
-    "launcherVersion":  "5.5.28",
+    "_comment":  "Product/payload version (version and payloadVersion) is independent of launcherVersion. npm start destage staging product version (chips, image dates, changelog, arch enablement) always comes from this file. Packaged Dev and production changelog/update feeds use public GitHub latest.json (main) or latest-dev.json (packaged Dev). The ISO share and Drive VERSION.json must not host launcher exe, payload zip, or live version overlay.",
+    "version":  "6.0.0",
+    "payloadVersion":  "6.0.0",
+    "launcherVersion":  "6.0.0",
     "launcherExeName":  "LoneWolf-Launcher.exe",
+    "dev":  {
+                "_comment":  "npm start destage always versions from this checkout VERSION.json (local ISO, HQ UNC, Drive Desktop, or any other media). Packaged Dev uses the public dev branch / latest-dev.json. Packaged production uses main / latest.json. ISO/PreSplit/WinPE-OCs are filesystem-only: Google Drive for Desktop if mounted, else HQ UNC. A Drive folder URL is never ShareRoot. Do not publish exe/zip to Drive. Do not overlay Drive HTTPS VERSION.json on destage.",
+                "channel":  "dev",
+                "stagingVersionSource":  "local-VERSION.json",
+                "driveFolderId":  "1MIxUFCMRPKRx7smWkr9q8nH8H4q7-7nl"
+            },
     "buildDate":  "2026-09-10",
     "stagingFolderPattern":  "Windows * ({arch})",
     "architectures":  {
@@ -13,12 +19,24 @@
                                         "enabled":  true
                                     },
                           "ARM64":  {
-                                        "wimBuildDate":  "2026-09-10",
+                                        "wimBuildDate":  "2026-09-09",
                                         "payloadHash":  "",
                                         "enabled":  true
                                     }
                       },
     "changelog":  [
+                      {
+                          "version":  "6.0.0",
+                          "date":  "2026-09-11",
+                          "changes":  [
+                                          "Official release 6.0.0 — first cut of the v6 line (MAJOR 5→6). Launcher, payload, and product version are all 6.0.0.",
+                                          "Added",
+                                          "Settings appearance is Light or Dark only (default Dark; the old Dark override maps to Dark)",
+                                          "USB destage versions from this checkout; Full Rebuild when the share ISO is newer than the stick, Quick Update for scripts and payload only",
+                                          "ISO, PreSplit, and WinPE-OCs from Google Drive for Desktop when mounted, otherwise HQ UNC",
+                                          "Quick Install sticks are rebuild-only"
+                                      ]
+                      },
                       {
                           "version":  "5.5.27",
                           "date":  "2026-09-10",

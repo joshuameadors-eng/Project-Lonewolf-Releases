@@ -4,9 +4,9 @@
     For Internal Use Only.
 
 .DESCRIPTION
-    Fullscreen WPF splash (borderless maximized + strongest practical topmost
-    stack: WPF Topmost + Win32 HWND_TOPMOST / WS_EX_TOPMOST + existing 2213z/2214*
-    tick). Tails the most recent
+    Fullscreen WPF splash (borderless maximized). Z-order covers customer OOBE
+    and consoles only; operator apps (Settings, update UIs, Explorer folders)
+    sit over the splash. Tails the most recent
     C:\Windows\Setup\FirstBase\Logs\WU-*.log and parses it for current pass /
     KB ID / install activity.
 
@@ -919,6 +919,7 @@ using System;
 using System.Runtime.InteropServices;
 using System.Text;
 public static class FbSplashWin32Z {
+    public static readonly IntPtr HWND_TOP = IntPtr.Zero;
     public static readonly IntPtr HWND_TOPMOST = new IntPtr(-1);
     public static readonly IntPtr HWND_NOTOPMOST = new IntPtr(-2);
     public const uint SWP_NOSIZE = 0x0001;
@@ -1276,9 +1277,14 @@ try {
                         </Ellipse.Effect>
                     </Ellipse>
                 </Grid>
-                <TextBlock HorizontalAlignment="Center" Margin="0,12,0,0">
-                    <Run Text="Project " Foreground="#FFFFFFFF" FontSize="33" FontWeight="Light"/><Run Text="LoneWolf" Foreground="#FF22D3EE" FontSize="33" FontWeight="Light"/>
-                </TextBlock>
+                <StackPanel Orientation="Horizontal" HorizontalAlignment="Center" Margin="0,12,0,0">
+                    <TextBlock VerticalAlignment="Center">
+                        <Run Text="Project " Foreground="#FFFFFFFF" FontSize="33" FontWeight="Light"/><Run x:Name="BrandAccentRun" Text="LoneWolf" Foreground="#FF22D3EE" FontSize="33" FontWeight="Light"/>
+                    </TextBlock>
+                    <Border Name="DevBuildIndicator" VerticalAlignment="Center" Margin="14,0,0,0" Padding="12,4,12,4" Background="#FF1A0A0A" BorderBrush="#FFEF5350" BorderThickness="1" CornerRadius="14" Visibility="Collapsed">
+                        <TextBlock Name="DevBuildIndicatorText" Text="DEV" FontSize="12" Foreground="#FFFFCDD2" FontWeight="Bold"/>
+                    </Border>
+                </StackPanel>
                 <TextBlock Text="FirstBase For Internal Use Only"
                            FontSize="14"
                            FontWeight="SemiBold"
@@ -1303,9 +1309,6 @@ try {
                                         <TextBlock Name="PassStatusLabel" Text="STATUS" FontSize="11" FontWeight="Bold" Foreground="#FFFF9800" VerticalAlignment="Center" Margin="0,0,8,0"/>
                                         <TextBlock Name="PassText" Text="Downloading and installing updates" FontSize="13" FontFamily="Segoe UI" FontWeight="SemiBold" Foreground="#FFFF9800" VerticalAlignment="Center"/>
                                     </StackPanel>
-                                </Border>
-                                <Border Name="DevBuildIndicator" VerticalAlignment="Center" Padding="12,4,12,4" Background="#FF2A0A0A" BorderBrush="#FFEF5350" BorderThickness="1" CornerRadius="14" Visibility="Collapsed">
-                                    <TextBlock Name="DevBuildIndicatorText" Text="DEV" FontSize="12" Foreground="#FFEF5350" FontWeight="SemiBold"/>
                                 </Border>
                             </StackPanel>
                             <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Center">
@@ -1691,20 +1694,29 @@ function Set-FbSplashRebootDisplay {
     } catch {}
 }
 
-# DEV pill: resolved by the shared FirstBaseBuildIdentity.ps1 so this matches
-# the WinPE banner and deploy screen exactly. It deliberately does NOT consult
-# $FirstBaseBuildStatus - that is a checked-in constant, so honoring it made
-# every release build show a DEV pill. Only per-build artifacts count:
-# LW_VERSION.json (devBuild) and the .dev-build marker, both staged next to
-# this script by TechInstall. No signal means release.
+# Destage DEV badge: USB destage (destage / channel=destage / .dev-build). Neon cyan
+# is Electron npm start only. Packaged production USB stays hidden. Register-FbSplashTechChrome
+# restyles this to destage red and also probes the USB stick if C: has a stale stamp.
 try {
     $fbIdentity = $null
     $fbIdentityPs1 = Join-Path $PSScriptRoot 'FirstBaseBuildIdentity.ps1'
     if (Test-Path -LiteralPath $fbIdentityPs1) {
         . $fbIdentityPs1
-        $fbIdentity = Get-FbBuildIdentityForScript -ScriptRoot $PSScriptRoot -Layout Payload
+        $idRoots = New-Object System.Collections.Generic.List[string]
+        try {
+            Get-CimInstance -ClassName Win32_LogicalDisk -Filter 'DriveType=2' -ErrorAction SilentlyContinue | ForEach-Object {
+                $usbRoot = $_.DeviceID + '\'
+                [void]$idRoots.Add((Join-Path $usbRoot 'FirstBase'))
+                [void]$idRoots.Add((Join-Path $usbRoot 'FirstBase\WUPayload'))
+            }
+        } catch {}
+        if ($PSScriptRoot) { [void]$idRoots.Add($PSScriptRoot) }
+        [void]$idRoots.Add('C:\Windows\Setup\FirstBase')
+        $fbIdentity = Get-FbBuildIdentity -PayloadRoot @($idRoots)
     }
-    if ($fbIdentity -and $fbIdentity.Dev -and $devBuildIndicator) {
+    $showDestageDev = $false
+    if ($fbIdentity -and ($fbIdentity.Destage -or $fbIdentity.Dev)) { $showDestageDev = $true }
+    if ($showDestageDev -and $devBuildIndicator) {
         $devBuildIndicator.Visibility = [System.Windows.Visibility]::Visible
         if ($devBuildIndicatorText) {
             $devBuildIndicatorText.Text = 'DEV'
@@ -1824,14 +1836,14 @@ function Start-FbSplashFbIm {
         Write-SplashLog ("tech tools: launching fb-im from {0}" -f $target) 'INFO'
         Set-FbSplashTechStatus 'Launching fb-im...' '#FF22D3EE'
         if ($target -like '*.cmd') {
-            Start-Process -FilePath $target -WorkingDirectory (Split-Path -Path $target -Parent) -ErrorAction Stop | Out-Null
+            Start-Process -FilePath $target -WorkingDirectory (Split-Path -Path $target -Parent) -WindowStyle Hidden -ErrorAction Stop | Out-Null
             Set-FbSplashTechStatus 'fb-im launched.' '#FF66BB6A'
             return
         }
         $psExe = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
         if (-not (Test-Path -LiteralPath $psExe)) { $psExe = 'powershell.exe' }
-        Start-Process -FilePath $psExe -ArgumentList @(
-            '-NoProfile', '-STA', '-ExecutionPolicy', 'Bypass', '-File', $target
+        Start-Process -FilePath $psExe -WindowStyle Hidden -ArgumentList @(
+            '-NoProfile', '-STA', '-ExecutionPolicy', 'Bypass', '-WindowStyle', 'Hidden', '-File', $target
         ) -ErrorAction Stop | Out-Null
         Set-FbSplashTechStatus 'fb-im launched.' '#FF66BB6A'
     } catch {
@@ -2691,7 +2703,8 @@ try {
             }
             # 2214l/2214m: OOBE Z-order hwndInsertAfter=splash  -  pass=1 after splash HWND_TOPMOST + WS_EX_TOPMOST, before Activate/reclaim.
             Invoke-FbSplashOobe2214lPlaceWwahostRootBehindSplash -RestackPass 1
-            # Splash overtakes operator apps. $yield is always false unless F12/topmost-off.
+            # $yield: operator apps are above splash; skip Activate so tabbing to
+            # a console does not yank those apps under the splash.
             if ($yield) {
                 try { Invoke-FbSplashHonorOperatorForeground | Out-Null } catch {}
             } else {
@@ -2732,8 +2745,10 @@ function Get-FbSplashShortStatusLine {
     if ($p -eq 'Verifying' -or $p -eq 'FinalCheck') { return 'Verifying updates' }
     if ($p -eq 'ApplyingUpdates' -or $p -match '(?i)applying') { return 'Windows is applying updates - please wait' }
     if ($p -eq 'ManualRestart') { return 'Restart this PC - hold the power button if it will not restart' }
+    if ($p -eq 'Stopped') { return 'Updates stopped by technician' }
+    if ($p -eq 'HardwareGate') { return 'Starting hardware check' }
     if ($p -eq 'Rebooting' -or $p -match '(?i)^reboot') { return 'Restarting to continue updates' }
-    if ($p -match '(?i)handoff|sysprep|oobe') { return 'Preparing OOBE handoff' }
+    if ($p -match '(?i)handoff|sysprep|oobe|hardware.?gate') { return 'Starting hardware check' }
     return 'Downloading and installing updates'
 }
 
@@ -2832,6 +2847,7 @@ function Get-FbSplashStateVersionText {
             '^Completed$' { 'Completed'; break }
             '^ApplyingUpdates$' { 'Applying updates'; break }
             '^ManualRestart$' { 'Restart required'; break }
+            '^Stopped$'   { 'Updates stopped'; break }
             '^Reboot'     { 'Preparing to restart'; break }
             '^\d+$'       { "Update pass $phase"; break }
             '^Pass\s*(\d+)$' { "Update pass $($Matches[1])"; break }
@@ -3178,7 +3194,7 @@ function Invoke-FbSplashHonorOperatorSettingsGate {
         $script:FbSplashOperatorGateStoodDown = $true
         try {
             try { Invoke-FbSplashHonorOperatorForeground | Out-Null } catch {}
-            Write-SplashLog '2380: operator Settings gate active - splash stays fullscreen; Settings/cmd raised above splash (OOBE remains behind).' 'INFO'
+            Write-SplashLog '2380: operator Settings gate active - splash stays fullscreen; Settings stays above splash; consoles stay behind (OOBE remains behind).' 'INFO'
         } catch {
             try { Write-SplashLog ("2380: operator Settings gate stand-down EXCEPTION {0}" -f $_.Exception.Message) 'WARN' } catch {}
         }

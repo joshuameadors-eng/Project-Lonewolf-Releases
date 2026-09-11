@@ -158,9 +158,14 @@ if ($isLocal) {
         EmitError "local mode: LocalProjectRoot not found: $LocalProjectRoot"; exit 1
     }
 } else {
-    $shareHost = 'WIN-HQ5JDEACV3S'
-    if ($ShareRoot -match '^\\\\([^\\]+)\\') { $shareHost = $Matches[1] }
-    Connect-ShareCredentials -ShareHost $shareHost -User $ShareUser -Pass $SharePassword
+    if ($ShareRoot -match '^(?i)https?://') {
+        EmitError 'A Google Drive folder URL is not a Windows filesystem ShareRoot. Use Google Drive for Desktop or the HQ UNC share.'; exit 1
+    }
+    if ($ShareRoot -match '^\\\\') {
+        $shareHost = 'WIN-HQ5JDEACV3S'
+        if ($ShareRoot -match '^\\\\([^\\]+)\\') { $shareHost = $Matches[1] }
+        Connect-ShareCredentials -ShareHost $shareHost -User $ShareUser -Pass $SharePassword
+    }
     if (-not (Test-Path -LiteralPath $ShareRoot)) {
         EmitError "cannot reach share: $ShareRoot"; exit 1
     }

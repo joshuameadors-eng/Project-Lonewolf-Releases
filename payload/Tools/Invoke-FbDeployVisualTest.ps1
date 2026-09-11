@@ -39,10 +39,10 @@ $VersionSrc = Join-Path $PayloadRoot 'FirstBaseVersion.ps1'
 $Ps = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
 
 $scenarios = @(
-    @{ Id = 'deploy-dev';      Kind = 'console'; Text = 'Deploy screen - dev build, full 7-step run to completion' }
+    @{ Id = 'deploy-dev';      Kind = 'console'; Text = 'Deploy screen - destage, red chrome, no DEV tag' }
     @{ Id = 'deploy-fail';     Kind = 'console'; Text = 'Deploy screen - failure at step 4 with log tail' }
-    @{ Id = 'deploy-release';  Kind = 'console'; Text = 'Deploy screen - release build (no DEV tag)' }
-    @{ Id = 'banner-dev';      Kind = 'console'; Text = 'Animated WinPE banner - dev build' }
+    @{ Id = 'deploy-release';  Kind = 'console'; Text = 'Deploy screen - release build (cyan text, blue wolf)' }
+    @{ Id = 'banner-dev';      Kind = 'console'; Text = 'Animated WinPE banner - destage: red text+wolf, no DEV tag' }
     @{ Id = 'splash-updates';  Kind = 'wpf';     Text = 'Updates splash - dev device, DEV pill SHOWN' }
     @{ Id = 'splash-release';  Kind = 'wpf';     Text = 'Updates splash - release device, NO DEV pill' }
     @{ Id = 'handoff-restart';  Kind = 'wpf';     Text = 'Handoff - restart-for-checks (pre-seal, non-blocking)' }
@@ -99,6 +99,8 @@ function New-FbMockPayload {
         version              = $Launcher
         launcherVersion      = $Launcher
         scriptVersion        = $Scripts
+        destage              = $DevBuild
+        channel              = $(if ($DevBuild) { 'destage' } else { $null })
         devBuild             = $DevBuild
         shareLauncherVersion = '5.2.108'
         shareScriptVersion   = '2319'
@@ -107,7 +109,7 @@ function New-FbMockPayload {
 
     if ($DevBuild) {
         Set-Content -LiteralPath (Join-Path $Path 'WUPayload\.dev-build') `
-            -Value "devBuild=1`r`nlauncherVersion=$Launcher`r`nscriptVersion=$Scripts`r`n" -Encoding ASCII
+            -Value "devBuild=1`r`ndestage=1`r`nchannel=destage`r`nlauncherVersion=$Launcher`r`nscriptVersion=$Scripts`r`n" -Encoding ASCII
     }
 }
 
@@ -292,7 +294,11 @@ function New-FbMockDevice {
     }
     if ($DevBuild) {
         Set-Content -LiteralPath (Join-Path $dir '.dev-build') `
-            -Value "devBuild=1`r`nlauncherVersion=5.2.113`r`nscriptVersion=2321`r`n" -Encoding ASCII
+            -Value "devBuild=1`r`ndestage=1`r`nchannel=destage`r`nlauncherVersion=5.2.113`r`nscriptVersion=2321`r`n" -Encoding ASCII
+        @{
+            builtBy = 'LoneWolfLauncher'; launcherVersion = '5.2.113'; scriptVersion = '2321'
+            destage = $true; channel = 'destage'; devBuild = $true
+        } | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $dir 'LW_VERSION.json') -Encoding UTF8
     }
     return (Join-Path $dir 'Show-UpdateProgress.ps1')
 }
@@ -325,10 +331,10 @@ foreach ($h in @(
 
 Write-Host ''
 Write-Host '  Check on each window:' -ForegroundColor Cyan
-Write-Host '    deploy-dev      step markers advance; step 4 themed Applying image bar (cyan/green); DEV tag red'
+Write-Host '    deploy-dev      red banner text + red wolf; no DEV tag; step 4 themed Applying image bar (cyan/green)'
 Write-Host '    deploy-fail     step 4 partial themed bar then [!!] + log tail'
-Write-Host '    deploy-release  same as deploy-dev without DEV tag'
-Write-Host '    banner-dev      Braille wolf renders, red DEV beside [ Updates ], red version footer'
+Write-Host '    deploy-release  cyan banner text + blue wolf (official chrome)'
+Write-Host '    banner-dev      Braille wolf renders red; framed title red; no DEV tag; red version footer'
 Write-Host '    splash-updates  DEV pill top-left, status line NOT blank, list card shows a checking state'
 Write-Host '    splash-release  NO DEV pill anywhere - this is the release regression being guarded'
 Write-Host '    handoff-*       pre-seal status only; auto-closes; no Acknowledge; Esc closes in preview'

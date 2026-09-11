@@ -3,7 +3,7 @@
 
     Single source of truth for "is this a dev build?" and the version numbers
     that go beside that answer. Dot-sourced by every surface that shows a DEV
-    marker: the WinPE banner and deploy screen, the on-device updates splash,
+    marker: the WinPE banner and deploy screen (destage = red chrome, no DEV tag), the on-device updates splash,
     the handoff splash, and the fb-im technician tool.
 
     WHY THIS FILE EXISTS
@@ -16,20 +16,52 @@
     from artifacts the builder stamps per build.
 
     THE TWO AUTHORITATIVE SIGNALS (in order)
-      1. LW_VERSION.json  - written by both builders on every build. Carries
-         devBuild plus the launcher/script versions and the share versions the
-         dev comparison was made against.
+      1. LW_VERSION.json  - written by both builders on every build. npm start
+         destage stamps destage=true and channel=destage (plus legacy
+         devBuild). Packaged LoneWolf Launcher Dev and production do not.
       2. .dev-build       - a key=value marker the builders write ONLY when
-         -DevBuild is set. Present at <root>\.dev-build on a device (staged by
-         TechInstall) and <root>\WUPayload\.dev-build on a stick.
+         destaging from npm start (-DevBuild). Present at <root>\.dev-build on
+         a device (staged by TechInstall) and <root>\WUPayload\.dev-build on a
+         stick.
 
-    RELEASE-SAFE BY DEFAULT: absent or unreadable signals mean release. A dev
+    RELEASE-SAFE BY DEFAULT: absent or unreadable signals mean release. A destage
     stick missing its pill is cosmetic; a release device claiming DEV is the
-    bug this file exists to prevent.
+    bug this file exists to prevent. Channel "dev" (packaged Launcher Dev) is
+    NOT a destage signal.
 
     Must stay usable in the WinPE PowerShell 5.1 restricted runspace: no
     classes, no modules, no external calls, and it never throws.
 #>
+
+function Test-FbJsonTruthy {
+    param($Value)
+    if ($null -eq $Value) { return $false }
+    if ($Value -eq $true -or $Value -eq 1) { return $true }
+    $s = [string]$Value
+    if ([string]::IsNullOrWhiteSpace($s)) { return $false }
+    return ($s -match '^(true|1|yes|destage)$')
+}
+
+function Test-FbStampIsDestage {
+    param($Json)
+    if (-not $Json) { return $false }
+    try {
+        if ($Json.PSObject.Properties['destage'] -and (Test-FbJsonTruthy $Json.destage)) { return $true }
+    } catch {}
+    try {
+        if ($Json.PSObject.Properties['channel'] -and [string]$Json.channel -eq 'destage') { return $true }
+    } catch {}
+    return $false
+}
+
+function Test-FbStampIsDev {
+    param($Json)
+    if (Test-FbStampIsDestage $Json) { return $true }
+    try {
+        if ($Json.PSObject.Properties['devBuild'] -and (Test-FbJsonTruthy $Json.devBuild)) { return $true }
+    } catch {}
+    return $false
+}
 
 function Get-FbBuildIdentity {
     <#
@@ -43,6 +75,8 @@ function Get-FbBuildIdentity {
 
     $info = [ordered]@{
         Dev           = $false
+        Destage       = $false
+        Channel       = ''
         Launcher      = ''
         Script        = ''
         ShareLauncher = ''
@@ -67,13 +101,20 @@ function Get-FbBuildIdentity {
             $j = Get-Content -LiteralPath $stamp -Raw -ErrorAction Stop | ConvertFrom-Json
         } catch { continue }
 
-        if ($j.devBuild) {
+        $isDestage = Test-FbStampIsDestage $j
+        if ($isDestage) {
+            $info.Destage = $true
+            $info.Channel = 'destage'
+        } elseif ($j.PSObject.Properties['channel'] -and $j.channel) {
+            $info.Channel = [string]$j.channel
+        }
+        if (Test-FbStampIsDev $j) {
             $info.Dev = $true
             $info.Source = 'LW_VERSION.json'
         }
         if ($j.launcherVersion)      { $info.Launcher      = [string]$j.launcherVersion }
-        elseif ($j.version)          { $info.Launcher      = [string]$j.version }
-        if ($j.scriptVersion)        { $info.Script        = [string]$j.scriptVersion }
+        if ($j.payloadVersion)       { $info.Script        = [string]$j.payloadVersion }
+        elseif ($j.scriptVersion)    { $info.Script        = [string]$j.scriptVersion }
         elseif ($j.version)          { $info.Script        = [string]$j.version }
         if ($j.shareLauncherVersion) { $info.ShareLauncher = [string]$j.shareLauncherVersion }
         if ($j.shareScriptVersion)   { $info.ShareScript   = [string]$j.shareScriptVersion }
@@ -90,18 +131,22 @@ function Get-FbBuildIdentity {
                 $marker = Join-Path $root $rel
                 if (-not (Test-Path -LiteralPath $marker)) { continue }
                 $info.Dev = $true
+                $info.Destage = $true
+                if (-not $info.Channel) { $info.Channel = 'destage' }
                 $info.Source = $rel
                 # The marker also carries versions, useful when no stamp was found.
-                if (-not $info.Launcher) {
+                if (-not $info.Launcher -or -not $info.Script) {
                     try {
                         foreach ($line in (Get-Content -LiteralPath $marker -ErrorAction Stop)) {
                             $kv = ([string]$line).Split('=', 2)
                             if ($kv.Count -ne 2) { continue }
                             switch ($kv[0].Trim()) {
                                 'launcherVersion'      { if (-not $info.Launcher)      { $info.Launcher      = $kv[1].Trim() } }
+                                'payloadVersion'       { if (-not $info.Script)        { $info.Script        = $kv[1].Trim() } }
                                 'scriptVersion'        { if (-not $info.Script)        { $info.Script        = $kv[1].Trim() } }
                                 'shareLauncherVersion' { if (-not $info.ShareLauncher) { $info.ShareLauncher = $kv[1].Trim() } }
                                 'shareScriptVersion'   { if (-not $info.ShareScript)   { $info.ShareScript   = $kv[1].Trim() } }
+                                'channel'              { if (-not $info.Channel)       { $info.Channel       = $kv[1].Trim() } }
                             }
                         }
                     } catch {}

@@ -66,7 +66,7 @@ $FirstBaseScriptVersion = @{
 
     'Build-UsbStick.ps1'               = '1.1.0'
 
-    'Invoke-WindowsUpdateLoop.ps1'       = '1.0.26'
+    'Invoke-WindowsUpdateLoop.ps1'       = '1.0.28'
 
     'SetupComplete.cmd'                = '1.0.6'
 
@@ -107,7 +107,7 @@ $FirstBaseScriptVersion = @{
 
     'FirstBaseHandoffSplash.ps1'        = '1.0.4'
 
-    'FirstBaseOpenSettingsAndFinish.ps1' = '1.1.6'
+    'FirstBaseOpenSettingsAndFinish.ps1' = '1.1.8'
 
     'FirstBaseHardwareCheck.ps1'        = '1.0.2'
 

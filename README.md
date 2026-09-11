@@ -13,7 +13,7 @@ Official **installer files** for Project LoneWolf / FirstBase. Application sourc
 
 The package is **unsigned**. Install and update download unsigned PE from GitHub (`bin/LoneWolf-Launcher.exe` and this Setup). **Smart App Control** can block them as untrusted.
 
-**If Setup will not run:** Windows Security → App & browser control → Smart App Control. **Evaluation** can usually be turned **Off**. **On (enforcement)** often greys out Off and may need a PC reset; do not expect a one-click Off. Use **More info → Run anyway** / SmartScreen only if those dialogs still appear. Do **not** disable Windows Defender. Signing (Azure, about $10/month) is the real fix.
+**If Setup will not run:** Windows Security → App & browser control → Smart App Control. **Evaluation** can usually be turned **Off**. **On (enforcement)** often greys out Off and may need a PC reset; do not expect a one-click Off. Use **More info → Run anyway** / SmartScreen only if those dialogs still appear. Do **not** disable Windows Defender.
 
 ## Quick Update vs Launcher Update
 
@@ -62,5 +62,3 @@ These channels are separate. A script update does not require a new launcher exe
 - Windows 10/11 x64
 - Administrator for install and USB imaging
 - .NET 8 Desktop Runtime x64 (installer installs it from Microsoft if needed)
-
-USB stick destage testing is done from the private source tree with `npm start` (local `src/`), not from these binaries.

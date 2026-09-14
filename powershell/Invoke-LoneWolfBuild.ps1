@@ -823,6 +823,13 @@ function Build-Cache {
                 $markerBody = "destage=1`r`nchannel=destage`r`npayloadVersion=$pv`r`nscriptVersion=$pv`r`nbuiltAt=$(Get-Date -Format 'o')`r`n"
                 [System.IO.File]::WriteAllText((Join-Path $wuDir '.dev-build'), $markerBody, [System.Text.UTF8Encoding]::new($false))
             } catch {}
+        } else {
+            foreach ($rel in @('FirstBase\WUPayload\.dev-build', 'FirstBase\.dev-build', '.dev-build')) {
+                $marker = Join-Path $overlayCache $rel
+                if (Test-Path -LiteralPath $marker) {
+                    Remove-Item -LiteralPath $marker -Force -ErrorAction SilentlyContinue
+                }
+            }
         }
     } else {
         # WIN-INSTALL: overlay uses the same TechInstall architecture as a full build.
@@ -1031,6 +1038,13 @@ function Build-IsoCache {
                 $markerBody = "destage=1`r`nchannel=destage`r`npayloadVersion=$pv`r`nscriptVersion=$pv`r`nbuiltAt=$(Get-Date -Format 'o')`r`n"
                 [System.IO.File]::WriteAllText((Join-Path $wuDir '.dev-build'), $markerBody, [System.Text.UTF8Encoding]::new($false))
             } catch {}
+        } else {
+            foreach ($rel in @('FirstBase\WUPayload\.dev-build', 'FirstBase\.dev-build', '.dev-build')) {
+                $marker = Join-Path $overlayCache $rel
+                if (Test-Path -LiteralPath $marker) {
+                    Remove-Item -LiteralPath $marker -Force -ErrorAction SilentlyContinue
+                }
+            }
         }
     } else {
         # WIN-INSTALL: overlay uses the same TechInstall architecture as a full build.
@@ -2635,6 +2649,19 @@ $workerDiskBlock = {
             @("Layout=$Layout",'Builder=Invoke-LoneWolfBuild.ps1') |
                 Set-Content -LiteralPath (Join-Path $logDir 'FirstBase-Layout.txt') -Encoding ascii -Force
             Write-LwUsbExplorerChrome -VolRoot $partRoot -IcoSrc (Join-Path $ContentRoot 'FirstBase.ico')
+        }
+
+        # Packaged production / packaged Destage: never leave a destage marker on the stick
+        # (Quick Update copy does not delete extra files, so a prior npm start destage would linger).
+        if (-not $DevBuild) {
+            foreach ($partRoot in $overlayPartRoots) {
+                foreach ($rel in @('FirstBase\WUPayload\.dev-build', 'FirstBase\.dev-build', '.dev-build')) {
+                    $marker = Join-Path $partRoot $rel
+                    if (Test-Path -LiteralPath $marker) {
+                        Remove-Item -LiteralPath $marker -Force -ErrorAction SilentlyContinue
+                    }
+                }
+            }
         }
 
         # -- Hide Windows install media at volume root; hide FirstBase; keep fb-im.cmd visible --

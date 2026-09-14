@@ -1703,6 +1703,9 @@ try {
     if (Test-Path -LiteralPath $fbIdentityPs1) {
         . $fbIdentityPs1
         $idRoots = New-Object System.Collections.Generic.List[string]
+        # Local payload first so a production C: stamp is not overridden by a destage USB.
+        if ($PSScriptRoot) { [void]$idRoots.Add($PSScriptRoot) }
+        [void]$idRoots.Add('C:\Windows\Setup\FirstBase')
         try {
             Get-CimInstance -ClassName Win32_LogicalDisk -Filter 'DriveType=2' -ErrorAction SilentlyContinue | ForEach-Object {
                 $usbRoot = $_.DeviceID + '\'
@@ -1710,8 +1713,6 @@ try {
                 [void]$idRoots.Add((Join-Path $usbRoot 'FirstBase\WUPayload'))
             }
         } catch {}
-        if ($PSScriptRoot) { [void]$idRoots.Add($PSScriptRoot) }
-        [void]$idRoots.Add('C:\Windows\Setup\FirstBase')
         $fbIdentity = Get-FbBuildIdentity -PayloadRoot @($idRoots)
     }
     $showDestageDev = $false

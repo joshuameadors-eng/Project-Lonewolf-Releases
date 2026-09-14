@@ -693,13 +693,6 @@ function Test-FbSplashDestageStopEnabled {
         }
         if (Get-Command Get-FbBuildIdentity -ErrorAction SilentlyContinue) {
             $roots = New-Object System.Collections.Generic.List[string]
-            try {
-                Get-CimInstance -ClassName Win32_LogicalDisk -Filter 'DriveType=2' -ErrorAction SilentlyContinue | ForEach-Object {
-                    $root = $_.DeviceID + '\'
-                    [void]$roots.Add((Join-Path $root 'FirstBase'))
-                    [void]$roots.Add((Join-Path $root 'FirstBase\WUPayload'))
-                }
-            } catch {}
             if ($PSScriptRoot) {
                 [void]$roots.Add($PSScriptRoot)
                 try {
@@ -709,6 +702,13 @@ function Test-FbSplashDestageStopEnabled {
             }
             [void]$roots.Add('C:\Windows\Setup\FirstBase')
             [void]$roots.Add('C:\Windows\Setup\FirstBase\WUPayload')
+            try {
+                Get-CimInstance -ClassName Win32_LogicalDisk -Filter 'DriveType=2' -ErrorAction SilentlyContinue | ForEach-Object {
+                    $root = $_.DeviceID + '\'
+                    [void]$roots.Add((Join-Path $root 'FirstBase'))
+                    [void]$roots.Add((Join-Path $root 'FirstBase\WUPayload'))
+                }
+            } catch {}
             $id = Get-FbBuildIdentity -PayloadRoot @($roots)
             if ($id -and ($id.Destage -or $id.Dev)) { return $true }
         }

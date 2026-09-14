@@ -30,6 +30,6 @@
                  "payload":  "https://raw.githubusercontent.com/joshuameadors-eng/Project-Lonewolf-Releases/main/FirstBase-payload.zip",
                  "manifest":  "https://raw.githubusercontent.com/joshuameadors-eng/Project-Lonewolf-Releases/main/latest.json"
              },
-    "portableSha256":  "7b45c789972e54cf2d5c4287456d8b921a63f698fbc6b938e0d7e2b0e31fb700",
-    "portableSize":  71422616
+    "portableSha256":  "08f8deb5e7ec8250cd327d808a574bed88f214c9d25c133854a1dba9d1a21569",
+    "portableSize":  71421599
 }

@@ -2,7 +2,7 @@
     "_comment":  "Product/payload version (version and payloadVersion) is independent of launcherVersion. npm start destage staging product version (chips, image dates, changelog, arch enablement) always comes from this file. Packaged Dev and production changelog/update feeds use public GitHub latest.json (main) or latest-dev.json (packaged Dev). The ISO share and Drive VERSION.json must not host launcher exe, payload zip, or live version overlay.",
     "version":  "6.0.0",
     "payloadVersion":  "6.0.0",
-    "launcherVersion":  "6.0.7",
+    "launcherVersion":  "6.0.8",
     "launcherExeName":  "LoneWolf-Launcher.exe",
     "dev":  {
                 "_comment":  "npm start destage always versions from this checkout VERSION.json (local ISO, HQ UNC, Drive Desktop, or any other media). Packaged Dev uses the public dev branch / latest-dev.json. Packaged production uses main / latest.json. ISO/PreSplit/WinPE-OCs are filesystem-only: Google Drive for Desktop if mounted, else HQ UNC. A Drive folder URL is never ShareRoot. Do not publish exe/zip to Drive. Do not overlay Drive HTTPS VERSION.json on destage.",
@@ -27,14 +27,20 @@
     "changelog":  [
                       {
                           "version":  "6.0.0",
-                          "date":  "2026-09-11",
+                          "date":  "2026-09-14",
                           "changes":  [
                                           "Official release 6.0.0 — first cut of the v6 line (MAJOR 5→6). Launcher, payload, and product version are all 6.0.0.",
                                           "Added",
                                           "Settings appearance is Light or Dark only (default Dark; the old Dark override maps to Dark)",
                                           "USB destage versions from this checkout; Full Rebuild when the share ISO is newer than the stick, Quick Update for scripts and payload only",
                                           "ISO, PreSplit, and WinPE-OCs from Google Drive for Desktop when mounted, otherwise HQ UNC",
-                                          "Quick Install sticks are rebuild-only"
+                                          "Quick Install sticks are rebuild-only",
+                                          "Changed",
+                                          "Launcher update",
+                                          "GitHub updates no longer require FirstbaseHQ",
+                                          "Portable hash check and curl retry",
+                                          "Clear leftover 7-Zip unpack so relaunch works",
+                                          "Startup prompt uses the same GitHub check as Settings"
                                       ]
                       },
                       {

@@ -35,12 +35,14 @@
                                           "USB destage versions from this checkout; Full Rebuild when the share ISO is newer than the stick, Quick Update for scripts and payload only",
                                           "ISO, PreSplit, and WinPE-OCs from Google Drive for Desktop when mounted, otherwise HQ UNC",
                                           "Quick Install sticks are rebuild-only",
+                                          "Proper Installation tool — unversioned Setup.exe on GitHub Releases tag installer",
                                           "Changed",
+                                          "FB-IM — major technician-tool improvements",
+                                          "Update Script — Windows Update progress and apply flow",
+                                          "Launcher UI and functionality",
                                           "Launcher update",
                                           "GitHub updates no longer require FirstbaseHQ",
-                                          "Portable hash check and curl retry",
-                                          "Clear leftover 7-Zip unpack so relaunch works",
-                                          "Startup prompt uses the same GitHub check as Settings"
+                                          "In-app portable swap that survives quit is 6.0.0+ (5.5.27 still needs Setup)"
                                       ]
                       },
                       {

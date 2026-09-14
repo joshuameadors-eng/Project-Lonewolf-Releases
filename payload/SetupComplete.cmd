@@ -321,6 +321,8 @@ if not exist "%FB_LOGDIR%" mkdir "%FB_LOGDIR%" >nul 2>&1
 :: NOT here; this directory exists either way so post-mortem inspection
 :: of C:\ProgramData\FirstBase\ never sees "directory not found" noise.
 if not exist "%FB_PROGRAMDATA_DIR%" mkdir "%FB_PROGRAMDATA_DIR%" >nul 2>&1
+:: Hidden+System on ProgramData\FirstBase flags AV (not a normal Windows folder).
+attrib -H -S "%FB_PROGRAMDATA_DIR%" >nul 2>&1
 :: 2213x OOBE overlay marker MUST NOT be written on the post-sysprep specialize
 :: pass (Bug U fence 1 -> :DONE). Writing it before the fence left the file
 :: populated even when all arming was skipped, enabling Show-UpdateProgress

@@ -104,7 +104,7 @@ param(
     [string] $LocalProjectRoot = '',   # When non-empty: skip share auth and use this local path as ProjectRoot
     # WinPE optional-component cabs source. Defaults to the share (NOT a local ADK install).
     # LoneWolf builds pull WinPE-WMI/NetFx/Scripting/PowerShell (+ their _en-us cabs) from here.
-    [string] $WpeOcRoot = '\\WIN-HQ5JDEACV3S\Images\FB Image Creation\Remote\Staging\WinPE-OCs',
+    [string] $WpeOcRoot = '',
     [switch] $PreCacheOnly,
     [switch] $OverlayOnly,
     [switch] $ForceIsoMode,
@@ -139,8 +139,9 @@ param(
     # Off = size-only integrity check per build (cheap). sha256 of multi-GB chunks on
     # every build is not worth the cost; the producer records hashes for a deep audit.
     [switch] $VerifyPreSplitHash,
-    # Dev build: launcher version is ahead of share official (or unpackaged fallback).
-    # Stamps LW_VERSION.json + WUPayload\.dev-build so stick cards and on-device splash show DEV.
+    # npm start destage only (main.js passes -DevBuild when !app.isPackaged).
+    # Stamps LW_VERSION.json destage/channel=destage + WUPayload\.dev-build so splash, deploy UI, and badges show DEV.
+    # Packaged LoneWolf Launcher Dev and production must NOT pass this.
     [switch] $DevBuild,
     [string] $LauncherVersion = '',
     [string] $ScriptVersion = '',
@@ -292,12 +293,16 @@ $wfUpper = $WorkflowType.ToUpper()   # AMD64 or ARM64
 $winEdition = 'Pro'
 if ($WindowsEdition -match '^(?i)home$') { $winEdition = 'Home' }
 
+$shareLayoutLib = Join-Path $PSScriptRoot 'lib\Resolve-LwShareLayout.ps1'
+if (Test-Path -LiteralPath $shareLayoutLib) { . $shareLayoutLib }
+$shareLayout = Resolve-LwShareLayout -ShareRoot $ShareRoot -LocalProjectRoot $LocalProjectRoot
+
 if (-not [string]::IsNullOrWhiteSpace($LocalProjectRoot)) {
     $ProjectRoot = $LocalProjectRoot
 } else {
     $ProjectRoot = Join-Path $ShareRoot 'Remote'
 }
-$StagingRoot = Join-Path $ProjectRoot 'Staging'
+$StagingRoot = $shareLayout.StagingRoot
 
 # Deploy overlay root  -  prefer payload bundled inside the .exe (AppResourcesPath\payload),
 # fall back to Staging\Payload on the share when the bundled path is absent.
@@ -361,8 +366,8 @@ if (-not $NoPayload -and -not $QuickInstall) {
 # New fixed-path layout: Staging\AMD64\ and Staging\AMD64\AMD64.wim
 $ArchRoot    = Join-Path $StagingRoot $wfUpper          # e.g. Staging\AMD64
 $StagingWim  = Join-Path $ArchRoot    "$wfUpper.wim"    # e.g. Staging\AMD64\AMD64.wim
-$IsoRoot     = Join-Path $StagingRoot 'ISO'             # e.g. Staging\ISO
-$PreSplitRoot = Join-Path $StagingRoot 'PreSplit'       # e.g. Staging\PreSplit  (\<imageVersion>\ at root)
+$IsoRoot     = $shareLayout.IsoRoot                     # share-root ISO\ or legacy Staging\ISO
+$PreSplitRoot = $shareLayout.PreSplitRoot               # share-root PreSplit\ or legacy Staging\PreSplit
 
 # Shared split-helper lib. Dot-sourced on the MAIN thread here (for Get-LWImageVersionId
 # + Test-LWPreSplitSet used by Get-LWPreSplitSet below), and its full path is ALSO passed
@@ -380,7 +385,7 @@ $WpeOcSource = if (-not [string]::IsNullOrWhiteSpace($LocalProjectRoot) -and
 } elseif (-not [string]::IsNullOrWhiteSpace($WpeOcRoot)) {
     $WpeOcRoot
 } else {
-    Join-Path $StagingRoot 'WinPE-OCs'
+    $shareLayout.WpeOcRoot
 }
 
 # The WinPE-OCs share was restructured into per-architecture subfolders
@@ -814,7 +819,8 @@ function Build-Cache {
             try {
                 $wuDir = Join-Path $overlayCache 'FirstBase\WUPayload'
                 if (-not (Test-Path -LiteralPath $wuDir)) { New-Item -ItemType Directory -Force -Path $wuDir | Out-Null }
-                $markerBody = "devBuild=1`r`nlauncherVersion=$LauncherVersion`r`nscriptVersion=$ScriptVersion`r`nshareLauncherVersion=$ShareLauncherVersion`r`nshareScriptVersion=$ShareScriptVersion`r`nbuiltAt=$(Get-Date -Format 'o')`r`n"
+                $pv = if ($ScriptVersion) { [string]$ScriptVersion } else { [string]$StagingVersion }
+                $markerBody = "destage=1`r`nchannel=destage`r`npayloadVersion=$pv`r`nscriptVersion=$pv`r`nbuiltAt=$(Get-Date -Format 'o')`r`n"
                 [System.IO.File]::WriteAllText((Join-Path $wuDir '.dev-build'), $markerBody, [System.Text.UTF8Encoding]::new($false))
             } catch {}
         }
@@ -1021,7 +1027,8 @@ function Build-IsoCache {
             try {
                 $wuDir = Join-Path $overlayCache 'FirstBase\WUPayload'
                 if (-not (Test-Path -LiteralPath $wuDir)) { New-Item -ItemType Directory -Force -Path $wuDir | Out-Null }
-                $markerBody = "devBuild=1`r`nlauncherVersion=$LauncherVersion`r`nscriptVersion=$ScriptVersion`r`nshareLauncherVersion=$ShareLauncherVersion`r`nshareScriptVersion=$ShareScriptVersion`r`nbuiltAt=$(Get-Date -Format 'o')`r`n"
+                $pv = if ($ScriptVersion) { [string]$ScriptVersion } else { [string]$StagingVersion }
+                $markerBody = "destage=1`r`nchannel=destage`r`npayloadVersion=$pv`r`nscriptVersion=$pv`r`nbuiltAt=$(Get-Date -Format 'o')`r`n"
                 [System.IO.File]::WriteAllText((Join-Path $wuDir '.dev-build'), $markerBody, [System.Text.UTF8Encoding]::new($false))
             } catch {}
         }
@@ -2743,25 +2750,28 @@ $workerDiskBlock = {
                         }
                     } catch { }
                 }
-                $versionStamp = [ordered]@{
-                    builtBy               = 'LoneWolfLauncher'
-                    workflowType          = $stampWf
-                    arch                  = $stampArch
-                    archLabel             = $stampArchLabel
-                    windowsEdition        = $(if ($WindowsEdition) { $WindowsEdition } else { 'Pro' })
-                    version               = $StagingVersion
-                    scriptVersion         = $(if ($ScriptVersion) { $ScriptVersion } else { $StagingVersion })
-                    payloadVersion        = $(if ($ScriptVersion) { $ScriptVersion } else { $StagingVersion })
-                    builtAt               = (Get-Date -Format 'o')
-                    diskNumber            = $DiskNumber
-                    devBuild              = [bool]$DevBuild
-                    launcherVersion       = $(if ($LauncherVersion) { $LauncherVersion } else { $null })
-                    shareLauncherVersion  = $(if ($ShareLauncherVersion) { $ShareLauncherVersion } else { $null })
-                    shareScriptVersion    = $(if ($ShareScriptVersion) { $ShareScriptVersion } else { $null })
-                    imageBuildDate        = $(if ($stampImageDate) { $stampImageDate } else { $null })
-                    wimBuildDate          = $(if ($stampImageDate) { $stampImageDate } else { $null })
-                } | ConvertTo-Json -Compress
-                $versionStamp | Out-File -FilePath (Join-Path $dataRoot 'FirstBase\LW_VERSION.json') -Encoding utf8 -Force
+                # Slim LW_VERSION.json: rewrite the file every destage (full or Quick Update)
+                # so leftover fat keys (launcherVersion, changelog, share xref) cannot linger.
+                $payloadVer = if ($ScriptVersion) { [string]$ScriptVersion } else { [string]$StagingVersion }
+                $stampPath = Join-Path $dataRoot 'FirstBase\LW_VERSION.json'
+                $stamp = [ordered]@{
+                    version        = $payloadVer
+                    payloadVersion = $payloadVer
+                    workflowType   = $stampWf
+                    arch           = $stampArch
+                    archLabel      = $stampArchLabel
+                    windowsEdition = $(if ($WindowsEdition) { $WindowsEdition } else { 'Pro' })
+                }
+                if ($stampImageDate) { $stamp.imageBuildDate = [string]$stampImageDate }
+                if ($DevBuild) {
+                    $stamp.destage = $true
+                    $stamp.channel = 'destage'
+                }
+                $stamp.builtAt = (Get-Date -Format 'o')
+                if (Test-Path -LiteralPath $stampPath) {
+                    Remove-Item -LiteralPath $stampPath -Force -ErrorAction SilentlyContinue
+                }
+                ($stamp | ConvertTo-Json -Compress) | Out-File -FilePath $stampPath -Encoding utf8 -Force
             } catch { }
         }
 
@@ -2799,11 +2809,15 @@ try {
     Invoke-LwIsoSweep
 
     if ([string]::IsNullOrWhiteSpace($LocalProjectRoot)) {
-        # Authenticate to network share
-        $shareHost = 'WIN-HQ5JDEACV3S'
-        if ($ShareRoot -match '^\\\\([^\\]+)\\') { $shareHost = $Matches[1] }
-        Connect-Share -ShareHost $shareHost -User $ShareUser -Pass $SharePassword -ProbePath $ShareRoot
-
+        if ($ShareRoot -match '^(?i)https?://') {
+            Emit @{ event='error'; disk=-1; message='A Google Drive folder URL is not a Windows filesystem ShareRoot. Use Google Drive for Desktop or the HQ UNC share.' }
+            exit 1
+        }
+        if ($ShareRoot -match '^\\\\') {
+            $shareHost = 'WIN-HQ5JDEACV3S'
+            if ($ShareRoot -match '^\\\\([^\\]+)\\') { $shareHost = $Matches[1] }
+            Connect-Share -ShareHost $shareHost -User $ShareUser -Pass $SharePassword -ProbePath $ShareRoot
+        }
         if (-not (Test-Path -LiteralPath $ShareRoot)) {
             Emit @{ event='error'; disk=-1; message="Cannot reach share: $ShareRoot" }
             exit 1

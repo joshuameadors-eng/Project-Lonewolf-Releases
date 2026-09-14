@@ -62,6 +62,12 @@ try {
     else {
         $exeUrl = 'https://raw.githubusercontent.com/joshuameadors-eng/Project-Lonewolf-Releases/main/bin/LoneWolf-Launcher.exe'
     }
+    if ($exeUrl) {
+        $leaf = [System.IO.Path]::GetFileName((($exeUrl -split '\?')[0]))
+        if ($leaf) { $exeName = $leaf }
+    } elseif ($vj.assets -and $vj.assets.portable) {
+        $exeName = [System.IO.Path]::GetFileName([string]$vj.assets.portable)
+    }
     if ($vj.urls -and $vj.urls.setup) { $setupUrl = [string]$vj.urls.setup }
     else {
         $setupUrl = 'https://github.com/joshuameadors-eng/Project-Lonewolf-Releases/releases/download/installer/LoneWolf-Launcher-Setup.exe'

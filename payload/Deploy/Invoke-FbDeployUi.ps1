@@ -1,11 +1,13 @@
 <#
     Invoke-FbDeployUi.ps1  (Project LoneWolf)
 
-    ScriptVersion: 1.1.4  (5.4.24: private-load cascadiamono.ttf then Braille)
+    ScriptVersion: 1.1.5  (destage: red text+wolf, no DEV tag)
 
     The WinPE deploy screen. One console surface: splash branding (wolf +
     framed title) is the header - there is no separate title ribbon and no
     second PowerShell process for Show-DeployBanner on the Init path.
+    Destage sticks use red banner text and a red wolf with no DEV tag;
+    production / packaged-Dev USB keep cyan text + blue wolf.
     TechInstall seeds the step plan here; each Step/Detail/Fail/Done call
     repaints this same layout.
 
@@ -360,7 +362,7 @@ function Write-Row {
 
 # --- Build identity ----------------------------------------------------------
 function Get-FbUiBuildInfo {
-    $info = [ordered]@{ Dev = $false; Launcher = ''; Script = '' }
+    $info = [ordered]@{ Dev = $false; Destage = $false; Launcher = ''; Script = '' }
     if (-not $PSScriptRoot) { return $info }
 
     $identityPs1 = Join-Path $PSScriptRoot 'FirstBaseBuildIdentity.ps1'
@@ -371,6 +373,7 @@ function Get-FbUiBuildInfo {
         $resolved = Get-FbBuildIdentityForScript -ScriptRoot $PSScriptRoot -Layout Deploy
         if ($resolved) {
             $info.Dev      = [bool]$resolved.Dev
+            $info.Destage  = [bool]$resolved.Destage
             $info.Launcher = [string]$resolved.Launcher
             $info.Script   = [string]$resolved.Script
         }
@@ -411,7 +414,7 @@ function Get-FbDeployWolfLines {
 }
 
 function Get-FbUiSplashLines {
-    param([string]$Subtitle = 'Install', [bool]$IsDev = $false)
+    param([string]$Subtitle = 'Install')
 
     $innerW = 26
     function New-FbUiFrameLine([string] $s) {
@@ -422,11 +425,9 @@ function Get-FbUiSplashLines {
     $fBot = ([char]0x255A) + ([string]([char]0x2550) * $innerW) + ([char]0x255D)
 
     $subLabel = '   [ ' + $Subtitle + ' ]'
-    $subTag   = if ($IsDev) { '  DEV' } else { '' }
-    if (($subLabel.Length + $subTag.Length) -gt $innerW) {
-        $subLabel = $subLabel.Substring(0, [Math]::Max($innerW - $subTag.Length, 0))
+    if ($subLabel.Length -gt $innerW) {
+        $subLabel = $subLabel.Substring(0, $innerW)
     }
-    $subFill = ' ' * [Math]::Max($innerW - ($subLabel.Length + $subTag.Length), 0)
 
     $title = @(
         $fTop,
@@ -434,7 +435,7 @@ function Get-FbUiSplashLines {
         (New-FbUiFrameLine '   P R O J E C T'),
         (New-FbUiFrameLine '   L O N E W O L F'),
         (New-FbUiFrameLine ''),
-        (New-FbUiFrameLine ($subLabel + $subTag)),
+        (New-FbUiFrameLine $subLabel),
         (New-FbUiFrameLine ''),
         $fBot
     )
@@ -452,9 +453,6 @@ function Get-FbUiSplashLines {
         Left       = $left
         Wolf       = $script:FbUiWolf
         SubRow     = ($top + 5)
-        SubLabel   = $subLabel
-        SubTag     = $subTag
-        SubFill    = $subFill
         LeftWidth  = ($innerW + 2)
         Rows       = $rows
     }
@@ -463,38 +461,33 @@ function Get-FbUiSplashLines {
 function Write-FbUiSplashHeader {
     param(
         [string]$Subtitle = 'Install',
-        [bool]$IsDev = $false,
+        [bool]$IsDestage = $false,
         [switch]$Animate
     )
     $script:FbUiWolf = Get-FbDeployWolfLines
-    $pack = Get-FbUiSplashLines -Subtitle $Subtitle -IsDev $IsDev
+    $pack = Get-FbUiSplashLines -Subtitle $Subtitle
     $pad = '  '
     $gap = '   '
-    $bar = [string][char]0x2551
     $lmax = [int]$pack.LeftWidth
+    $textColor = if ($IsDestage) { 'Red' } else { 'Cyan' }
+    $wolfColor = if ($IsDestage) { 'Red' } else { 'Blue' }
 
     if ($Animate) {
         Clear-Host
         Write-Host ''
         for ($r = 0; $r -lt $pack.Rows; $r++) {
             $lt = $pack.Left[$r]; if ($null -eq $lt) { $lt = '' }
-            if ($r -eq $pack.SubRow) {
-                Write-Host ($pad + $bar + $pack.SubLabel) -ForegroundColor Cyan -NoNewline
-                if ($pack.SubTag) { Write-Host $pack.SubTag -ForegroundColor Red -NoNewline }
-                Write-Host ($pack.SubFill + $bar) -ForegroundColor Cyan -NoNewline
-            } else {
-                Write-Host ($pad + $lt.PadRight($lmax)) -ForegroundColor Cyan -NoNewline
-            }
-            Write-Host ($gap + $pack.Wolf[$r]) -ForegroundColor Blue
+            Write-Host ($pad + $lt.PadRight($lmax)) -ForegroundColor $textColor -NoNewline
+            Write-Host ($gap + $pack.Wolf[$r]) -ForegroundColor $wolfColor
             Start-Sleep -Milliseconds 20
         }
         try {
             $blinkRow = 1 + $pack.SubRow
-            foreach ($c in @('DarkCyan', 'White', 'DarkCyan', 'White', 'Cyan')) {
+            $blinkColors = if ($IsDestage) { @('DarkRed', 'White', 'DarkRed', 'White', 'Red') } else { @('DarkCyan', 'White', 'DarkCyan', 'White', 'Cyan') }
+            foreach ($c in $blinkColors) {
                 [Console]::SetCursorPosition(0, $blinkRow)
-                Write-Host ($pad + $bar + $pack.SubLabel) -ForegroundColor $c -NoNewline
-                if ($pack.SubTag) { Write-Host $pack.SubTag -ForegroundColor Red -NoNewline }
-                Write-Host ($pack.SubFill + $bar) -ForegroundColor $c -NoNewline
+                $lt = $pack.Left[$pack.SubRow]; if ($null -eq $lt) { $lt = '' }
+                Write-Host ($pad + $lt.PadRight($lmax)) -ForegroundColor $c -NoNewline
                 Start-Sleep -Milliseconds 120
             }
             [Console]::SetCursorPosition(0, 1 + $pack.Rows)
@@ -506,14 +499,8 @@ function Write-FbUiSplashHeader {
     Write-Host ''
     for ($r = 0; $r -lt $pack.Rows; $r++) {
         $lt = $pack.Left[$r]; if ($null -eq $lt) { $lt = '' }
-        if ($r -eq $pack.SubRow) {
-            Write-Host ($pad + $bar + $pack.SubLabel) -ForegroundColor Cyan -NoNewline
-            if ($pack.SubTag) { Write-Host $pack.SubTag -ForegroundColor Red -NoNewline }
-            Write-Host ($pack.SubFill + $bar) -ForegroundColor Cyan -NoNewline
-        } else {
-            Write-Host ($pad + $lt.PadRight($lmax)) -ForegroundColor Cyan -NoNewline
-        }
-        Write-Host ($gap + $pack.Wolf[$r]) -ForegroundColor Blue
+        Write-Host ($pad + $lt.PadRight($lmax)) -ForegroundColor $textColor -NoNewline
+        Write-Host ($gap + $pack.Wolf[$r]) -ForegroundColor $wolfColor
     }
     Write-Host ''
 }
@@ -541,9 +528,9 @@ function Write-FbUiState($state) {
 function New-FbUiState {
     $build = Get-FbUiBuildInfo
     switch ($Dev) {
-        'Yes' { $isDev = $true }
-        'No'  { $isDev = $false }
-        default { $isDev = [bool]$build.Dev }
+        'Yes' { $isDestage = $true }
+        'No'  { $isDestage = $false }
+        default { $isDestage = [bool]$build.Destage -or [bool]$build.Dev }
     }
 
     $plan = @()
@@ -559,7 +546,7 @@ function New-FbUiState {
 
     return [pscustomobject]@{
         Workflow   = $Workflow
-        Dev        = $isDev
+        Dev        = $isDestage
         Launcher   = $build.Launcher
         Script     = $build.Script
         Steps      = $plan
@@ -661,7 +648,7 @@ function Show-FbUiScreen($state) {
 
     # Splash branding is the header (no title ribbon).
     $wf = if ($state.Workflow) { [string]$state.Workflow } else { 'Install' }
-    Write-FbUiSplashHeader -Subtitle $wf -IsDev ([bool]$state.Dev)
+    Write-FbUiSplashHeader -Subtitle $wf -IsDestage ([bool]$state.Dev)
 
     # Step plan - spinner lives on the active step (no overall loading bar).
     $total = 0
@@ -851,7 +838,7 @@ try {
 
     if ($Action -ne 'SpinWatch') {
         if ($doSplashReveal) {
-            Write-FbUiSplashHeader -Subtitle ([string]$state.Workflow) -IsDev ([bool]$state.Dev) -Animate
+            Write-FbUiSplashHeader -Subtitle ([string]$state.Workflow) -IsDestage ([bool]$state.Dev) -Animate
             $state.SplashDone = $true
         }
 

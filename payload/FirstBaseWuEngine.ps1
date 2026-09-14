@@ -181,13 +181,12 @@ function Invoke-FbWuScan {
         or category-name whitelists drops most cumulative/security packages
         (they publish as Type=0/utNotSet and ship under volatile category
         names like "Windows 11", "Microsoft Server Operating System", etc.).
-        We instead always run `IsInstalled=0 and IsHidden=0`, then bucket
-        every offered update into Critical / Driver / Cumulative / Optional
-        in PowerShell with a tolerant classifier.
+        We instead always run `IsInstalled=0 and IsHidden=0`. Classifier
+        labels (Critical / Driver / Cumulative / Optional) are log-only;
+        each pass installs every offered update in one download/install cycle.
 
         Legacy parameters (CategoryFilters / ExcludeCategories / TypeFilter)
-        are accepted but IGNORED; the loop now decides install order via
-        the per-record `Bucket` field.
+        are accepted but IGNORED.
     #>
     [CmdletBinding()]
     param(

@@ -135,6 +135,8 @@ function New-FbMockPayload {
         version              = $Launcher
         launcherVersion      = $Launcher
         scriptVersion        = $Scripts
+        destage              = $DevBuild
+        channel              = $(if ($DevBuild) { 'destage' } else { $null })
         devBuild             = $DevBuild
         shareLauncherVersion = '5.2.108'
         shareScriptVersion   = '2319'
@@ -143,7 +145,7 @@ function New-FbMockPayload {
 
     if ($DevBuild) {
         Set-Content -LiteralPath (Join-Path $Path 'WUPayload\.dev-build') `
-            -Value "devBuild=1`r`nlauncherVersion=$Launcher`r`nscriptVersion=$Scripts`r`n" -Encoding ASCII
+            -Value "devBuild=1`r`ndestage=1`r`nchannel=destage`r`nlauncherVersion=$Launcher`r`nscriptVersion=$Scripts`r`n" -Encoding ASCII
     }
 }
 
@@ -158,10 +160,10 @@ function New-FbMockDevice {
     }
     if ($DevBuild) {
         Set-Content -LiteralPath (Join-Path $dir '.dev-build') `
-            -Value "devBuild=1`r`nlauncherVersion=5.2.114`r`nscriptVersion=2322`r`n" -Encoding ASCII
+            -Value "devBuild=1`r`ndestage=1`r`nchannel=destage`r`nlauncherVersion=5.2.114`r`nscriptVersion=2322`r`n" -Encoding ASCII
         @{
             builtBy = 'LoneWolfLauncher'; launcherVersion = '5.2.114'; scriptVersion = '2322'
-            devBuild = $true; shareLauncherVersion = '5.2.108'; shareScriptVersion = '2319'
+            destage = $true; channel = 'destage'; devBuild = $true; shareLauncherVersion = '5.2.108'; shareScriptVersion = '2319'
         } | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $dir 'LW_VERSION.json') -Encoding UTF8
     }
     return (Join-Path $dir 'Show-UpdateProgress.ps1')

@@ -10,7 +10,7 @@
 .OUTPUTS
   JSON array on stdout:
   [{"number":1,"friendlyName":"SanDisk Ultra","sizeGB":28.9,"serial":"AA001","busType":"USB",
-    "isLoneWolfDisk":true,"lwVersion":"1.0.0","lwWorkflowType":"QUICK-INSTALL-ARM64",
+    "driveLetter":"E","isLoneWolfDisk":true,"lwVersion":"1.0.0","lwWorkflowType":"QUICK-INSTALL-ARM64",
     "lwArch":"ARM64","lwArchLabel":"Snapdragon"},...]
   Outputs [] if no USB disks found.
   No Write-Host, no interactive prompts. Write-Error only for errors (stderr).
@@ -135,7 +135,7 @@ function Get-WmiSerialByNumber {
 
 # --- LoneWolf version detection from WINSETUP partition ---------------------
 # Returns $null to signal "skip this disk entirely" (unreadable / < 1 MB with no partitions).
-# Returns an ordered hashtable otherwise (isLoneWolfDisk, lwVersion, lwWorkflowType, lwArch, lwArchLabel).
+# Returns an ordered hashtable otherwise (isLoneWolfDisk, driveLetter, lwVersion, lwWorkflowType, lwArch, lwArchLabel).
 function Get-LoneWolfInfo {
     param([int]$DiskNum, [long]$DiskSize)
 
@@ -155,6 +155,7 @@ function Get-LoneWolfInfo {
 
     $lwInfo = [ordered]@{
         isLoneWolfDisk = $false
+        driveLetter = $null
         lwVersion = $null
         lwWorkflowType = $null
         lwDevBuild = $false
@@ -167,34 +168,46 @@ function Get-LoneWolfInfo {
         lwArch = $null
         lwArchLabel = $null
         lwWindowsEdition = $null
+        volumeLabel = $null
+        isQuickInstallDisk = $false
+        isBitraserDisk = $false
+        isBootableMediaDisk = $false
     }
 
-    # Find the largest non-System partition  -  most likely to be WINSETUP NTFS
-    $part = $partitions |
-        Where-Object { $_.Type -ne 'System' } |
-        Sort-Object Size -Descending |
-        Select-Object -First 1
-
-    if (-not $part) { return $lwInfo }
+    # Probe every non-System volume with a drive letter. Volume label is NOT a
+    # gate: Quick Install often stamps a date (e.g. 9.10.2026) instead of LoneWolf.
+    $probeParts = @($partitions | Where-Object { $_.Type -ne 'System' } | Sort-Object Size -Descending)
+    if (-not $probeParts -or $probeParts.Count -eq 0) { return $lwInfo }
 
     try {
-        $vol = $part | Get-Volume -ErrorAction SilentlyContinue
-        # Current label is 'LoneWolf' (FAT32 reads it back uppercase as 'LONEWOLF'); -eq is
-        # case-insensitive so both match. Legacy 'Project LoneWolf' / 'WINSETUP' still detected.
-        if ($vol -and ($vol.FileSystemLabel -eq 'LoneWolf' -or $vol.FileSystemLabel -eq 'Project LoneWolf' -or $vol.FileSystemLabel -eq 'WINSETUP') -and $vol.DriveLetter) {
-            # The payload is nested under <vol>\FirstBase\; legacy sticks stamped
-            # LW_VERSION.json at the volume root, so probe both in that order.
-            $lwVersionFile = $null
+        $lwVersionFile = $null
+        foreach ($probePart in $probeParts) {
+            $vol = $null
+            try { $vol = $probePart | Get-Volume -ErrorAction SilentlyContinue } catch { $vol = $null }
+            if (-not $vol -or -not $vol.DriveLetter) { continue }
+            $letter = [string]$vol.DriveLetter
+            if (-not $lwInfo.driveLetter) { $lwInfo.driveLetter = $letter }
+            try {
+                $lab = [string]$vol.FileSystemLabel
+                if (-not [string]::IsNullOrWhiteSpace($lab)) {
+                    if (-not $lwInfo.volumeLabel) { $lwInfo.volumeLabel = $lab }
+                    if ($lab -match '^QUICK-INSTALL') { $lwInfo.isQuickInstallDisk = $true }
+                    if ($lab -match 'BITRASER') { $lwInfo.isBitraserDisk = $true }
+                }
+            } catch {}
             foreach ($candidate in @(
                 "$($vol.DriveLetter):\FirstBase\LW_VERSION.json",
                 "$($vol.DriveLetter):\LW_VERSION.json"
             )) {
                 if (Test-Path -LiteralPath $candidate -ErrorAction SilentlyContinue) {
                     $lwVersionFile = $candidate
+                    $lwInfo.driveLetter = $letter
                     break
                 }
             }
-            if ($lwVersionFile) {
+            if ($lwVersionFile) { break }
+        }
+        if ($lwVersionFile) {
                 $lwJson = Get-Content -Raw -LiteralPath $lwVersionFile -ErrorAction SilentlyContinue |
                           ConvertFrom-Json -ErrorAction SilentlyContinue
                 if ($lwJson) {
@@ -217,7 +230,18 @@ function Get-LoneWolfInfo {
                         $lwInfo.lwArchLabel = Get-LwArchFriendlyName -Arch $lwInfo.lwArch
                     }
                     try {
-                        if ($lwJson.PSObject.Properties['devBuild'] -and $lwJson.devBuild) {
+                        $ch = $null
+                        if ($lwJson.PSObject.Properties['channel'] -and $lwJson.channel) {
+                            $ch = [string]$lwJson.channel
+                        }
+                        $destage = $false
+                        if ($lwJson.PSObject.Properties['destage'] -and $lwJson.destage) {
+                            $d = $lwJson.destage
+                            $destage = ($d -eq $true -or $d -eq 1 -or [string]$d -match '^(true|1|yes|destage)$')
+                        }
+                        if ($destage -or $ch -eq 'destage') {
+                            $lwInfo.lwDevBuild = $true
+                        } elseif ($lwJson.PSObject.Properties['devBuild'] -and $lwJson.devBuild) {
                             $lwInfo.lwDevBuild = $true
                         }
                     } catch {}
@@ -227,7 +251,9 @@ function Get-LoneWolfInfo {
                         }
                     } catch {}
                     try {
-                        if ($lwJson.PSObject.Properties['scriptVersion'] -and $lwJson.scriptVersion) {
+                        if ($lwJson.PSObject.Properties['payloadVersion'] -and $lwJson.payloadVersion) {
+                            $lwInfo.lwScriptVersion = [string]$lwJson.payloadVersion
+                        } elseif ($lwJson.PSObject.Properties['scriptVersion'] -and $lwJson.scriptVersion) {
                             $lwInfo.lwScriptVersion = [string]$lwJson.scriptVersion
                         } elseif ($lwJson.version) {
                             $lwInfo.lwScriptVersion = [string]$lwJson.version
@@ -262,25 +288,16 @@ function Get-LoneWolfInfo {
                             $lwInfo.lwWindowsEdition = [string]$lwJson.edition
                         }
                     } catch {}
-                    # Infer Dev when stamped launcher/script is ahead of the share versions recorded at build time.
-                    if (-not $lwInfo.lwDevBuild) {
-                        try {
-                            if ($lwInfo.lwLauncherVersion -and $lwInfo.lwShareLauncherVersion) {
-                                $va = [version](($lwInfo.lwLauncherVersion -replace '[^0-9.]',''))
-                                $vb = [version](($lwInfo.lwShareLauncherVersion -replace '[^0-9.]',''))
-                                if ($va.CompareTo($vb) -gt 0) { $lwInfo.lwDevBuild = $true }
-                            }
-                        } catch {}
-                        try {
-                            if (-not $lwInfo.lwDevBuild -and $lwInfo.lwScriptVersion -and $lwInfo.lwShareScriptVersion) {
-                                $va = [version](($lwInfo.lwScriptVersion -replace '[^0-9.]',''))
-                                $vb = [version](($lwInfo.lwShareScriptVersion -replace '[^0-9.]',''))
-                                if ($va.CompareTo($vb) -gt 0) { $lwInfo.lwDevBuild = $true }
-                            }
-                        } catch {}
-                    }
+                    # Destage/DEV visuals follow the npm start stamp only (destage / channel=destage / legacy
+                    # devBuild). Do not infer DEV from version-ahead: packaged Launcher Dev destage must look
+                    # like a real packaged run.
                 }
-            }
+        }
+        $wfStamp = [string]$lwInfo.lwWorkflowType
+        if ($wfStamp -match '^QUICK-INSTALL') { $lwInfo.isQuickInstallDisk = $true }
+        if ($wfStamp -eq 'BITRASER') { $lwInfo.isBitraserDisk = $true }
+        if ($wfStamp -eq 'MEDIA-CREATOR' -or $wfStamp -match '^MEDIA-CREATOR') {
+            $lwInfo.isBootableMediaDisk = $true
         }
     } catch { }
 
@@ -319,6 +336,7 @@ try {
                 sizeGB         = $sizeGB
                 serial         = $serial.Trim()
                 busType        = [string]$disk.BusType
+                driveLetter    = $lwInfo.driveLetter
                 isLoneWolfDisk = $lwInfo.isLoneWolfDisk
                 lwVersion      = $lwInfo.lwVersion
                 lwWorkflowType = $lwInfo.lwWorkflowType
@@ -331,6 +349,11 @@ try {
                 lwWimBuildDate = $lwInfo.lwWimBuildDate
                 lwArch         = $lwInfo.lwArch
                 lwArchLabel    = $lwInfo.lwArchLabel
+                lwWindowsEdition = $lwInfo.lwWindowsEdition
+                volumeLabel    = $lwInfo.volumeLabel
+                isQuickInstallDisk = [bool]$lwInfo.isQuickInstallDisk
+                isBitraserDisk = [bool]$lwInfo.isBitraserDisk
+                isBootableMediaDisk = [bool]$lwInfo.isBootableMediaDisk
             }
             [void]$result.Add($entry)
 

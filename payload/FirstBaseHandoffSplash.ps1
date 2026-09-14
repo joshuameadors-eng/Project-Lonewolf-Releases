@@ -48,6 +48,15 @@ function Write-FbHandoffLog {
     try {
         if (-not (Test-Path -LiteralPath $FbPd)) {
             New-Item -ItemType Directory -Path $FbPd -Force -ErrorAction SilentlyContinue | Out-Null
+            # Hidden+System on ProgramData\FirstBase flags AV (not a normal Windows folder).
+            try {
+                $pdItem = Get-Item -LiteralPath $FbPd -Force -ErrorAction SilentlyContinue
+                if ($pdItem) {
+                    $pdMask = [IO.FileAttributes]::Hidden -bor [IO.FileAttributes]::System
+                    $pdItem.Attributes = $pdItem.Attributes -band (-bnot $pdMask)
+                }
+                & attrib.exe -H -S $FbPd 2>$null | Out-Null
+            } catch {}
         }
         Add-Content -LiteralPath $LogPath -Value ('[{0}] [{1}] [pid={2}] {3}' -f (Get-Date -Format 'o'), $Level, $PID, $Message) -Encoding UTF8 -ErrorAction SilentlyContinue
     } catch {}
@@ -227,8 +236,8 @@ try {
                 <RowDefinition Height="Auto"/>
                 <RowDefinition Height="*"/>
             </Grid.RowDefinitions>
-            <Border Name="DevBuildIndicator" Grid.Row="0" HorizontalAlignment="Left" VerticalAlignment="Center" Margin="16,0,0,0" Padding="10,4,10,4" Background="#FF2A0A0A" BorderBrush="#FFEF5350" BorderThickness="1" CornerRadius="14" Visibility="Collapsed">
-                <TextBlock Name="DevBuildIndicatorText" Text="DEV" FontSize="12" Foreground="#FFEF5350" FontWeight="SemiBold"/>
+            <Border Name="DevBuildIndicator" Grid.Row="0" HorizontalAlignment="Left" VerticalAlignment="Center" Margin="16,0,0,0" Padding="10,4,10,4" Background="#FF1A0A0A" BorderBrush="#FFEF5350" BorderThickness="1" CornerRadius="14" Visibility="Collapsed">
+                <TextBlock Name="DevBuildIndicatorText" Text="DEV" FontSize="12" Foreground="#FFFFCDD2" FontWeight="Bold"/>
             </Border>
             <StackPanel Grid.Row="1" HorizontalAlignment="Center" Margin="0,4,0,14">
                 <Grid Name="LogoHost" Width="168" Height="168" HorizontalAlignment="Center">
@@ -237,11 +246,13 @@ try {
                             <ImageBrush x:Name="LogoBrush" Stretch="UniformToFill" Viewbox="0.06,0.06,0.88,0.88"/>
                         </Ellipse.Fill>
                     </Ellipse>
-                    <Ellipse Width="168" Height="168" Stroke="#FF22D3EE" StrokeThickness="2.5"/>
+                    <Ellipse Name="LogoRing" Width="168" Height="168" Stroke="#FF22D3EE" StrokeThickness="2.5"/>
                 </Grid>
-                <TextBlock HorizontalAlignment="Center" Margin="0,12,0,0">
-                    <Run Text="Project " Foreground="#FFFFFFFF" FontSize="33" FontWeight="Light"/><Run Text="LoneWolf" Foreground="#FF22D3EE" FontSize="33" FontWeight="Light"/>
-                </TextBlock>
+                <StackPanel Orientation="Horizontal" HorizontalAlignment="Center" Margin="0,12,0,0">
+                    <TextBlock VerticalAlignment="Center">
+                        <Run Text="Project " Foreground="#FFFFFFFF" FontSize="33" FontWeight="Light"/><Run x:Name="BrandAccentRun" Text="LoneWolf" Foreground="#FF22D3EE" FontSize="33" FontWeight="Light"/>
+                    </TextBlock>
+                </StackPanel>
                 <TextBlock Text="FirstBase For Internal Use Only" Foreground="#FFEF5350" FontSize="14" FontWeight="SemiBold" HorizontalAlignment="Center" Margin="0,4,0,0"/>
             </StackPanel>
             <Border Grid.Row="2" Width="1060" MaxWidth="1060" Background="#FF071428" BorderBrush="#FF22D3EE" BorderThickness="1" CornerRadius="10" Padding="50,38" HorizontalAlignment="Center" VerticalAlignment="Center" MinHeight="280">
@@ -305,7 +316,7 @@ try {
         if (Test-Path -LiteralPath $fbIdentityPs1) {
             . $fbIdentityPs1
             $fbIdentity = Get-FbBuildIdentityForScript -ScriptRoot $PSScriptRoot -Layout Payload
-            if ($fbIdentity -and $fbIdentity.Dev -and $devBuildIndicator) {
+            if ($fbIdentity -and ($fbIdentity.Destage -or $fbIdentity.Dev) -and $devBuildIndicator) {
                 $devBuildIndicator.Visibility = [System.Windows.Visibility]::Visible
                 if ($devBuildIndicatorText) {
                     $devLabel = 'DEV'

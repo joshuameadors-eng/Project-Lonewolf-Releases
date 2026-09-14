@@ -106,6 +106,15 @@ while ($true) {
                 if (-not (Test-Path -LiteralPath 'C:\ProgramData\FirstBase')) {
                     New-Item -ItemType Directory -Path 'C:\ProgramData\FirstBase' -Force -ErrorAction SilentlyContinue | Out-Null
                 }
+                # Hidden+System on this folder looks like a stealth drop to AV.
+                try {
+                    $pdItem = Get-Item -LiteralPath 'C:\ProgramData\FirstBase' -Force -ErrorAction SilentlyContinue
+                    if ($pdItem) {
+                        $pdMask = [IO.FileAttributes]::Hidden -bor [IO.FileAttributes]::System
+                        $pdItem.Attributes = $pdItem.Attributes -band (-bnot $pdMask)
+                    }
+                    & attrib.exe -H -S 'C:\ProgramData\FirstBase' 2>$null | Out-Null
+                } catch {}
                 $flagContent = ("debug-force-oobe-handoff triggered at {0} by Ctrl+Shift+End (FirstBaseDebugHotkeyWatcher.ps1 PID={1})" -f (Get-Date -Format 'o'), $PID)
                 [System.IO.File]::WriteAllText($flagFile, $flagContent, [System.Text.Encoding]::UTF8)
                 Write-WatcherLog ("[DEBUG] 2249: Flag written to '{0}'. Invoke-WindowsUpdateLoop.ps1 will detect this at the next iteration top and route to OOBE handoff. Exiting watcher." -f $flagFile) 'WARN'

@@ -20,11 +20,13 @@ param(
     # 5.0.41 (2382): once the tracked window stops qualifying as live, wait this long for a qualifying
     # live+visible+uncloaked Settings window to reappear (re-host) before concluding the operator closed it.
     [int]$WindowCloseGraceSec = 6,
-    # Hardware-gate PASS: private YouTube window; close -> caller seals then sysprep /oobe /reboot.
+# Hardware-gate PASS: private YouTube window; close -> caller seals then sysprep /oobe /reboot.
 # Walk-away close-timeout must NOT seal or power off. FAIL keeps Settings (default).
-    # PASS also drops default-render volume to 20% for the video, then restores (Fail/Settings is untouched).
+# PASS also drops default-render volume to 20% for the video, then restores (Fail/Settings is untouched).
+# If Edge/Chrome is missing (common in Audit before AppX provision), PASS falls back to Sound settings
+# confirmation instead of returning browser-missing (which used to paint Fail on present hardware).
     [switch]$YouTubePass,
-    [string]$YouTubeUrl = 'https://www.youtube.com/watch?v=s-UFPhz2nZ0'
+    [string]$YouTubeUrl = 'https://www.youtube.com/watch?v=Z0xDBI5aVFo'
 )
 
 Set-StrictMode -Version Latest
@@ -285,15 +287,54 @@ function Wait-FbManualInteractiveExplorer {
 }
 
 # Stable default used by the hardware-gate PASS path (embed + autoplay; play once).
-$script:FbHardwareGateYoutubeUrl = 'https://www.youtube.com/embed/mD3v1B_aXw0?autoplay=1'
+$script:FbHardwareGateYoutubeUrl = 'https://www.youtube.com/embed/Z0xDBI5aVFo?autoplay=1'
 $script:FbHardwareGateBrowserProfile = Join-Path $env:TEMP 'FirstBaseHwGateBrowser'
 
 function Get-FbHardwareGateBrowser {
-    $edge = @(
+    # Win11 Audit often has no Program Files\Microsoft\Edge (N-SKU / unprovisioned AppX).
+    # Still look there first, then App Paths, where.exe, AppX InstallLocation, then Chrome.
+    $edgeHits = New-Object System.Collections.Generic.List[string]
+    foreach ($p in @(
         (Join-Path ${env:ProgramFiles} 'Microsoft\Edge\Application\msedge.exe')
         (Join-Path ${env:ProgramFiles(x86)} 'Microsoft\Edge\Application\msedge.exe')
-    )
-    foreach ($p in $edge) {
+        (Join-Path $env:LOCALAPPDATA 'Microsoft\Edge\Application\msedge.exe')
+    )) {
+        if (-not [string]::IsNullOrWhiteSpace($p)) { [void]$edgeHits.Add($p) }
+    }
+    foreach ($appKey in @(
+        'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\msedge.exe'
+        'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\App Paths\msedge.exe'
+    )) {
+        try {
+            $item = Get-Item -LiteralPath $appKey -ErrorAction SilentlyContinue
+            if ($item) {
+                $def = [string]$item.GetValue('')
+                if (-not [string]::IsNullOrWhiteSpace($def)) { [void]$edgeHits.Add($def.Trim('"')) }
+            }
+        } catch {}
+    }
+    try {
+        $whereExe = Join-Path $env:SystemRoot 'System32\where.exe'
+        if (Test-Path -LiteralPath $whereExe) {
+            foreach ($line in @(& $whereExe msedge 2>$null)) {
+                $t = [string]$line
+                if (-not [string]::IsNullOrWhiteSpace($t)) { [void]$edgeHits.Add($t.Trim()) }
+            }
+        }
+    } catch {}
+    try {
+        $pkgs = @()
+        try { $pkgs += @(Get-AppxPackage -Name 'Microsoft.MicrosoftEdge.Stable' -ErrorAction SilentlyContinue) } catch {}
+        try { $pkgs += @(Get-AppxPackage -AllUsers -Name 'Microsoft.MicrosoftEdge.Stable' -ErrorAction SilentlyContinue) } catch {}
+        foreach ($pkg in $pkgs) {
+            if (-not $pkg) { continue }
+            $loc = [string]$pkg.InstallLocation
+            if ([string]::IsNullOrWhiteSpace($loc)) { continue }
+            [void]$edgeHits.Add((Join-Path $loc 'msedge.exe'))
+        }
+    } catch {}
+
+    foreach ($p in $edgeHits) {
         if ($p -and (Test-Path -LiteralPath $p)) {
             return [pscustomobject]@{ Path = $p; PrivateArg = '--inprivate'; Name = 'msedge' }
         }
@@ -301,6 +342,7 @@ function Get-FbHardwareGateBrowser {
     $chrome = @(
         (Join-Path ${env:ProgramFiles} 'Google\Chrome\Application\chrome.exe')
         (Join-Path ${env:ProgramFiles(x86)} 'Google\Chrome\Application\chrome.exe')
+        (Join-Path $env:LOCALAPPDATA 'Google\Chrome\Application\chrome.exe')
     )
     foreach ($p in $chrome) {
         if ($p -and (Test-Path -LiteralPath $p)) {
@@ -323,11 +365,24 @@ function Get-FbHardwareGateBrowserProcs {
 }
 
 function Test-FbHardwareGateBrowserWindowLive {
-    param([string]$ProfileDir)
-    foreach ($cim in @(Get-FbHardwareGateBrowserProcs -ProfileDir $ProfileDir)) {
-        if (-not $cim) { continue }
+    param(
+        [string]$ProfileDir = '',
+        [switch]$AnyInstance
+    )
+    if (-not $AnyInstance -and -not [string]::IsNullOrWhiteSpace($ProfileDir)) {
+        foreach ($cim in @(Get-FbHardwareGateBrowserProcs -ProfileDir $ProfileDir)) {
+            if (-not $cim) { continue }
+            try {
+                $gp = Get-Process -Id ([int]$cim.ProcessId) -ErrorAction SilentlyContinue
+                if ($gp -and $gp.MainWindowHandle -ne [IntPtr]::Zero -and [int64]$gp.MainWindowHandle -ne 0) {
+                    return $true
+                }
+            } catch {}
+        }
+        return $false
+    }
+    foreach ($gp in @(Get-Process -Name 'msedge','chrome' -ErrorAction SilentlyContinue)) {
         try {
-            $gp = Get-Process -Id ([int]$cim.ProcessId) -ErrorAction SilentlyContinue
             if ($gp -and $gp.MainWindowHandle -ne [IntPtr]::Zero -and [int64]$gp.MainWindowHandle -ne 0) {
                 return $true
             }
@@ -337,10 +392,19 @@ function Test-FbHardwareGateBrowserWindowLive {
 }
 
 function Stop-FbHardwareGateBrowserLeftovers {
-    param([string]$ProfileDir)
-    foreach ($cim in @(Get-FbHardwareGateBrowserProcs -ProfileDir $ProfileDir)) {
-        if (-not $cim) { continue }
-        try { Stop-Process -Id ([int]$cim.ProcessId) -Force -ErrorAction SilentlyContinue } catch {}
+    param(
+        [string]$ProfileDir = '',
+        [switch]$AnyInstance
+    )
+    if (-not $AnyInstance -and -not [string]::IsNullOrWhiteSpace($ProfileDir)) {
+        foreach ($cim in @(Get-FbHardwareGateBrowserProcs -ProfileDir $ProfileDir)) {
+            if (-not $cim) { continue }
+            try { Stop-Process -Id ([int]$cim.ProcessId) -Force -ErrorAction SilentlyContinue } catch {}
+        }
+        return
+    }
+    foreach ($gp in @(Get-Process -Name 'msedge','chrome' -ErrorAction SilentlyContinue)) {
+        try { Stop-Process -Id $gp.Id -Force -ErrorAction SilentlyContinue } catch {}
     }
 }
 
@@ -516,11 +580,8 @@ function Invoke-FbYoutubePassAndWait {
     $url = $YouTubeUrl
     if ([string]::IsNullOrWhiteSpace($url)) { $url = $script:FbHardwareGateYoutubeUrl }
     $browser = Get-FbHardwareGateBrowser
-    if (-not $browser) {
-        Write-FbManualSettingsFinishLog 'hardware-gate PASS: no Edge/Chrome found; cannot open private YouTube.' 'ERROR'
-        return 'browser-missing'
-    }
     $profileDir = $script:FbHardwareGateBrowserProfile
+    $useAnyInstance = $false
     try {
         if (-not (Test-Path -LiteralPath $profileDir)) {
             New-Item -ItemType Directory -Path $profileDir -Force -ErrorAction SilentlyContinue | Out-Null
@@ -536,26 +597,56 @@ function Invoke-FbYoutubePassAndWait {
             $volumeApplied = [bool]$volPrep.Applied
         }
 
-        Write-FbManualSettingsFinishLog ("hardware-gate PASS: launching {0} {1} url={2} profile={3}" -f $browser.Name, $browser.PrivateArg, $url, $profileDir) 'INFO'
-        try {
-            $argList = @(
-                $browser.PrivateArg
-                ('--user-data-dir={0}' -f $profileDir)
-                '--no-first-run'
-                '--no-default-browser-check'
-                '--autoplay-policy=no-user-gesture-required'
-                $url
-            )
-            Start-Process -FilePath $browser.Path -ArgumentList $argList -ErrorAction Stop | Out-Null
-        } catch {
-            Write-FbManualSettingsFinishLog ("hardware-gate PASS: browser launch threw: {0}" -f $_.Exception.Message) 'ERROR'
-            return 'browser-launch-failed'
+        $launched = $false
+        if ($browser) {
+            Write-FbManualSettingsFinishLog ("hardware-gate PASS: launching {0} {1} url={2} profile={3}" -f $browser.Name, $browser.PrivateArg, $url, $profileDir) 'INFO'
+            try {
+                $argList = @(
+                    $browser.PrivateArg
+                    ('--user-data-dir={0}' -f $profileDir)
+                    '--no-first-run'
+                    '--no-default-browser-check'
+                    '--autoplay-policy=no-user-gesture-required'
+                    $url
+                )
+                Start-Process -FilePath $browser.Path -ArgumentList $argList -ErrorAction Stop | Out-Null
+                $launched = $true
+            } catch {
+                Write-FbManualSettingsFinishLog ("hardware-gate PASS: browser exe launch threw: {0}" -f $_.Exception.Message) 'WARN'
+            }
+        }
+        if (-not $launched) {
+            Write-FbManualSettingsFinishLog 'hardware-gate PASS: classic Edge/Chrome exe missing or launch failed; trying microsoft-edge protocol.' 'WARN'
+            try {
+                Start-Process -FilePath ('microsoft-edge:{0}' -f $url) -ErrorAction Stop | Out-Null
+                $launched = $true
+                $useAnyInstance = $true
+            } catch {
+                try {
+                    $cmdExe = Join-Path $env:SystemRoot 'System32\cmd.exe'
+                    Start-Process -FilePath $cmdExe -ArgumentList @('/c', 'start', '', ('microsoft-edge:{0}' -f $url)) -WindowStyle Hidden -ErrorAction Stop | Out-Null
+                    $launched = $true
+                    $useAnyInstance = $true
+                } catch {
+                    Write-FbManualSettingsFinishLog ("hardware-gate PASS: microsoft-edge protocol launch threw: {0}" -f $_.Exception.Message) 'ERROR'
+                }
+            }
+        }
+        if (-not $launched) {
+            Write-FbManualSettingsFinishLog 'hardware-gate PASS: no Edge/Chrome found; cannot open private YouTube.' 'ERROR'
+            return 'browser-missing'
         }
 
         $acquired = $false
         $acquireDeadline = (Get-Date).AddSeconds($AcquireSec)
         while ((Get-Date) -lt $acquireDeadline) {
-            if (Test-FbHardwareGateBrowserWindowLive -ProfileDir $profileDir) {
+            $live = $false
+            if ($useAnyInstance) {
+                $live = Test-FbHardwareGateBrowserWindowLive -AnyInstance
+            } else {
+                $live = Test-FbHardwareGateBrowserWindowLive -ProfileDir $profileDir
+            }
+            if ($live) {
                 $acquired = $true
                 break
             }
@@ -563,7 +654,7 @@ function Invoke-FbYoutubePassAndWait {
         }
         if (-not $acquired) {
             Write-FbManualSettingsFinishLog ("hardware-gate PASS: private browser window never appeared within {0}s." -f $AcquireSec) 'WARN'
-            Stop-FbHardwareGateBrowserLeftovers -ProfileDir $profileDir
+            if ($useAnyInstance) { Stop-FbHardwareGateBrowserLeftovers -AnyInstance } else { Stop-FbHardwareGateBrowserLeftovers -ProfileDir $profileDir }
             return 'window-never-appeared'
         }
         Write-FbManualSettingsFinishLog ("hardware-gate PASS: private YouTube window acquired; waiting for operator close. Close = seal then sysprep /oobe /reboot. Walk-away timeout ({0}s) does NOT seal or power off." -f $CloseWaitSec) 'INFO'
@@ -573,14 +664,19 @@ function Invoke-FbYoutubePassAndWait {
         $timeoutNotices = 0
         $noticeAt = (Get-Date).AddSeconds($CloseWaitSec)
         while ($true) {
-            $live = Test-FbHardwareGateBrowserWindowLive -ProfileDir $profileDir
+            $live = $false
+            if ($useAnyInstance) {
+                $live = Test-FbHardwareGateBrowserWindowLive -AnyInstance
+            } else {
+                $live = Test-FbHardwareGateBrowserWindowLive -ProfileDir $profileDir
+            }
             if ($live) {
                 $goneStart = $null
             } else {
                 if ($null -eq $goneStart) { $goneStart = Get-Date }
                 elseif (((Get-Date) - $goneStart).TotalSeconds -ge $graceSec) {
                     Write-FbManualSettingsFinishLog 'hardware-gate PASS: operator closed the private YouTube window.' 'INFO'
-                    Stop-FbHardwareGateBrowserLeftovers -ProfileDir $profileDir
+                    if ($useAnyInstance) { Stop-FbHardwareGateBrowserLeftovers -AnyInstance } else { Stop-FbHardwareGateBrowserLeftovers -ProfileDir $profileDir }
                     return 'window-closed'
                 }
             }
@@ -607,10 +703,16 @@ if (-not (Wait-FbManualInteractiveExplorer)) {
 Set-FbOperatorGateMarker -Active $true
 
 $closeReason = 'unknown'
+$runSettingsWait = -not $YouTubePass
 if ($YouTubePass) {
     $closeReason = Invoke-FbYoutubePassAndWait -AcquireSec $WindowAcquireSec -CloseWaitSec $WindowCloseWaitSec
     Write-FbManualSettingsFinishLog ("hardware-gate PASS YouTube close-wait ended reason={0}." -f $closeReason) 'INFO'
-} else {
+    if ($closeReason -eq 'browser-missing' -or $closeReason -eq 'browser-launch-failed' -or $closeReason -eq 'window-never-appeared') {
+        Write-FbManualSettingsFinishLog 'hardware-gate PASS: YouTube unavailable; opening Sound settings as PASS confirmation. Hardware probes already passed; this is not a Fail.' 'WARN'
+        $runSettingsWait = $true
+    }
+}
+if ($runSettingsWait) {
 $cmdExe = Join-Path $env:SystemRoot 'System32\cmd.exe'
 $launched = $false
 for ($i = 1; $i -le 3; $i++) {

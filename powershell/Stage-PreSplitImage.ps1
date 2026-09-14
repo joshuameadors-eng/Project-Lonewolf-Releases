@@ -126,14 +126,17 @@ function Connect-ShareCredentials {
 $wfUpper = $WorkflowType.ToUpper()
 $winEdition = if ($WindowsEdition -match '^(?i)home$') { 'Home' } else { 'Pro' }
 $isLocal = -not [string]::IsNullOrWhiteSpace($LocalProjectRoot)
+$shareLayoutLib = Join-Path $PSScriptRoot 'lib\Resolve-LwShareLayout.ps1'
+if (Test-Path -LiteralPath $shareLayoutLib) { . $shareLayoutLib }
+$shareLayout = Resolve-LwShareLayout -ShareRoot $ShareRoot -LocalProjectRoot $LocalProjectRoot
 if ($isLocal) {
     $ProjectRoot = $LocalProjectRoot
 } else {
     $ProjectRoot = Join-Path $ShareRoot 'Remote'
 }
-$StagingRoot  = Join-Path $ProjectRoot 'Staging'
-$IsoRoot      = Join-Path $StagingRoot 'ISO'
-$PreSplitRoot = Join-Path $StagingRoot 'PreSplit'
+$StagingRoot  = $shareLayout.StagingRoot
+$IsoRoot      = $shareLayout.IsoRoot
+$PreSplitRoot = $shareLayout.PreSplitRoot
 $WriteRoot    = $PreSplitRoot
 
 # Launcher version for the manifest's producedByLauncherVersion field.
@@ -155,9 +158,14 @@ if ($isLocal) {
         EmitError "local mode: LocalProjectRoot not found: $LocalProjectRoot"; exit 1
     }
 } else {
-    $shareHost = 'WIN-HQ5JDEACV3S'
-    if ($ShareRoot -match '^\\\\([^\\]+)\\') { $shareHost = $Matches[1] }
-    Connect-ShareCredentials -ShareHost $shareHost -User $ShareUser -Pass $SharePassword
+    if ($ShareRoot -match '^(?i)https?://') {
+        EmitError 'A Google Drive folder URL is not a Windows filesystem ShareRoot. Use Google Drive for Desktop or the HQ UNC share.'; exit 1
+    }
+    if ($ShareRoot -match '^\\\\') {
+        $shareHost = 'WIN-HQ5JDEACV3S'
+        if ($ShareRoot -match '^\\\\([^\\]+)\\') { $shareHost = $Matches[1] }
+        Connect-ShareCredentials -ShareHost $shareHost -User $ShareUser -Pass $SharePassword
+    }
     if (-not (Test-Path -LiteralPath $ShareRoot)) {
         EmitError "cannot reach share: $ShareRoot"; exit 1
     }

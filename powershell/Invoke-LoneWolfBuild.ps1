@@ -406,6 +406,118 @@ function Resolve-WpeOcArchRoot {
     return $archRoot
 }
 
+function Copy-LwEdgeOfflineInstaller {
+    <#
+    .SYNOPSIS
+        Copy / download Microsoft Edge Enterprise MSI onto the USB overlay.
+    .NOTES
+        Share folders (optional; destage downloads if missing):
+          <ShareRoot>\Edge\AMD64\MicrosoftEdgeEnterpriseX64.msi
+          <ShareRoot>\Edge\ARM64\MicrosoftEdgeEnterpriseARM64.msi
+        Also accepts Remote\Staging\Edge\<ARCH>\ and src\payload\Edge\<ARCH>\.
+    #>
+    param(
+        [Parameter(Mandatory)][string]$WuPayloadRoot,
+        [string]$Arch = '',
+        [string]$ContentRoot = '',
+        [string]$EdgeShareRoot = ''
+    )
+    if ([string]::IsNullOrWhiteSpace($Arch)) { $Arch = 'AMD64' }
+    if ($Arch -match 'ARM') { $Arch = 'ARM64' } else { $Arch = 'AMD64' }
+
+    $wu = $WuPayloadRoot
+    try {
+        if (-not (Test-Path -LiteralPath $wu)) {
+            New-Item -ItemType Directory -Path $wu -Force | Out-Null
+        }
+    } catch {}
+
+    $ps1Src = ''
+    if ($ContentRoot) { $ps1Src = Join-Path $ContentRoot 'Install-FbMicrosoftEdge.ps1' }
+    if ($ps1Src -and (Test-Path -LiteralPath $ps1Src)) {
+        Copy-Item -LiteralPath $ps1Src -Destination (Join-Path $wu 'Install-FbMicrosoftEdge.ps1') -Force -ErrorAction SilentlyContinue
+    }
+
+    $dstDir = Join-Path $wu ("Edge\{0}" -f $Arch)
+    try { New-Item -ItemType Directory -Path $dstDir -Force | Out-Null } catch {}
+
+    $wantName = if ($Arch -eq 'ARM64') { 'MicrosoftEdgeEnterpriseARM64.msi' } else { 'MicrosoftEdgeEnterpriseX64.msi' }
+    $copied = $null
+    $searchRoots = New-Object System.Collections.Generic.List[string]
+    if ($EdgeShareRoot) {
+        [void]$searchRoots.Add((Join-Path $EdgeShareRoot $Arch))
+        [void]$searchRoots.Add($EdgeShareRoot)
+    }
+    if ($ContentRoot) {
+        [void]$searchRoots.Add((Join-Path $ContentRoot ("Edge\{0}" -f $Arch)))
+        [void]$searchRoots.Add((Join-Path $ContentRoot 'Edge'))
+    }
+
+    foreach ($root in $searchRoots) {
+        if (-not $root -or -not (Test-Path -LiteralPath $root)) { continue }
+        $exact = Join-Path $root $wantName
+        if (Test-Path -LiteralPath $exact) {
+            Copy-Item -LiteralPath $exact -Destination (Join-Path $dstDir $wantName) -Force -ErrorAction SilentlyContinue
+            $copied = Join-Path $dstDir $wantName
+            break
+        }
+        $hit = @(Get-ChildItem -LiteralPath $root -File -ErrorAction SilentlyContinue |
+            Where-Object { $_.Extension -match '\.(msi|exe)$' -and $_.Name -match 'edge' } |
+            Select-Object -First 1)
+        if ($hit) {
+            Copy-Item -LiteralPath $hit[0].FullName -Destination (Join-Path $dstDir $hit[0].Name) -Force -ErrorAction SilentlyContinue
+            $copied = Join-Path $dstDir $hit[0].Name
+            break
+        }
+    }
+
+    if (-not $copied) {
+        $url = $null
+        try {
+            $wantArch = if ($Arch -eq 'ARM64') { 'arm64' } else { 'x64' }
+            $products = Invoke-RestMethod -Uri 'https://edgeupdates.microsoft.com/api/products?view=enterprise' -TimeoutSec 45
+            $stable = @($products | Where-Object { [string]$_.Product -eq 'Stable' } | Select-Object -First 1)
+            foreach ($product in $stable) {
+                foreach ($rel in @($product.Releases)) {
+                    if ([string]$rel.Platform -notmatch '(?i)Windows') { continue }
+                    if ([string]$rel.Architecture -notmatch ("(?i)^{0}$" -f [regex]::Escape($wantArch))) { continue }
+                    foreach ($art in @($rel.Artifacts)) {
+                        if ([string]$art.ArtifactName -match '(?i)msi' -and [string]$art.Location) {
+                            $url = [string]$art.Location
+                            break
+                        }
+                    }
+                    if ($url) { break }
+                }
+            }
+        } catch {}
+        if (-not $url -and $Arch -ne 'ARM64') {
+            $url = 'https://go.microsoft.com/fwlink/?linkid=2093437'
+        }
+        if ($url) {
+            $out = Join-Path $dstDir $wantName
+            try {
+                Invoke-WebRequest -Uri $url -OutFile $out -UseBasicParsing -TimeoutSec 180
+                $len = 0
+                try { $len = [int64](Get-Item -LiteralPath $out).Length } catch {}
+                if ($len -ge 1000000) { $copied = $out }
+                else { Remove-Item -LiteralPath $out -Force -ErrorAction SilentlyContinue }
+            } catch {}
+        }
+    }
+
+    if ($copied) {
+        if (Get-Command -Name EmitLog -ErrorAction SilentlyContinue) {
+            EmitLog -Disk 0 -Msg ("edge: staged {0} installer {1}" -f $Arch, $copied)
+        }
+        return $copied
+    }
+    if (Get-Command -Name EmitLog -ErrorAction SilentlyContinue) {
+        EmitLog -Disk 0 -Msg ("edge: no MSI for {0}. Drop {1} in Edge\{0}\ on the share (or payload Edge\{0}\). Destage/download failed." -f $Arch, $wantName)
+    }
+    return $null
+}
+
 # UEFI removable-media loader is arch-specific (same path for bootmgfw.efi on both):
 #   AMD64 -> efi\boot\bootx64.efi
 #   ARM64 -> efi\boot\bootaa64.efi
@@ -788,6 +900,7 @@ function Build-Cache {
             @{ Src = (Join-Path $ContentRoot 'FirstBaseOobeOperatorFinalize.ps1');            Dst = 'FirstBase\WUPayload\FirstBaseOobeOperatorFinalize.ps1' },
             @{ Src = (Join-Path $ContentRoot 'FirstBaseOpenSettingsAndFinish.ps1');           Dst = 'FirstBase\WUPayload\FirstBaseOpenSettingsAndFinish.ps1' },
             @{ Src = (Join-Path $ContentRoot 'FirstBaseHardwareCheck.ps1');                   Dst = 'FirstBase\WUPayload\FirstBaseHardwareCheck.ps1' },
+            @{ Src = (Join-Path $ContentRoot 'Install-FbMicrosoftEdge.ps1');                  Dst = 'FirstBase\WUPayload\Install-FbMicrosoftEdge.ps1' },
             @{ Src = (Join-Path $ContentRoot 'FirstBasePostSysprepOobeSoundArm.ps1');         Dst = 'FirstBase\WUPayload\FirstBasePostSysprepOobeSoundArm.ps1' },
             @{ Src = (Join-Path $ContentRoot 'FirstBaseShowSplash.ps1');                      Dst = 'FirstBase\WUPayload\FirstBaseShowSplash.ps1' },
             @{ Src = (Join-Path $ContentRoot 'FirstBaseSplashSingleInstance.ps1');            Dst = 'FirstBase\WUPayload\FirstBaseSplashSingleInstance.ps1' },
@@ -814,6 +927,11 @@ function Build-Cache {
             $scriptsDst = Join-Path $overlayCache 'FirstBase\Scripts'
             New-Item -ItemType Directory -Path $scriptsDst -Force | Out-Null
             Copy-Item -Path (Join-Path $scriptsSrc '*') -Destination $scriptsDst -Recurse -Force -ErrorAction SilentlyContinue
+        }
+        if (-not $NoPayload -and -not $QuickInstall) {
+            $edgeShare = ''
+            try { $edgeShare = [string]$shareLayout.EdgeRoot } catch {}
+            $null = Copy-LwEdgeOfflineInstaller -WuPayloadRoot (Join-Path $overlayCache 'FirstBase\WUPayload') -Arch $wfUpper -ContentRoot $ContentRoot -EdgeShareRoot $edgeShare
         }
         if ($DevBuild) {
             try {
@@ -1003,6 +1121,7 @@ function Build-IsoCache {
             @{ Src = (Join-Path $ContentRoot 'FirstBaseOobeOperatorFinalize.ps1');            Dst = 'FirstBase\WUPayload\FirstBaseOobeOperatorFinalize.ps1' },
             @{ Src = (Join-Path $ContentRoot 'FirstBaseOpenSettingsAndFinish.ps1');           Dst = 'FirstBase\WUPayload\FirstBaseOpenSettingsAndFinish.ps1' },
             @{ Src = (Join-Path $ContentRoot 'FirstBaseHardwareCheck.ps1');                   Dst = 'FirstBase\WUPayload\FirstBaseHardwareCheck.ps1' },
+            @{ Src = (Join-Path $ContentRoot 'Install-FbMicrosoftEdge.ps1');                  Dst = 'FirstBase\WUPayload\Install-FbMicrosoftEdge.ps1' },
             @{ Src = (Join-Path $ContentRoot 'FirstBasePostSysprepOobeSoundArm.ps1');         Dst = 'FirstBase\WUPayload\FirstBasePostSysprepOobeSoundArm.ps1' },
             @{ Src = (Join-Path $ContentRoot 'FirstBaseShowSplash.ps1');                      Dst = 'FirstBase\WUPayload\FirstBaseShowSplash.ps1' },
             @{ Src = (Join-Path $ContentRoot 'FirstBaseSplashSingleInstance.ps1');            Dst = 'FirstBase\WUPayload\FirstBaseSplashSingleInstance.ps1' },
@@ -1029,6 +1148,11 @@ function Build-IsoCache {
             $scriptsDst = Join-Path $overlayCache 'FirstBase\Scripts'
             New-Item -ItemType Directory -Path $scriptsDst -Force | Out-Null
             Copy-Item -Path (Join-Path $scriptsSrc '*') -Destination $scriptsDst -Recurse -Force -ErrorAction SilentlyContinue
+        }
+        if (-not $NoPayload -and -not $QuickInstall) {
+            $edgeShare = ''
+            try { $edgeShare = [string]$shareLayout.EdgeRoot } catch {}
+            $null = Copy-LwEdgeOfflineInstaller -WuPayloadRoot (Join-Path $overlayCache 'FirstBase\WUPayload') -Arch $wfUpper -ContentRoot $ContentRoot -EdgeShareRoot $edgeShare
         }
         if ($DevBuild) {
             try {
@@ -2550,6 +2674,7 @@ $workerDiskBlock = {
                         @{ Src = (Join-Path $ContentRoot 'FirstBaseOobeOperatorFinalize.ps1');            Dst = 'FirstBase\WUPayload\FirstBaseOobeOperatorFinalize.ps1' },
                         @{ Src = (Join-Path $ContentRoot 'FirstBaseOpenSettingsAndFinish.ps1');           Dst = 'FirstBase\WUPayload\FirstBaseOpenSettingsAndFinish.ps1' },
                         @{ Src = (Join-Path $ContentRoot 'FirstBaseHardwareCheck.ps1');                   Dst = 'FirstBase\WUPayload\FirstBaseHardwareCheck.ps1' },
+            @{ Src = (Join-Path $ContentRoot 'Install-FbMicrosoftEdge.ps1');                  Dst = 'FirstBase\WUPayload\Install-FbMicrosoftEdge.ps1' },
                         @{ Src = (Join-Path $ContentRoot 'FirstBasePostSysprepOobeSoundArm.ps1');         Dst = 'FirstBase\WUPayload\FirstBasePostSysprepOobeSoundArm.ps1' },
                         @{ Src = (Join-Path $ContentRoot 'FirstBaseShowSplash.ps1');                      Dst = 'FirstBase\WUPayload\FirstBaseShowSplash.ps1' },
                         @{ Src = (Join-Path $ContentRoot 'FirstBaseSplashSingleInstance.ps1');            Dst = 'FirstBase\WUPayload\FirstBaseSplashSingleInstance.ps1' },
@@ -2582,6 +2707,17 @@ $workerDiskBlock = {
                         $scriptsDst = Join-Path $partRoot 'FirstBase\Scripts'
                         New-Item -ItemType Directory -Path $scriptsDst -Force | Out-Null
                         Copy-Item -Path (Join-Path $scriptsSrc '*') -Destination $scriptsDst -Recurse -Force -ErrorAction SilentlyContinue
+                    }
+                    $edgePs1 = Join-Path $ContentRoot 'Install-FbMicrosoftEdge.ps1'
+                    $wuDst = Join-Path $partRoot 'FirstBase\WUPayload'
+                    if ((Test-Path -LiteralPath $edgePs1) -and (Test-Path -LiteralPath $wuDst)) {
+                        Copy-Item -LiteralPath $edgePs1 -Destination (Join-Path $wuDst 'Install-FbMicrosoftEdge.ps1') -Force -ErrorAction SilentlyContinue
+                    }
+                    $edgeSrc = Join-Path $ContentRoot 'Edge'
+                    if ((Test-Path -LiteralPath $edgeSrc) -and (Test-Path -LiteralPath $wuDst)) {
+                        $edgeDst = Join-Path $wuDst 'Edge'
+                        if (-not (Test-Path -LiteralPath $edgeDst)) { New-Item -ItemType Directory -Path $edgeDst -Force | Out-Null }
+                        Copy-Item -Path (Join-Path $edgeSrc '*') -Destination $edgeDst -Recurse -Force -ErrorAction SilentlyContinue
                     }
                 } else {
                     # WIN-INSTALL / QUICK-INSTALL: same TechInstall architecture, minimal set.

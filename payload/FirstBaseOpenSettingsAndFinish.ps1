@@ -23,8 +23,7 @@ param(
 # Hardware-gate PASS: private YouTube window; close -> caller seals then sysprep /oobe /reboot.
 # Walk-away close-timeout must NOT seal or power off. FAIL keeps Settings (default).
 # PASS also drops default-render volume to 20% for the video, then restores (Fail/Settings is untouched).
-# If Edge/Chrome is missing (common in Audit before AppX provision), PASS falls back to Sound settings
-# confirmation instead of returning browser-missing (which used to paint Fail on present hardware).
+# If Edge is missing, install it from the payload MSI (or download) and open YouTube — do not fall back to Settings.
     [switch]$YouTubePass,
     [string]$YouTubeUrl = 'https://www.youtube.com/watch?v=Z0xDBI5aVFo'
 )
@@ -577,6 +576,27 @@ function Invoke-FbYoutubePassAndWait {
         [int]$AcquireSec = 180,
         [int]$CloseWaitSec = 1800
     )
+    $edgeHelper = @(
+        (Join-Path $FbSetup 'Install-FbMicrosoftEdge.ps1')
+        (Join-Path $FbPd 'Install-FbMicrosoftEdge.ps1')
+        (Join-Path $PSScriptRoot 'Install-FbMicrosoftEdge.ps1')
+    ) | Where-Object { $_ -and (Test-Path -LiteralPath $_) } | Select-Object -First 1
+    if ($edgeHelper) {
+        try {
+            . $edgeHelper
+            if (Get-Command -Name Install-FbMicrosoftEdge -ErrorAction SilentlyContinue) {
+                $er = Install-FbMicrosoftEdge -AllowDownload
+                if ($er -and $er.Present) {
+                    Write-FbManualSettingsFinishLog ("hardware-gate PASS: Edge ready ({0}) {1}" -f $er.Source, $er.Path) 'INFO'
+                } else {
+                    Write-FbManualSettingsFinishLog 'hardware-gate PASS: Edge still missing after install attempt.' 'WARN'
+                }
+            }
+        } catch {
+            Write-FbManualSettingsFinishLog ("hardware-gate PASS: Edge helper threw: {0}" -f $_.Exception.Message) 'WARN'
+        }
+    }
+
     $url = $YouTubeUrl
     if ([string]::IsNullOrWhiteSpace($url)) { $url = $script:FbHardwareGateYoutubeUrl }
     $browser = Get-FbHardwareGateBrowser
@@ -708,8 +728,8 @@ if ($YouTubePass) {
     $closeReason = Invoke-FbYoutubePassAndWait -AcquireSec $WindowAcquireSec -CloseWaitSec $WindowCloseWaitSec
     Write-FbManualSettingsFinishLog ("hardware-gate PASS YouTube close-wait ended reason={0}." -f $closeReason) 'INFO'
     if ($closeReason -eq 'browser-missing' -or $closeReason -eq 'browser-launch-failed' -or $closeReason -eq 'window-never-appeared') {
-        Write-FbManualSettingsFinishLog 'hardware-gate PASS: YouTube unavailable; opening Sound settings as PASS confirmation. Hardware probes already passed; this is not a Fail.' 'WARN'
-        $runSettingsWait = $true
+        Write-FbManualSettingsFinishLog 'hardware-gate PASS: YouTube unavailable after Edge install; not opening Settings. Caller may retry YouTube.' 'WARN'
+        $runSettingsWait = $false
     }
 }
 if ($runSettingsWait) {

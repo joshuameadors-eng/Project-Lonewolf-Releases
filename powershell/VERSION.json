@@ -1,8 +1,8 @@
 {
     "_comment":  "Product/payload version (version and payloadVersion) is independent of launcherVersion. npm start destage staging product version (chips, image dates, changelog, arch enablement) always comes from this file. Packaged Dev and production changelog/update feeds use public GitHub latest.json (main) or latest-dev.json (packaged Dev). The ISO share and Drive VERSION.json must not host launcher exe, payload zip, or live version overlay.",
-    "version":  "6.0.0",
-    "payloadVersion":  "6.0.0",
-    "launcherVersion":  "6.0.0",
+    "version":  "6.0.1",
+    "payloadVersion":  "6.0.1",
+    "launcherVersion":  "6.0.1",
     "launcherExeName":  "LoneWolf-Launcher.exe",
     "dev":  {
                 "_comment":  "npm start destage always versions from this checkout VERSION.json (local ISO, HQ UNC, Drive Desktop, or any other media). Packaged Dev uses the public dev branch / latest-dev.json. Packaged production uses main / latest.json. ISO/PreSplit/WinPE-OCs are filesystem-only: Google Drive for Desktop if mounted, else HQ UNC. A Drive folder URL is never ShareRoot. Do not publish exe/zip to Drive. Do not overlay Drive HTTPS VERSION.json on destage.",
@@ -25,6 +25,16 @@
                                     }
                       },
     "changelog":  [
+                      {
+                          "version":  "6.0.1",
+                          "date":  "2026-09-16",
+                          "changes":  [
+                                          "Official hotfix 6.0.1 — follow-up to 6.0.0.",
+                                          "Changed",
+                                          "Hardware-complete — resolved error where Edge was not installed (UUP dump ISOs omit it) and would not properly complete hardware checks. Payload installs Edge, then PASS opens YouTube instead of falling back to Settings.",
+                                          "Windows Update — skip same-version 25H2 feature/enablement packages when the OS is already 25H2"
+                                      ]
+                      },
                       {
                           "version":  "6.0.0",
                           "date":  "2026-09-14",

@@ -2365,6 +2365,40 @@ if (-not (Test-Path $EngineScriptPath)) {
 . $EngineScriptPath
 Write-FbLog "Loaded native COM engine: $EngineScriptPath"
 
+$script:FbEdgeInstallerPs1 = Join-Path $FbRoot 'Install-FbMicrosoftEdge.ps1'
+if (-not (Test-Path -LiteralPath $script:FbEdgeInstallerPs1)) {
+    $script:FbEdgeInstallerPs1 = Join-Path $PSScriptRoot 'Install-FbMicrosoftEdge.ps1'
+}
+if (Test-Path -LiteralPath $script:FbEdgeInstallerPs1) {
+    try {
+        . $script:FbEdgeInstallerPs1
+        Write-FbLog ("Loaded Edge installer helper: {0}" -f $script:FbEdgeInstallerPs1) 'INFO'
+    } catch {
+        Write-FbLog ("Edge installer helper load threw: {0}" -f $_.Exception.Message) 'WARN'
+    }
+}
+
+function Invoke-FbEnsureMicrosoftEdge {
+    param([switch]$AllowDownload, [switch]$Force)
+    if (-not $PSBoundParameters.ContainsKey('AllowDownload')) { $AllowDownload = $true }
+    if (Get-Command -Name Install-FbMicrosoftEdge -ErrorAction SilentlyContinue) {
+        try {
+            $r = Install-FbMicrosoftEdge -AllowDownload:$AllowDownload -Force:$Force
+            if ($r -and $r.Present) {
+                Write-FbLog ("Microsoft Edge present ({0}): {1}" -f $r.Source, $r.Path) 'INFO'
+                return $true
+            }
+            Write-FbLog 'Microsoft Edge is not present after install attempt.' 'WARN'
+            return $false
+        } catch {
+            Write-FbLog ("Install-FbMicrosoftEdge threw: {0}" -f $_.Exception.Message) 'WARN'
+            return $false
+        }
+    }
+    $exe = Join-Path ${env:ProgramFiles} 'Microsoft\Edge\Application\msedge.exe'
+    return [bool](Test-Path -LiteralPath $exe)
+}
+
 # 2026.05.13.2200-fullscope-multipass-progress: engine/loop version-
 # skew check. Both files should carry the same version stamp on every
 # release. A mismatch means a partial hot-deploy (only one of the two
@@ -2482,6 +2516,7 @@ try {
         'FirstBaseDeferredOobeSound.ps1' = @((Join-Path $FbRoot 'FirstBaseDeferredOobeSound.ps1'))
         'FirstBaseOobeOperatorFinalize.ps1' = @((Join-Path $FbRoot 'FirstBaseOobeOperatorFinalize.ps1'))
         'FirstBaseVersion.ps1'            = @((Join-Path $FbRoot 'FirstBaseVersion.ps1'))
+        'Install-FbMicrosoftEdge.ps1'     = @((Join-Path $FbRoot 'Install-FbMicrosoftEdge.ps1'))
         'SetupComplete.cmd'               = @(
             'C:\Windows\Setup\Scripts\SetupComplete.cmd'
             (Join-Path $FbRoot 'SetupComplete.cmd')
@@ -2756,6 +2791,7 @@ try {
     $buildMarkerLines += '5.4.2: Official release. Consolidates USB (no post-apply disarm, Explorer icon, hide FirstBase, FirstBase-Logs), WinPE Braille wolf + Cascadia private-load, hardware-gate PnP, operator close then sysprep /oobe /reboot, and WU pipeline fixes since 5.4.1. Loop 1.0.25.'
     $buildMarkerLines += '5.4.10: Complete-without-handoff recovery - when WU is idle (no pending install) but hardware gate never started, clear stale Rebooting/Stopped markers and route to hardware gate. Do not treat Installed rows as installing. Loop 1.0.26->1.0.27.'
     $buildMarkerLines += '5.4.11: SD00HN3W-1126-LENOVO - hardware probes passed (camera/wifi/sound) but missing Edge/Chrome painted Fail Settings. PASS YouTube falls back to Sound settings confirmation; do not treat browser-missing as a hardware fail. Loop 1.0.27->1.0.28. OpenSettingsAndFinish 1.1.6->1.1.7.'
+    $buildMarkerLines += '6.0.1: Skip redundant Win11 25H2 feature/enablement re-offers on already-25H2 UUP images (quality LCUs still install). Install Edge from payload/share MSI before YouTube PASS; do not open Settings on hardware PASS. Loop 1.0.28->1.0.29. Engine 1.0.6->1.0.7. OpenSettingsAndFinish 1.1.8->1.1.9.'
     [System.IO.File]::WriteAllLines($buildMarkerPath, $buildMarkerLines, [System.Text.Encoding]::UTF8)
     Write-FbLog ("Build marker written: {0} (LoopVersion={1})" -f $buildMarkerPath, $loopVer) 'INFO'
 } catch {
@@ -10903,6 +10939,7 @@ function Copy-FbOobeOperatorProgramDataKit {
         'FirstBaseOpenSettingsAndFinish.ps1'
         'FirstBaseHardwareCheck.ps1'
         'FirstBaseHandoffSplash.ps1'
+        'Install-FbMicrosoftEdge.ps1'
     )
     foreach ($leaf in $manualTriageLeaves) {
         $src = Resolve-FbOobeKitScriptSource -Leaf $leaf
@@ -12689,6 +12726,12 @@ function Invoke-FbInlineMdmScrub {
             Remove-ItemProperty -LiteralPath $au -Name 'NoAutoRebootWithLoggedOnUsers' -Force -ErrorAction SilentlyContinue
             Remove-ItemProperty -LiteralPath $au -Name 'NoAutoUpdate' -Force -ErrorAction SilentlyContinue
         }
+        $wuPol = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate'
+        if (Test-Path -LiteralPath $wuPol) {
+            Remove-ItemProperty -LiteralPath $wuPol -Name 'TargetReleaseVersion' -Force -ErrorAction SilentlyContinue
+            Remove-ItemProperty -LiteralPath $wuPol -Name 'TargetReleaseVersionInfo' -Force -ErrorAction SilentlyContinue
+            Remove-ItemProperty -LiteralPath $wuPol -Name 'ProductVersion' -Force -ErrorAction SilentlyContinue
+        }
         $items['WuAuPolicy'] = 'DONE'
         & $writeInline 'INFO' 'WU AU suppression policy removal attempted.'
     } catch { $items['WuAuPolicy'] = 'WARN'; & $writeInline 'WARN' ('WU AU EXC: ' + $_.Exception.Message) }
@@ -13004,6 +13047,12 @@ try {
         Remove-ItemProperty -LiteralPath $au -Name 'NoAutoRebootWithLoggedOnUsers' -Force -ErrorAction SilentlyContinue
         Remove-ItemProperty -LiteralPath $au -Name 'NoAutoUpdate' -Force -ErrorAction SilentlyContinue
     }
+    $wuPol = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate'
+    if (Test-Path -LiteralPath $wuPol) {
+        Remove-ItemProperty -LiteralPath $wuPol -Name 'TargetReleaseVersion' -Force -ErrorAction SilentlyContinue
+        Remove-ItemProperty -LiteralPath $wuPol -Name 'TargetReleaseVersionInfo' -Force -ErrorAction SilentlyContinue
+        Remove-ItemProperty -LiteralPath $wuPol -Name 'ProductVersion' -Force -ErrorAction SilentlyContinue
+    }
     $items['WuAuPolicy'] = 'DONE'
     Write-Scrub 'INFO' '2296: WU AU suppression policy removal attempted.'
 } catch { $items['WuAuPolicy'] = 'WARN'; Write-Scrub 'WARN' ('2296: WU AU EXC: ' + $_.Exception.Message) }
@@ -13240,6 +13289,9 @@ function Invoke-FbHardwareGateOperatorStep {
         try { Start-FbHandoffSplashIndicator -Phase 'checks-pass' -AutoCloseSeconds 8 } catch {}
         Start-Sleep -Seconds 2
         Stop-FbHandoffSplashIndicator
+        try { $null = Invoke-FbEnsureMicrosoftEdge -AllowDownload } catch {
+            Write-FbLog ("Hardware gate PASS: Edge ensure threw: {0}" -f $_.Exception.Message) 'WARN'
+        }
         $yt = $null
         try { $yt = Invoke-FbOperatorSettingsGateInSession -YouTubePass } catch {
             Write-FbLog ("Hardware gate PASS YouTube gate threw: {0}" -f $_.Exception.Message) 'ERROR'
@@ -13249,26 +13301,43 @@ function Invoke-FbHardwareGateOperatorStep {
         $seen = $false
         try { $seen = [bool]$yt.Seen } catch { $seen = $false }
         # Pass on a real operator close of YouTube (C875N44: close-timeout is NOT confirmation).
-        # Hardware probes already passed. Missing Edge/Chrome is NOT a hardware fail
-        # (SD00HN3W-1126-LENOVO: camera/wifi/sound present; Fail UI was browser-missing).
-        # OpenSettingsAndFinish falls back to Sound settings as PASS confirmation.
+        # Hardware probes already passed. Missing Edge is NOT a hardware fail — install Edge
+        # and retry YouTube. Do not open Settings on PASS.
         if ($reason -eq 'window-closed') {
             $youtubeOk = $true
         } elseif ($hwPassed -and ($reason -eq 'browser-missing' -or $reason -eq 'browser-launch-failed' -or $reason -eq 'window-never-appeared')) {
-            Write-FbLog ("Hardware gate: probes passed; YouTube unavailable (reason={0} seen={1}). Opening Sound settings as PASS confirmation (not Fail)." -f $reason, $seen) 'WARN'
-            $st = $null
-            try { $st = Invoke-FbOperatorSettingsGateInSession } catch {
-                Write-FbLog ("Hardware gate PASS Settings fallback threw: {0}" -f $_.Exception.Message) 'ERROR'
+            Write-FbLog ("Hardware gate: probes passed; YouTube unavailable (reason={0} seen={1}). Installing Edge and retrying YouTube (not Settings)." -f $reason, $seen) 'WARN'
+            try { $null = Invoke-FbEnsureMicrosoftEdge -AllowDownload -Force } catch {
+                Write-FbLog ("Hardware gate PASS: Edge retry threw: {0}" -f $_.Exception.Message) 'WARN'
             }
-            $stReason = ''
-            try { $stReason = [string]$st.Reason } catch { $stReason = '' }
-            if ($stReason -eq 'window-closed' -or $stReason -eq 'process-exit') {
+            $yt2 = $null
+            try { $yt2 = Invoke-FbOperatorSettingsGateInSession -YouTubePass } catch {
+                Write-FbLog ("Hardware gate PASS YouTube retry threw: {0}" -f $_.Exception.Message) 'ERROR'
+            }
+            $reason2 = ''
+            try { $reason2 = [string]$yt2.Reason } catch { $reason2 = '' }
+            if ($reason2 -eq 'window-closed') {
                 $youtubeOk = $true
             } else {
-                Write-FbLog ("Hardware gate: PASS Settings fallback did not complete (reason={0}); keeping Fail path." -f $stReason) 'WARN'
+                Write-FbLog ("Hardware gate: YouTube still unavailable after Edge retry (reason={0}). Staying on PASS wait; not opening Settings." -f $reason2) 'ERROR'
             }
         } else {
-            Write-FbLog ("Hardware gate: YouTube PASS path did not complete (reason={0} seen={1}); opening Settings (Fail)." -f $reason, $seen) 'WARN'
+            Write-FbLog ("Hardware gate: YouTube PASS path did not complete (reason={0} seen={1}); retrying YouTube, not Settings." -f $reason, $seen) 'WARN'
+        }
+        $ytAttempt = 0
+        while (-not $youtubeOk -and $ytAttempt -lt 8) {
+            $ytAttempt++
+            Write-FbLog ("Hardware gate PASS: YouTube retry {0}/8 (install Edge, then private YouTube, not Settings)." -f $ytAttempt) 'WARN'
+            Start-Sleep -Seconds 8
+            try { $null = Invoke-FbEnsureMicrosoftEdge -AllowDownload } catch {}
+            $ytN = $null
+            try { $ytN = Invoke-FbOperatorSettingsGateInSession -YouTubePass } catch {}
+            $reasonN = ''
+            try { $reasonN = [string]$ytN.Reason } catch { $reasonN = '' }
+            if ($reasonN -eq 'window-closed') {
+                $youtubeOk = $true
+                break
+            }
         }
     }
 
@@ -13280,6 +13349,17 @@ function Invoke-FbHardwareGateOperatorStep {
         } catch {}
         try { Start-FbHandoffSplashIndicator -Phase 'sealing' -AutoCloseSeconds 90 } catch {}
         Write-FbLog 'Hardware gate PASS: private YouTube closed; continuing seal + sysprep /oobe /reboot (customer OOBE).' 'INFO'
+        return $true
+    }
+
+    if ($hwPassed) {
+        $script:FbHardwareGateFailed = $false
+        try {
+            Set-Content -LiteralPath $doneMarker -Value ('hardware-gate PASS at {0} youtube-unavailable-after-retries (not Settings)' -f (Get-Date -Format 'o')) -Encoding ascii -Force
+            Clear-FbHandoffPendingMarker
+        } catch {}
+        try { Start-FbHandoffSplashIndicator -Phase 'sealing' -AutoCloseSeconds 90 } catch {}
+        Write-FbLog 'Hardware gate PASS: hardware probes passed; YouTube did not stay open. Not opening Settings. Continuing seal.' 'WARN'
         return $true
     }
 
@@ -13684,37 +13764,51 @@ function Invoke-FbOobeHandoff {
             }
 
             # ==========================================================
-            # 2026.06.12.2276-fix-0x80246017-terminal Fix B: OS version
-            # guard for feature-upgrade re-offers. If WU still offers
-            # "Windows X, version YH2" but the running OS already reports
-            # that DisplayVersion, the update cannot be installed (WU will
-            # fail with 0x80246017 DM_UNAUTHORIZED every time). Detect
-            # this and add the offending UpdateId to GivenUpIds BEFORE
-            # the residual filter so it is excluded on this same pass.
+            # Feature-upgrade guard: skip 25H2 enablement / Feature update
+            # when the UUP image is already 25H2 (DisplayVersion or build
+            # 26200 / Germanium family). Quality LCUs are not skipped.
+            # Scan-time Select-FbWuInstallableUpdates already hid these;
+            # this STAGE 1 pass is belt-and-suspenders for anything still
+            # offered (legacy title shapes, hide failed, etc.).
             # ==========================================================
             try {
+                $fbOs = $null
+                try { $fbOs = Get-FbOsReleaseIdentity } catch {}
                 $fbOsDisplayVersion = ''
-                try {
-                    $fbOsDisplayVersion = [string](Get-ItemProperty `
-                        'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion' `
-                        -Name 'DisplayVersion' -ErrorAction SilentlyContinue).DisplayVersion
-                } catch {}
-                if (-not [string]::IsNullOrWhiteSpace($fbOsDisplayVersion)) {
+                try { $fbOsDisplayVersion = [string]$fbOs.DisplayVersion } catch {}
+                if ($null -eq $fbOs) {
+                    try {
+                        $fbOsDisplayVersion = [string](Get-ItemProperty `
+                            'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion' `
+                            -Name 'DisplayVersion' -ErrorAction SilentlyContinue).DisplayVersion
+                    } catch {}
+                }
+                if ($true) {
                     $fbVersionGuardPromoted = 0
                     foreach ($fbScanU in $stage1Scan) {
                         $fbScanUid   = ''; try { $fbScanUid   = [string]$fbScanU.UpdateId } catch {}
                         $fbScanTitle = ''; try { $fbScanTitle = [string]$fbScanU.Title     } catch {}
                         if ([string]::IsNullOrWhiteSpace($fbScanUid) -or [string]::IsNullOrWhiteSpace($fbScanTitle)) { continue }
                         if ($givenUpIds.Contains($fbScanUid)) { continue }
-                        if ($fbScanTitle -match 'Windows\s+\d+,\s+version\s+(\w+)') {
-                            $fbOfferedVer = $Matches[1]
-                            if ($fbOfferedVer -ieq $fbOsDisplayVersion) {
-                                Write-FbLog ("OOBE handoff (STAGE 1 gate) Fix B: Skipping feature-upgrade re-offer '{0}': OS is already at DisplayVersion={1} which satisfies offered version={2}. Adding to GivenUp." -f $fbScanTitle, $fbOsDisplayVersion, $fbOfferedVer) 'WARN'
-                                $fbScanKey = ''; try { $fbScanKey = [string](Get-FbRetryKey -Update $fbScanU) } catch {}
-                                [void]$givenUpIds.Add($fbScanUid)
-                                if (-not [string]::IsNullOrWhiteSpace($fbScanKey)) { [void]$givenUpIds.Add($fbScanKey) }
-                                $fbVersionGuardPromoted++
+                        $fbScanKb = ''; try { $fbScanKb = [string]$fbScanU.KB } catch {}
+                        $fbScanCats = @(); try { $fbScanCats = @($fbScanU.Categories) } catch {}
+                        $fbIsRedundant = $false
+                        try {
+                            $fbIsRedundant = [bool](Test-FbWuIsRedundantFeatureUpgrade -Title $fbScanTitle -Categories $fbScanCats -KB $fbScanKb -Os $fbOs)
+                        } catch {
+                            if ($fbScanTitle -match 'Windows\s+\d+,\s+version\s+(\w+)') {
+                                $fbOfferedVer = $Matches[1]
+                                if ($fbOfferedVer -and $fbOsDisplayVersion -and ($fbOfferedVer -ieq $fbOsDisplayVersion)) {
+                                    $fbIsRedundant = $true
+                                }
                             }
+                        }
+                        if ($fbIsRedundant) {
+                            Write-FbLog ("OOBE handoff (STAGE 1 gate) Fix B: Skipping feature-upgrade re-offer '{0}': OS DisplayVersion={1} build={2}. Adding to GivenUp." -f $fbScanTitle, $fbOsDisplayVersion, $(if ($fbOs) { $fbOs.CurrentBuild } else { '?' })) 'WARN'
+                            $fbScanKey = ''; try { $fbScanKey = [string](Get-FbRetryKey -Update $fbScanU) } catch {}
+                            [void]$givenUpIds.Add($fbScanUid)
+                            if (-not [string]::IsNullOrWhiteSpace($fbScanKey)) { [void]$givenUpIds.Add($fbScanKey) }
+                            $fbVersionGuardPromoted++
                         }
                     }
                     if ($fbVersionGuardPromoted -gt 0) {
@@ -15766,6 +15860,9 @@ if ((Test-Path -LiteralPath $FbPipelineCompletedMarkerPath) -or (Test-Path -Lite
 Start-Sleep -Seconds 30
 Wait-ForInternet -SleepSeconds 30
 Initialize-FbWuEnvironment
+try { $null = Invoke-FbEnsureMicrosoftEdge -AllowDownload } catch {
+    Write-FbLog ("Startup Edge ensure threw: {0}" -f $_.Exception.Message) 'WARN'
+}
 
 # 2026.05.13.2213i-r-first-boot-bypass-and-w-console-render-script Bug R fix.
 #

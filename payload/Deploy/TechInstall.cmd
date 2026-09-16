@@ -572,6 +572,17 @@ if defined FB_FLAG_PATH (
     ) else (
         echo [%DATE% %TIME%] WARNING: FirstBaseHardwareCheck.ps1 missing in WUPayload - hardware gate will FAIL closed (no skip-as-pass) >> "%LOG%"
     )
+    if exist "!FB_PAYLOAD!\WUPayload\Install-FbMicrosoftEdge.ps1" (
+        copy /y "!FB_PAYLOAD!\WUPayload\Install-FbMicrosoftEdge.ps1" "W:\Windows\Setup\FirstBase\Install-FbMicrosoftEdge.ps1" >> "%LOG%" 2>&1
+        echo [%DATE% %TIME%]   staged W:\Windows\Setup\FirstBase\Install-FbMicrosoftEdge.ps1 >> "%LOG%"
+    ) else (
+        echo [%DATE% %TIME%] WARNING: Install-FbMicrosoftEdge.ps1 missing in WUPayload - YouTube PASS needs Edge on UUP images >> "%LOG%"
+    )
+    if exist "!FB_PAYLOAD!\WUPayload\Edge\" (
+        if not exist "W:\Windows\Setup\FirstBase\Edge" mkdir "W:\Windows\Setup\FirstBase\Edge" >> "%LOG%" 2>&1
+        xcopy "!FB_PAYLOAD!\WUPayload\Edge" "W:\Windows\Setup\FirstBase\Edge\" /E /I /Y /H /R >> "%LOG%" 2>&1
+        echo [%DATE% %TIME%]   staged offline Microsoft Edge installer cache >> "%LOG%"
+    )
     REM 2026.07.21: Show-SplashNow.cmd removed from the payload - the operator splash is
     REM launched via FirstBaseShowSplash.ps1 directly, so no Tools\Show-SplashNow.cmd is
     REM staged (eliminates the missing-file WARNING [2230] and its path-not-found noise).

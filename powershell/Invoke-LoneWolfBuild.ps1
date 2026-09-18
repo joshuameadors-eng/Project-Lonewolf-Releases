@@ -1484,7 +1484,10 @@ $workerDiskBlock = {
         [string] $ShareLauncherVersion,
         [string] $ShareScriptVersion,
         [string] $ImageBuildDate,
-        [string] $WindowsEdition
+        [string] $WindowsEdition,
+        # Job runspaces cannot see script-scope Copy-LwRepoEdgeInstaller / $PSScriptRoot.
+        # Resolved on the main thread (repo tools\ for destage, app-adjacent tools\ packaged).
+        [string] $EdgeToolsDir
     )
 
     $ErrorActionPreference = 'Stop'
@@ -1518,6 +1521,40 @@ $workerDiskBlock = {
         }
         if ($dstLen -lt 900000) {
             throw ("FATAL: Invoke-WindowsUpdateLoop.ps1 on stick is truncated ({0} bytes): '{1}'." -f $dstLen, $Dst)
+        }
+    }
+
+    # Job runspaces cannot see script-scope Copy-LwRepoEdgeInstaller on the parent.
+    function Copy-LwRepoEdgeInstaller {
+        param([Parameter(Mandatory)][string]$DestRoot)
+        try {
+            $toolsDir = $EdgeToolsDir
+            if ([string]::IsNullOrWhiteSpace($toolsDir) -and $ContentRoot) {
+                $toolsDir = Join-Path ([IO.Path]::GetFullPath((Join-Path $ContentRoot '..\..'))) 'tools'
+            }
+            if ([string]::IsNullOrWhiteSpace($toolsDir) -or -not (Test-Path -LiteralPath $toolsDir)) { return }
+            $files = @(Get-ChildItem -LiteralPath $toolsDir -File -ErrorAction SilentlyContinue |
+                Where-Object { $_.Extension -match '\.(exe|msi)$' -and $_.Name -match '(?i)edge' })
+            if ($files.Count -eq 0) { return }
+            $edgeRoot = Join-Path $DestRoot 'FirstBase\WUPayload\Edge'
+            $archDirs = @(
+                $edgeRoot
+                (Join-Path $edgeRoot 'AMD64')
+                (Join-Path $edgeRoot 'ARM64')
+            )
+            foreach ($d in $archDirs) {
+                if (-not (Test-Path -LiteralPath $d)) {
+                    New-Item -ItemType Directory -Force -Path $d | Out-Null
+                }
+            }
+            foreach ($f in $files) {
+                foreach ($d in $archDirs) {
+                    Copy-Item -LiteralPath $f.FullName -Destination (Join-Path $d $f.Name) -Force -ErrorAction SilentlyContinue
+                }
+                J @{ event='log'; disk=$DiskNumber; message=("payload: staged local Edge installer {0} ({1} bytes) under FirstBase\WUPayload\Edge" -f $f.Name, $f.Length) }
+            }
+        } catch {
+            J @{ event='log'; disk=$DiskNumber; message=("payload: Edge installer copy skipped: {0}" -f $_.Exception.Message) }
         }
     }
 
@@ -2589,6 +2626,7 @@ $workerDiskBlock = {
                     }
                 }
                 if (-not $NoPayload -and -not $QuickInstall) {
+                    Copy-LwRepoEdgeInstaller -DestRoot $partRoot
                     $loopSrc = Join-Path $OverlayCache 'FirstBase\WUPayload\Invoke-WindowsUpdateLoop.ps1'
                     if (-not (Test-Path -LiteralPath $loopSrc)) { $loopSrc = Join-Path $ContentRoot 'Invoke-WindowsUpdateLoop.ps1' }
                     Assert-LoopCopyLocal -Src $loopSrc -Dst (Join-Path $partRoot 'FirstBase\WUPayload\Invoke-WindowsUpdateLoop.ps1')
@@ -3305,6 +3343,8 @@ try {
         try { $imageBuildDate = (Get-Item -LiteralPath $StagingWim).LastWriteTimeUtc.ToString('yyyy-MM-dd') } catch { }
     }
 
+    $edgeToolsDir = Join-Path ([IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..'))) 'tools'
+
     foreach ($diskNum in $requestedDisks) {
         EmitStart -Disk $diskNum
         if ($Sequential) {
@@ -3337,7 +3377,8 @@ try {
                 $ShareLauncherVersion,
                 $ShareScriptVersion,
                 $imageBuildDate,
-                $winEdition
+                $winEdition,
+                $edgeToolsDir
             )
 
         if ($Sequential) {

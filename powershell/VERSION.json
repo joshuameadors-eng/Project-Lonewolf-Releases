@@ -1,8 +1,8 @@
 {
     "_comment":  "Product/payload version (version and payloadVersion) is independent of launcherVersion. npm start destage staging product version (chips, image dates, changelog, arch enablement) always comes from this file. Packaged Dev and production changelog/update feeds use public GitHub latest.json (main) or latest-dev.json (packaged Dev). The ISO share and Drive VERSION.json must not host launcher exe, payload zip, or live version overlay.",
-    "version":  "6.0.0",
-    "payloadVersion":  "6.0.0",
-    "launcherVersion":  "6.0.8",
+    "version":  "6.0.9",
+    "payloadVersion":  "6.0.9",
+    "launcherVersion":  "6.0.9",
     "launcherExeName":  "LoneWolf-Launcher.exe",
     "dev":  {
                 "_comment":  "npm start destage always versions from this checkout VERSION.json (local ISO, HQ UNC, Drive Desktop, or any other media). Packaged Dev uses the public dev branch / latest-dev.json. Packaged production uses main / latest.json. ISO/PreSplit/WinPE-OCs are filesystem-only: Google Drive for Desktop if mounted, else HQ UNC. A Drive folder URL is never ShareRoot. Do not publish exe/zip to Drive. Do not overlay Drive HTTPS VERSION.json on destage.",
@@ -35,12 +35,14 @@
                                           "USB destage versions from this checkout; Full Rebuild when the share ISO is newer than the stick, Quick Update for scripts and payload only",
                                           "ISO, PreSplit, and WinPE-OCs from Google Drive for Desktop when mounted, otherwise HQ UNC",
                                           "Quick Install sticks are rebuild-only",
+                                          "Proper Installation tool — unversioned Setup.exe on GitHub Releases tag installer",
                                           "Changed",
+                                          "FB-IM — major technician-tool improvements",
+                                          "Update Script — Windows Update progress and apply flow",
+                                          "Launcher UI and functionality",
                                           "Launcher update",
                                           "GitHub updates no longer require FirstbaseHQ",
-                                          "Portable hash check and curl retry",
-                                          "Clear leftover 7-Zip unpack so relaunch works",
-                                          "Startup prompt uses the same GitHub check as Settings"
+                                          "In-app portable swap that survives quit is 6.0.0+ (5.5.27 still needs Setup)"
                                       ]
                       },
                       {

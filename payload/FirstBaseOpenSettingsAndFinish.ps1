@@ -577,6 +577,27 @@ function Invoke-FbYoutubePassAndWait {
         [int]$AcquireSec = 180,
         [int]$CloseWaitSec = 1800
     )
+    $edgeHelper = @(
+        (Join-Path $FbSetup 'Install-FbMicrosoftEdge.ps1')
+        (Join-Path $FbPd 'Install-FbMicrosoftEdge.ps1')
+        (Join-Path $PSScriptRoot 'Install-FbMicrosoftEdge.ps1')
+    ) | Where-Object { $_ -and (Test-Path -LiteralPath $_) } | Select-Object -First 1
+    if ($edgeHelper) {
+        try {
+            . $edgeHelper
+            if (Get-Command -Name Install-FbMicrosoftEdge -ErrorAction SilentlyContinue) {
+                $er = Install-FbMicrosoftEdge -AllowDownload
+                if ($er -and $er.Present) {
+                    Write-FbManualSettingsFinishLog ("hardware-gate PASS: Edge ready ({0}) {1}" -f $er.Source, $er.Path) 'INFO'
+                } else {
+                    Write-FbManualSettingsFinishLog 'hardware-gate PASS: Edge still missing after install attempt.' 'WARN'
+                }
+            }
+        } catch {
+            Write-FbManualSettingsFinishLog ("hardware-gate PASS: Edge helper threw: {0}" -f $_.Exception.Message) 'WARN'
+        }
+    }
+
     $url = $YouTubeUrl
     if ([string]::IsNullOrWhiteSpace($url)) { $url = $script:FbHardwareGateYoutubeUrl }
     $browser = Get-FbHardwareGateBrowser

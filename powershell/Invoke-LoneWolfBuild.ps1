@@ -150,7 +150,12 @@ param(
     # Windows SKU: Home or Pro. Selects Staging\ISO\ by filename (home/pro + arch)
     # and PreSplit\<imageVersion>\ (legacy PreSplit\<ARCH>\<SKU>\ still read).
     # Independent of LoneWolf vs Quick Install. Default Pro (packaged-safe).
-    [string] $WindowsEdition = 'Pro'
+    [string] $WindowsEdition = 'Pro',
+    # npm start destage only (main.js passes -DestageMedia when !app.isPackaged).
+    # ISO from share first, else C:\Repos\Windows_Installation\UUP\25h2\ISO.
+    # PreSplit read from C:\Repos\Windows_Installation\UUP\25h2\PreSplit (not share).
+    # Packaged production/Dev must not pass this.
+    [switch] $DestageMedia
 )
 
 $ErrorActionPreference = 'Stop'
@@ -303,6 +308,8 @@ if (-not [string]::IsNullOrWhiteSpace($LocalProjectRoot)) {
     $ProjectRoot = Join-Path $ShareRoot 'Remote'
 }
 $StagingRoot = $shareLayout.StagingRoot
+$IsoFallbackRoot = ''
+$isoSearchStaging = $StagingRoot
 
 # Deploy overlay root  -  prefer payload bundled inside the .exe (AppResourcesPath\payload),
 # fall back to Staging\Payload on the share when the bundled path is absent.
@@ -358,6 +365,41 @@ function Assert-LwUpdateLoopCopy {
     }
     Test-LwUpdateLoopPayload -Path $Dst
 }
+
+function Copy-LwRepoEdgeInstaller {
+    # Destage local installer: C:\Repos\ProjectLoneWolfLauncher\tools\edge.exe (gitignored).
+    # Lands on the stick as FirstBase\WUPayload\Edge so TechInstall can stage it into
+    # C:\Windows\Setup\FirstBase\Edge for Install-FbMicrosoftEdge.ps1.
+    param([Parameter(Mandatory)][string]$DestRoot)
+    try {
+        $repoRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..'))
+        $toolsDir = Join-Path $repoRoot 'tools'
+        if (-not (Test-Path -LiteralPath $toolsDir)) { return }
+        $files = @(Get-ChildItem -LiteralPath $toolsDir -File -ErrorAction SilentlyContinue |
+            Where-Object { $_.Extension -match '\.(exe|msi)$' -and $_.Name -match '(?i)edge' })
+        if ($files.Count -eq 0) { return }
+        $edgeRoot = Join-Path $DestRoot 'FirstBase\WUPayload\Edge'
+        $archDirs = @(
+            $edgeRoot
+            (Join-Path $edgeRoot 'AMD64')
+            (Join-Path $edgeRoot 'ARM64')
+        )
+        foreach ($d in $archDirs) {
+            if (-not (Test-Path -LiteralPath $d)) {
+                New-Item -ItemType Directory -Force -Path $d | Out-Null
+            }
+        }
+        foreach ($f in $files) {
+            foreach ($d in $archDirs) {
+                Copy-Item -LiteralPath $f.FullName -Destination (Join-Path $d $f.Name) -Force -ErrorAction SilentlyContinue
+            }
+            EmitLog -Disk 0 -Msg ("payload: staged local Edge installer {0} ({1} bytes) under FirstBase\WUPayload\Edge" -f $f.Name, $f.Length)
+        }
+    } catch {
+        EmitLog -Disk 0 -Msg ("payload: Edge installer copy skipped: {0}" -f $_.Exception.Message)
+    }
+}
+
 if (-not $NoPayload -and -not $QuickInstall) {
     Test-LwUpdateLoopPayload -Path (Join-Path $ContentRoot 'Invoke-WindowsUpdateLoop.ps1')
     EmitLog -Disk 0 -Msg "payload: update-loop script parse+trailer OK ($ContentRoot)"
@@ -368,6 +410,14 @@ $ArchRoot    = Join-Path $StagingRoot $wfUpper          # e.g. Staging\AMD64
 $StagingWim  = Join-Path $ArchRoot    "$wfUpper.wim"    # e.g. Staging\AMD64\AMD64.wim
 $IsoRoot     = $shareLayout.IsoRoot                     # share-root ISO\ or legacy Staging\ISO
 $PreSplitRoot = $shareLayout.PreSplitRoot               # share-root PreSplit\ or legacy Staging\PreSplit
+if ($DestageMedia) {
+    $destageLayout = Resolve-LwDestageMediaLayout -ShareRoot $ShareRoot
+    $null = Initialize-LwDestageUupDirs
+    $IsoRoot = $destageLayout.IsoRoot
+    $IsoFallbackRoot = ''
+    $PreSplitRoot = $destageLayout.PreSplitRoot
+    $isoSearchStaging = $destageLayout.IsoRoot
+}
 
 # Shared split-helper lib. Dot-sourced on the MAIN thread here (for Get-LWImageVersionId
 # + Test-LWPreSplitSet used by Get-LWPreSplitSet below), and its full path is ALSO passed
@@ -536,6 +586,8 @@ function Get-LWPreSplitSet {
                         Sort-Object LastWriteTime -Descending)) {
                     if ($d.Name -like '*.tmp-*') { continue }
                     if ($d.Name -match '^(?i)(AMD64|ARM64|Home|Pro)$') { continue }
+                    if ((Get-Command -Name Test-LWPreSplitFolderMatches -ErrorAction SilentlyContinue) -and
+                        -not (Test-LWPreSplitFolderMatches -FolderName $d.Name -Arch $Arch -Edition $ed)) { continue }
                     if (-not ($candidates -contains $d.FullName)) { $candidates.Add($d.FullName) }
                 }
             }
@@ -565,6 +617,20 @@ function Get-LWPreSplitSet {
                 }
             } elseif ($ed -ne 'Pro') {
                 EmitLog -Disk 0 -Msg "presplit: set '$setDir' skipped (no edition in manifest; Home requires an explicit SKU)"
+                continue
+            }
+            $manArch = $null
+            try {
+                if ($m.PSObject.Properties['arch'] -and $m.arch) { $manArch = Get-LWBareArch ([string]$m.arch) }
+            } catch { }
+            if ($manArch -and $manArch -ne $arch) {
+                EmitLog -Disk 0 -Msg "presplit: set '$setDir' skipped (arch $manArch != $arch)"
+                continue
+            }
+            $setLeaf = Split-Path -Leaf $setDir
+            if ((Get-Command -Name Test-LWPreSplitFolderMatches -ErrorAction SilentlyContinue) -and
+                -not (Test-LWPreSplitFolderMatches -FolderName $setLeaf -Arch $arch -Edition $ed)) {
+                EmitLog -Disk 0 -Msg "presplit: set '$setDir' skipped (folder arch/SKU does not match $arch $ed)"
                 continue
             }
             $src = $m.source
@@ -788,6 +854,7 @@ function Build-Cache {
             @{ Src = (Join-Path $ContentRoot 'FirstBaseOobeOperatorFinalize.ps1');            Dst = 'FirstBase\WUPayload\FirstBaseOobeOperatorFinalize.ps1' },
             @{ Src = (Join-Path $ContentRoot 'FirstBaseOpenSettingsAndFinish.ps1');           Dst = 'FirstBase\WUPayload\FirstBaseOpenSettingsAndFinish.ps1' },
             @{ Src = (Join-Path $ContentRoot 'FirstBaseHardwareCheck.ps1');                   Dst = 'FirstBase\WUPayload\FirstBaseHardwareCheck.ps1' },
+            @{ Src = (Join-Path $ContentRoot 'Install-FbMicrosoftEdge.ps1');                  Dst = 'FirstBase\WUPayload\Install-FbMicrosoftEdge.ps1' },
             @{ Src = (Join-Path $ContentRoot 'FirstBasePostSysprepOobeSoundArm.ps1');         Dst = 'FirstBase\WUPayload\FirstBasePostSysprepOobeSoundArm.ps1' },
             @{ Src = (Join-Path $ContentRoot 'FirstBaseShowSplash.ps1');                      Dst = 'FirstBase\WUPayload\FirstBaseShowSplash.ps1' },
             @{ Src = (Join-Path $ContentRoot 'FirstBaseSplashSingleInstance.ps1');            Dst = 'FirstBase\WUPayload\FirstBaseSplashSingleInstance.ps1' },
@@ -807,6 +874,7 @@ function Build-Cache {
             }
         }
         if (-not $NoPayload -and -not $QuickInstall) {
+            Copy-LwRepoEdgeInstaller -DestRoot $overlayCache
             Assert-LwUpdateLoopCopy -Src (Join-Path $ContentRoot 'Invoke-WindowsUpdateLoop.ps1') -Dst (Join-Path $overlayCache 'FirstBase\WUPayload\Invoke-WindowsUpdateLoop.ps1')
         }
         $scriptsSrc = Join-Path $ContentRoot 'Scripts'
@@ -823,6 +891,13 @@ function Build-Cache {
                 $markerBody = "destage=1`r`nchannel=destage`r`npayloadVersion=$pv`r`nscriptVersion=$pv`r`nbuiltAt=$(Get-Date -Format 'o')`r`n"
                 [System.IO.File]::WriteAllText((Join-Path $wuDir '.dev-build'), $markerBody, [System.Text.UTF8Encoding]::new($false))
             } catch {}
+        } else {
+            foreach ($rel in @('FirstBase\WUPayload\.dev-build', 'FirstBase\.dev-build', '.dev-build')) {
+                $marker = Join-Path $overlayCache $rel
+                if (Test-Path -LiteralPath $marker) {
+                    Remove-Item -LiteralPath $marker -Force -ErrorAction SilentlyContinue
+                }
+            }
         }
     } else {
         # WIN-INSTALL: overlay uses the same TechInstall architecture as a full build.
@@ -996,6 +1071,7 @@ function Build-IsoCache {
             @{ Src = (Join-Path $ContentRoot 'FirstBaseOobeOperatorFinalize.ps1');            Dst = 'FirstBase\WUPayload\FirstBaseOobeOperatorFinalize.ps1' },
             @{ Src = (Join-Path $ContentRoot 'FirstBaseOpenSettingsAndFinish.ps1');           Dst = 'FirstBase\WUPayload\FirstBaseOpenSettingsAndFinish.ps1' },
             @{ Src = (Join-Path $ContentRoot 'FirstBaseHardwareCheck.ps1');                   Dst = 'FirstBase\WUPayload\FirstBaseHardwareCheck.ps1' },
+            @{ Src = (Join-Path $ContentRoot 'Install-FbMicrosoftEdge.ps1');                  Dst = 'FirstBase\WUPayload\Install-FbMicrosoftEdge.ps1' },
             @{ Src = (Join-Path $ContentRoot 'FirstBasePostSysprepOobeSoundArm.ps1');         Dst = 'FirstBase\WUPayload\FirstBasePostSysprepOobeSoundArm.ps1' },
             @{ Src = (Join-Path $ContentRoot 'FirstBaseShowSplash.ps1');                      Dst = 'FirstBase\WUPayload\FirstBaseShowSplash.ps1' },
             @{ Src = (Join-Path $ContentRoot 'FirstBaseSplashSingleInstance.ps1');            Dst = 'FirstBase\WUPayload\FirstBaseSplashSingleInstance.ps1' },
@@ -1015,6 +1091,7 @@ function Build-IsoCache {
             }
         }
         if (-not $NoPayload -and -not $QuickInstall) {
+            Copy-LwRepoEdgeInstaller -DestRoot $overlayCache
             Assert-LwUpdateLoopCopy -Src (Join-Path $ContentRoot 'Invoke-WindowsUpdateLoop.ps1') -Dst (Join-Path $overlayCache 'FirstBase\WUPayload\Invoke-WindowsUpdateLoop.ps1')
         }
         $scriptsSrc = Join-Path $ContentRoot 'Scripts'
@@ -1031,6 +1108,13 @@ function Build-IsoCache {
                 $markerBody = "destage=1`r`nchannel=destage`r`npayloadVersion=$pv`r`nscriptVersion=$pv`r`nbuiltAt=$(Get-Date -Format 'o')`r`n"
                 [System.IO.File]::WriteAllText((Join-Path $wuDir '.dev-build'), $markerBody, [System.Text.UTF8Encoding]::new($false))
             } catch {}
+        } else {
+            foreach ($rel in @('FirstBase\WUPayload\.dev-build', 'FirstBase\.dev-build', '.dev-build')) {
+                $marker = Join-Path $overlayCache $rel
+                if (Test-Path -LiteralPath $marker) {
+                    Remove-Item -LiteralPath $marker -Force -ErrorAction SilentlyContinue
+                }
+            }
         }
     } else {
         # WIN-INSTALL: overlay uses the same TechInstall architecture as a full build.
@@ -2536,6 +2620,7 @@ $workerDiskBlock = {
                         @{ Src = (Join-Path $ContentRoot 'FirstBaseOobeOperatorFinalize.ps1');            Dst = 'FirstBase\WUPayload\FirstBaseOobeOperatorFinalize.ps1' },
                         @{ Src = (Join-Path $ContentRoot 'FirstBaseOpenSettingsAndFinish.ps1');           Dst = 'FirstBase\WUPayload\FirstBaseOpenSettingsAndFinish.ps1' },
                         @{ Src = (Join-Path $ContentRoot 'FirstBaseHardwareCheck.ps1');                   Dst = 'FirstBase\WUPayload\FirstBaseHardwareCheck.ps1' },
+            @{ Src = (Join-Path $ContentRoot 'Install-FbMicrosoftEdge.ps1');                  Dst = 'FirstBase\WUPayload\Install-FbMicrosoftEdge.ps1' },
                         @{ Src = (Join-Path $ContentRoot 'FirstBasePostSysprepOobeSoundArm.ps1');         Dst = 'FirstBase\WUPayload\FirstBasePostSysprepOobeSoundArm.ps1' },
                         @{ Src = (Join-Path $ContentRoot 'FirstBaseShowSplash.ps1');                      Dst = 'FirstBase\WUPayload\FirstBaseShowSplash.ps1' },
                         @{ Src = (Join-Path $ContentRoot 'FirstBaseSplashSingleInstance.ps1');            Dst = 'FirstBase\WUPayload\FirstBaseSplashSingleInstance.ps1' },
@@ -2561,6 +2646,7 @@ $workerDiskBlock = {
                         }
                     }
                     if (-not $NoPayload -and -not $QuickInstall) {
+                        Copy-LwRepoEdgeInstaller -DestRoot $partRoot
                         Assert-LoopCopyLocal -Src (Join-Path $ContentRoot 'Invoke-WindowsUpdateLoop.ps1') -Dst (Join-Path $partRoot 'FirstBase\WUPayload\Invoke-WindowsUpdateLoop.ps1')
                     }
                     $scriptsSrc = Join-Path $ContentRoot 'Scripts'
@@ -2635,6 +2721,19 @@ $workerDiskBlock = {
             @("Layout=$Layout",'Builder=Invoke-LoneWolfBuild.ps1') |
                 Set-Content -LiteralPath (Join-Path $logDir 'FirstBase-Layout.txt') -Encoding ascii -Force
             Write-LwUsbExplorerChrome -VolRoot $partRoot -IcoSrc (Join-Path $ContentRoot 'FirstBase.ico')
+        }
+
+        # Packaged production / packaged Destage: never leave a destage marker on the stick
+        # (Quick Update copy does not delete extra files, so a prior npm start destage would linger).
+        if (-not $DevBuild) {
+            foreach ($partRoot in $overlayPartRoots) {
+                foreach ($rel in @('FirstBase\WUPayload\.dev-build', 'FirstBase\.dev-build', '.dev-build')) {
+                    $marker = Join-Path $partRoot $rel
+                    if (Test-Path -LiteralPath $marker) {
+                        Remove-Item -LiteralPath $marker -Force -ErrorAction SilentlyContinue
+                    }
+                }
+            }
         }
 
         # -- Hide Windows install media at volume root; hide FirstBase; keep fb-im.cmd visible --
@@ -2808,7 +2907,25 @@ try {
     # we mount our own. Covers both full builds and the -PreCacheOnly path (shared flow).
     Invoke-LwIsoSweep
 
-    if ([string]::IsNullOrWhiteSpace($LocalProjectRoot)) {
+    if ($DestageMedia) {
+        EmitLog -Disk 0 -Msg "destage media: local UUP ISO '$IsoRoot'; PreSplit '$PreSplitRoot' (share ISO not used for destage image)"
+        if ($ShareRoot -match '^(?i)https?://') {
+            EmitLog -Disk 0 -Msg 'destage: Drive folder URL is not ShareRoot; using local UUP ISO fallback if needed'
+        } elseif ($ShareRoot -match '^\\\\') {
+            $shareHost = 'WIN-HQ5JDEACV3S'
+            if ($ShareRoot -match '^\\\\([^\\]+)\\') { $shareHost = $Matches[1] }
+            try { Connect-Share -ShareHost $shareHost -User $ShareUser -Pass $SharePassword -ProbePath $ShareRoot } catch { }
+        }
+        if (Test-Path -LiteralPath $ShareRoot) {
+            EmitLog -Disk 0 -Msg "destage: share reachable $ShareRoot"
+        } else {
+            EmitLog -Disk 0 -Msg "destage: share not reachable ($ShareRoot); Rebuild will use local UUP ISO/PreSplit if present"
+        }
+        if (-not [string]::IsNullOrWhiteSpace($LocalProjectRoot) -and -not (Test-Path -LiteralPath $LocalProjectRoot)) {
+            Emit @{ event='error'; disk=-1; message="Local build mode: LocalProjectRoot not found: $LocalProjectRoot" }
+            exit 1
+        }
+    } elseif ([string]::IsNullOrWhiteSpace($LocalProjectRoot)) {
         if ($ShareRoot -match '^(?i)https?://') {
             Emit @{ event='error'; disk=-1; message='A Google Drive folder URL is not a Windows filesystem ShareRoot. Use Google Drive for Desktop or the HQ UNC share.' }
             exit 1
@@ -2861,9 +2978,13 @@ try {
     # to a Pro ISO or a SKU-unaware staged WIM.
     if (-not $OverlayOnly) {
         if (Get-Command -Name Find-LWWindowsIso -ErrorAction SilentlyContinue) {
-            $isoItem = Find-LWWindowsIso -StagingRoot $StagingRoot -IsoRoot $IsoRoot -Arch $wfUpper -Edition $winEdition
+            $isoFind = @{ StagingRoot = $isoSearchStaging; IsoRoot = $IsoRoot; Arch = $wfUpper; Edition = $winEdition }
+            $isoItem = Find-LWWindowsIso @isoFind
         }
         if ($isoItem) {
+            if ($DestageMedia) {
+                EmitLog -Disk 0 -Msg "destage: using local UUP ISO '$($isoItem.FullName)'; PreSplit '$PreSplitRoot'"
+            }
             $useIsoMode = $true
             $isoReason  = if ($ForceIsoMode) {
                 'ForceIsoMode: skipping WIM, mounting ISO directly'
@@ -2878,16 +2999,20 @@ try {
             }
             Emit @{ event='iso-mode'; disk=0; isoFile=$isoItem.Name; windowsEdition=$winEdition; message=$isoReason }
         } elseif ($winEdition -eq 'Home') {
+            $isoHint = $IsoRoot
+            if ($DestageMedia -and $IsoFallbackRoot) { $isoHint = "$IsoRoot (fallback $IsoFallbackRoot)" }
             $msg = if (Get-Command -Name Get-LWMissingHomeIsoMessage -ErrorAction SilentlyContinue) {
-                Get-LWMissingHomeIsoMessage -Arch $wfUpper -IsoHomeDir $IsoRoot
+                Get-LWMissingHomeIsoMessage -Arch $wfUpper -IsoHomeDir $isoHint
             } else {
-                "No Windows Home ISO for $wfUpper in $IsoRoot. Place a *($wfUpper)*.iso with home in the name under ISO\ (do not use the Pro image)."
+                "No Windows Home ISO for $wfUpper in $isoHint. Place a *($wfUpper)*.iso with home in the name under ISO\ (do not use the Pro image)."
             }
             Emit @{ event='error'; disk=-1; message=$msg }
             exit 1
         } else {
             $isoGlob = "*($wfUpper)*.iso"
-            Emit @{ event='log'; disk=-1; message="WARNING: no matching $winEdition $isoGlob found in $IsoRoot (name must include pro; legacy ISO\Pro still read) - falling back to a staged WIM if one is present" }
+            $isoHint = $IsoRoot
+            if ($DestageMedia -and $IsoFallbackRoot) { $isoHint = "$IsoRoot (fallback $IsoFallbackRoot)" }
+            Emit @{ event='log'; disk=-1; message="WARNING: no matching $winEdition $isoGlob found in $isoHint (name must include pro; legacy ISO\Pro still read) - falling back to a staged WIM if one is present" }
         }
     }
 
@@ -3166,6 +3291,9 @@ try {
     # (control flow + output byte-identical to before this feature). Never fatal.
     $PreSplitSetDir = ''
     if ($useIsoMode -and $Layout -eq 'Single' -and -not $OverlayOnly -and $null -ne $isoItem) {
+        if ($DestageMedia) {
+            EmitLog -Disk 0 -Msg "destage: resolving pre-split set under local UUP '$PreSplitRoot'"
+        }
         $resolvedSet = Get-LWPreSplitSet -Iso $isoItem -PreSplitRoot $PreSplitRoot -Arch $wfUpper -Edition $winEdition -VerifyHash:$VerifyPreSplitHash
         if ($resolvedSet) { $PreSplitSetDir = $resolvedSet }
     }

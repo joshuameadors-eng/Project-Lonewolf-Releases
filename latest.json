@@ -1,6 +1,6 @@
 {
-    "launcherVersion":  "6.0.8",
-    "payloadVersion":  "6.0.0",
+    "launcherVersion":  "6.0.9",
+    "payloadVersion":  "6.0.9",
     "channel":  "dev",
     "source":  "github-public-source",
     "latestReleaseUrl":  "https://github.com/joshuameadors-eng/Project-Lonewolf-Releases/releases/latest",
@@ -30,6 +30,6 @@
                  "payload":  "https://raw.githubusercontent.com/joshuameadors-eng/Project-Lonewolf-Releases/dev/FirstBase-payload.zip",
                  "manifest":  "https://raw.githubusercontent.com/joshuameadors-eng/Project-Lonewolf-Releases/dev/latest.json"
              },
-    "portableSha256":  "b8b80f5717293aabf115aafe0b69ba1178fe7b263606c56e4796838261f8e9c8",
-    "portableSize":  71490888
+    "portableSha256":  "e8a4dffcdd741b2c677391eabc15afa4320231c50f95def967007675e246a52a",
+    "portableSize":  71504540
 }

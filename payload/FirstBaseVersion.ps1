@@ -66,17 +66,17 @@ $FirstBaseScriptVersion = @{
 
     'Build-UsbStick.ps1'               = '1.1.0'
 
-    'Invoke-WindowsUpdateLoop.ps1'       = '1.0.28'
+    'Invoke-WindowsUpdateLoop.ps1'       = '1.0.31'
 
-    'SetupComplete.cmd'                = '1.0.6'
-
-
-
-    'FirstBaseWuEngine.ps1'            = '1.0.6'
+    'SetupComplete.cmd'                = '1.0.7'
 
 
 
-    'Show-UpdateProgress.ps1'          = '3.0.13'
+    'FirstBaseWuEngine.ps1'            = '1.0.8'
+
+
+
+    'Show-UpdateProgress.ps1'          = '3.0.15'
 
 
 
@@ -107,9 +107,10 @@ $FirstBaseScriptVersion = @{
 
     'FirstBaseHandoffSplash.ps1'        = '1.0.4'
 
-    'FirstBaseOpenSettingsAndFinish.ps1' = '1.1.8'
+    'FirstBaseOpenSettingsAndFinish.ps1' = '1.1.9'
 
-    'FirstBaseHardwareCheck.ps1'        = '1.0.2'
+    'FirstBaseHardwareCheck.ps1'        = '1.0.3'
+    'Install-FbMicrosoftEdge.ps1'       = '1.0.0'
 
 
 

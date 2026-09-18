@@ -8,13 +8,18 @@
   source Windows ISO, splits sources\install.wim (or exports+splits install.esd)
   into an install*.swm set (< 4 GB each, DISM /Split-Image /FileSize:3800
   /CheckIntegrity via the SHARED helper lib\Split-LWImage.ps1), and stages the
-  result as a versioned set on the share (or the local dev tree):
+  result as a versioned set:
 
-    <Staging>\PreSplit\<imageVersion>\
+    Packaged: <share>\PreSplit\<imageVersion>\  (Drive Desktop or HQ UNC)
+    Destage (npm start -DestageMedia):
+      ISO from C:\Repos\Windows_Installation\UUP\25h2\ISO only (no share IsoRoot)
+      Write C:\Repos\Windows_Installation\UUP\25h2\PreSplit\<imageVersion>\
+
+    <PreSplit>\<imageVersion>\
         install.swm, install2.swm, ...
         presplit-manifest.json
         current                   (JSON marker inside the set)
-    <Staging>\PreSplit\current.json  (map keyed AMD64-Home / ARM64-Pro / ...)
+    <PreSplit>\current.json  (map keyed AMD64-Home / ARM64-Pro / ...)
 
   imageVersion includes Windows version + Home/Pro + arch, e.g.
     25h2-home-9-9-amd64-<stamp>  /  25h2-pro-9-9-arm64-<stamp>
@@ -41,9 +46,24 @@
   Share credentials (used only when writing to the share, not in local mode).
 
 .PARAMETER LocalProjectRoot
-  Dev mode. When non-empty this is used as ProjectRoot (e.g. <appPath>\Remote):
-  share auth is skipped and the set is written to the LOCAL Remote\Staging tree
-  ("staged for upload to the share").
+  Packaged/local-build only. When non-empty this is used as ProjectRoot
+  (e.g. <appPath>\Remote): share auth is skipped and the set is written to
+  the LOCAL Remote\Staging tree. Ignored when -DestageMedia is set.
+
+.PARAMETER DestageMedia
+  npm start only. Source ISO is only IsoRoot
+  C:\Repos\Windows_Installation\UUP\25h2\ISO (*(amd64|arm64)*.iso + Home/Pro name).
+  No share ISO. Write to PreSplitOutputRoot (default
+  C:\Repos\Windows_Installation\UUP\25h2\PreSplit). UNC / share PreSplit writes
+  are refused. Packaged production/Dev must not pass this.
+
+.PARAMETER PreSplitOutputRoot
+  Destage-only explicit PreSplit write directory. When set (or -DestageMedia),
+  the producer never writes to share PreSplit.
+
+.PARAMETER IsoFallbackRoot
+  Unused on destage (local UUP ISO is the only source). Kept so older main.js
+  argument lists do not bind-fail.
 
 .PARAMETER IsoPath
   Explicit source ISO. Default: newest *(<ARCH>)*.iso by LastWriteTime in
@@ -88,6 +108,9 @@ param(
     [string] $ShareUser        = 'Reflect',
     [string] $SharePassword    = 'mer*HWE0upt*rqe@dud',
     [string] $LocalProjectRoot = '',
+    [switch] $DestageMedia,
+    [string] $PreSplitOutputRoot = '',
+    [string] $IsoFallbackRoot = '',
     [string] $IsoPath          = '',
     [switch] $Force,
     [int]    $FileSizeMb       = 3800,
@@ -125,19 +148,57 @@ function Connect-ShareCredentials {
 # --- Resolve paths (same contract as the builder) -----------------------------
 $wfUpper = $WorkflowType.ToUpper()
 $winEdition = if ($WindowsEdition -match '^(?i)home$') { 'Home' } else { 'Pro' }
-$isLocal = -not [string]::IsNullOrWhiteSpace($LocalProjectRoot)
+$bareArch = if ($wfUpper -match 'ARM') { 'ARM64' } else { 'AMD64' }
 $shareLayoutLib = Join-Path $PSScriptRoot 'lib\Resolve-LwShareLayout.ps1'
 if (Test-Path -LiteralPath $shareLayoutLib) { . $shareLayoutLib }
-$shareLayout = Resolve-LwShareLayout -ShareRoot $ShareRoot -LocalProjectRoot $LocalProjectRoot
-if ($isLocal) {
-    $ProjectRoot = $LocalProjectRoot
+
+# Destage is npm start: local UUP ISO in, local UUP PreSplit out (flat set folders).
+# Explicit -PreSplitOutputRoot from main.js still wins even if -DestageMedia failed to bind.
+$useDestageMedia = [bool]$DestageMedia -or -not [string]::IsNullOrWhiteSpace($PreSplitOutputRoot)
+$isLocal = (-not $useDestageMedia) -and (-not [string]::IsNullOrWhiteSpace($LocalProjectRoot))
+if ($useDestageMedia) {
+    $null = Initialize-LwDestageUupDirs
+    $uup = Get-LwDestageUupLayout
+    $ProjectRoot  = $uup.Root
+    $StagingRoot  = $uup.IsoRoot
+    $IsoRoot      = $uup.IsoRoot
+    $IsoFallbackRoot = ''
+    $PreSplitRoot = if (-not [string]::IsNullOrWhiteSpace($PreSplitOutputRoot)) {
+        $PreSplitOutputRoot
+    } else {
+        $uup.PreSplitRoot
+    }
 } else {
-    $ProjectRoot = Join-Path $ShareRoot 'Remote'
+    $shareLayout = Resolve-LwShareLayout -ShareRoot $ShareRoot -LocalProjectRoot $LocalProjectRoot
+    if ($isLocal) {
+        $ProjectRoot = $LocalProjectRoot
+    } else {
+        $ProjectRoot = Join-Path $ShareRoot 'Remote'
+    }
+    $StagingRoot  = $shareLayout.StagingRoot
+    $IsoRoot      = $shareLayout.IsoRoot
+    $PreSplitRoot = $shareLayout.PreSplitRoot
 }
-$StagingRoot  = $shareLayout.StagingRoot
-$IsoRoot      = $shareLayout.IsoRoot
-$PreSplitRoot = $shareLayout.PreSplitRoot
-$WriteRoot    = $PreSplitRoot
+$WriteRoot = $PreSplitRoot
+if ($useDestageMedia) {
+    if ([string]::IsNullOrWhiteSpace($WriteRoot)) {
+        EmitError 'destage: PreSplit output root is empty'; exit 1
+    }
+    if ($WriteRoot -match '^\\\\') {
+        EmitError "destage: refusing to write PreSplit to UNC share '$WriteRoot'. Output must be C:\Repos\Windows_Installation\UUP\25h2\PreSplit"; exit 1
+    }
+    try {
+        $uupPre = [IO.Path]::GetFullPath((Get-LwDestageUupLayout).PreSplitRoot).TrimEnd('\')
+        $writeFull = [IO.Path]::GetFullPath($WriteRoot).TrimEnd('\')
+        if ($writeFull -ne $uupPre) {
+            EmitError "destage: PreSplit output '$writeFull' is not the local UUP path '$uupPre'"; exit 1
+        }
+        $WriteRoot = $uupPre
+        $PreSplitRoot = $uupPre
+    } catch {
+        EmitError "destage: invalid PreSplit output '$WriteRoot' ($($_.Exception.Message))"; exit 1
+    }
+}
 
 # Launcher version for the manifest's producedByLauncherVersion field.
 $launcherVersion = 'unknown'
@@ -149,10 +210,12 @@ try {
     }
 } catch { }
 
-Emit @{ event='init'; stagingRoot=$StagingRoot; preSplitRoot=$PreSplitRoot; workflowType=$wfUpper; windowsEdition=$winEdition; local=$isLocal }
+Emit @{ event='init'; stagingRoot=$StagingRoot; preSplitRoot=$WriteRoot; isoRoot=$IsoRoot; isoFallbackRoot=$IsoFallbackRoot; workflowType=$wfUpper; windowsEdition=$winEdition; local=$isLocal; destageMedia=$useDestageMedia; writeRoot=$WriteRoot }
 
 # --- Share auth / reachability -----------------------------------------------
-if ($isLocal) {
+if ($useDestageMedia) {
+    EmitLog ('destage: ISO from local UUP {0} only (share ISO not read); flat PreSplit output {1} (AMD64 vs ARM64 by set folder name; share PreSplit writes forbidden)' -f $IsoRoot, $WriteRoot)
+} elseif ($isLocal) {
     EmitLog "local mode: staging pre-split set into the LOCAL Remote\Staging tree (for upload to the share); share auth skipped"
     if (-not (Test-Path -LiteralPath $LocalProjectRoot)) {
         EmitError "local mode: LocalProjectRoot not found: $LocalProjectRoot"; exit 1
@@ -188,31 +251,100 @@ if (-not [string]::IsNullOrWhiteSpace($IsoPath)) {
         EmitError "IsoPath '$($isoItem.Name)' is not a $winEdition ISO (arch $wfUpper)"; exit 1
     }
 } else {
-    $isoItem = Find-LWWindowsIso -StagingRoot $StagingRoot -IsoRoot $IsoRoot -Arch $wfUpper -Edition $winEdition
+    $isoFind = @{ StagingRoot = $StagingRoot; IsoRoot = $IsoRoot; Arch = $wfUpper; Edition = $winEdition }
+    $isoItem = Find-LWWindowsIso @isoFind
     if (-not $isoItem) {
+        $isoHint = $IsoRoot
         if ($winEdition -eq 'Home') {
-            EmitError (Get-LWMissingHomeIsoMessage -Arch $wfUpper -IsoHomeDir $IsoRoot)
+            EmitError (Get-LWMissingHomeIsoMessage -Arch $wfUpper -IsoHomeDir $isoHint)
         } else {
-            EmitError "no matching $winEdition *($wfUpper)*.iso found in $IsoRoot (name must include pro; legacy ISO\Pro still read)"
+            EmitError "no matching $winEdition *($wfUpper)*.iso found in $isoHint (name must include pro; legacy ISO\Pro still read)"
         }
         exit 1
+    }
+    if ($useDestageMedia) {
+        EmitLog ('destage: using local UUP ISO {0}' -f $isoItem.FullName)
     }
 }
 
 # --- Compute image-version identity + target ----------------------------------
 $imageVersion = Get-LWImageVersionId -Iso $isoItem -Edition $winEdition
 $Target       = Join-Path $WriteRoot $imageVersion
-EmitLog "pre-split: iso='$($isoItem.Name)' edition='$winEdition' imageVersion='$imageVersion' target='$Target'"
+$isoSizeGb    = [math]::Round($isoItem.Length / 1GB, 2)
+EmitLog ('pre-split: iso={0} ({1} GB) edition={2} imageVersion={3}' -f $isoItem.FullName, $isoSizeGb, $winEdition, $imageVersion)
+EmitLog ('pre-split: output root={0} target={1}' -f $WriteRoot, $Target)
 
-# --- Idempotent no-op when a valid set already exists (unless -Force) ---------
-if ((Test-Path -LiteralPath $Target) -and -not $Force) {
+# --- Skip vs write ------------------------------------------------------------
+# Destage (npm start): skip/current is LOCAL UUP PreSplit only. Share PreSplit
+# matching this ISO is ignored. Packaged still skips when share WriteRoot is valid.
+$skipStaged = $false
+if ($Force) {
+    if ($useDestageMedia) {
+        EmitLog ('destage split: -Force / Shift-click — re-staging into {0} (share PreSplit ignored)' -f $Target)
+    } else {
+        EmitLog ('force re-stage at {0}' -f $Target)
+    }
+} elseif ($useDestageMedia) {
+    $uupPre = [IO.Path]::GetFullPath((Get-LwDestageUupLayout).PreSplitRoot).TrimEnd('\')
+    $tgtFull = $null
+    try { $tgtFull = [IO.Path]::GetFullPath($Target).TrimEnd('\') } catch { }
+    $underUup = $tgtFull -and ($tgtFull -eq $uupPre -or $tgtFull.StartsWith($uupPre + '\', [StringComparison]::OrdinalIgnoreCase))
+    if (-not $underUup -or $Target -match '^\\\\' -or $WriteRoot -match '^\\\\') {
+        EmitError ('destage skip/current must use local UUP PreSplit only (got {0})' -f $Target)
+        exit 1
+    }
+    $nameOk = $true
+    if (Get-Command -Name Test-LWPreSplitFolderMatches -ErrorAction SilentlyContinue) {
+        $nameOk = [bool](Test-LWPreSplitFolderMatches -FolderName $imageVersion -Arch $bareArch -Edition $winEdition -RequireArchInName)
+    }
+    if (-not $nameOk) {
+        EmitLog ('destage split: set folder {0} is not a {1} {2} name - writing {3} (AMD64 current is not used for ARM64)' -f $imageVersion, $bareArch, $winEdition, $Target)
+    } elseif (-not (Test-Path -LiteralPath $Target)) {
+        EmitLog ('destage split: no local UUP {0} set at {1} (share PreSplit is ignored; other arches ignored) - writing SWMs/manifest/current' -f $bareArch, $Target)
+    } else {
+        $chk = Test-LWPreSplitSet -SetDir $Target
+        $isoMatch = $false
+        $manIso = ''
+        if ($chk.Valid -and $chk.Manifest) {
+            if ($chk.Manifest.PSObject.Properties['source'] -and $chk.Manifest.source) {
+                $src = $chk.Manifest.source
+                $manIso = [string]$src.isoName
+                $isoMatch = ($manIso -eq $isoItem.Name) -and ([long]$src.isoSizeBytes -eq [long]$isoItem.Length)
+            }
+            if ($chk.Manifest.PSObject.Properties['arch'] -and $chk.Manifest.arch) {
+                $manArch = [string]$chk.Manifest.arch
+                if ($manArch -match 'ARM') { $manArch = 'ARM64' } elseif ($manArch -match 'AMD' -or $manArch -match 'X64') { $manArch = 'AMD64' }
+                if ($manArch -ne $bareArch) {
+                    EmitLog ('destage split: local set at {0} is arch {1}, not {2} - writing' -f $Target, $manArch, $bareArch)
+                    $isoMatch = $false
+                    $chk = [pscustomobject]@{ Valid = $false; Reason = 'arch mismatch' }
+                }
+            }
+        }
+        if ($chk.Valid -and $isoMatch) {
+            EmitLog ('destage skip: local UUP {0} already has a valid matching set at {1} (share PreSplit not used; other arches ignored). Shift-click / -Force to re-stage.' -f $bareArch, $Target)
+            $skipStaged = $true
+        } elseif ($chk.Valid) {
+            EmitLog ('destage split: local UUP set at {0} does not match this ISO (manifest {1} vs {2}) - writing' -f $Target, $manIso, $isoItem.Name)
+        } else {
+            EmitLog ('destage split: local UUP set at {0} is invalid ({1}) - writing' -f $Target, $chk.Reason)
+        }
+    }
+} elseif ((Test-Path -LiteralPath $Target)) {
     $chk = Test-LWPreSplitSet -SetDir $Target
     if ($chk.Valid) {
-        EmitLog "already-staged: a valid pre-split set for '$($isoItem.Name)' exists at $Target - nothing to do (pass -Force to re-stage)"
-        EmitDone $true 'already-staged'
-        exit 0
+        EmitLog ('already-staged: a valid pre-split set for {0} exists at {1} - nothing to do (pass -Force to re-stage)' -f $isoItem.Name, $Target)
+        $skipStaged = $true
+    } else {
+        EmitLog ('existing set at {0} is invalid ({1}) - re-staging over it' -f $Target, $chk.Reason)
     }
-    EmitLog "existing set at $Target is invalid ($($chk.Reason)) - re-staging over it"
+} else {
+    EmitLog ('split: no set at {0} - writing' -f $Target)
+}
+
+if ($skipStaged) {
+    EmitDone $true 'already-staged'
+    exit 0
 }
 
 # --- Produce the set ----------------------------------------------------------
@@ -275,6 +407,9 @@ try {
     # -- Copy the set to a temp sibling of the final target (atomic swap later) --
     EmitPhase 'stage-copy'
     EmitProgress 'stage-copy' 0
+    if ($useDestageMedia -and ($WriteRoot -match '^\\\\')) {
+        throw "destage: refusing UNC PreSplit write '$WriteRoot'"
+    }
     New-Item -ItemType Directory -Force -Path $WriteRoot | Out-Null
     $tmpTarget = "$Target.tmp-" + [guid]::NewGuid().ToString('N').Substring(0, 8)
     New-Item -ItemType Directory -Force -Path $tmpTarget | Out-Null
@@ -358,7 +493,9 @@ try {
     EmitProgress 'stage-verify' 100
 
     EmitLog "staged pre-split set at $Target ($($chunkFiles.Count) chunk(s), sourceKind=$sourceKind, imageVersion=$imageVersion)"
-    if ($isLocal) {
+    if ($useDestageMedia) {
+        EmitLog "destage: Rebuild from npm start reads this local UUP PreSplit set (packaged builds still use share PreSplit)"
+    } elseif ($isLocal) {
         EmitLog "local mode: upload '$WriteRoot' to the share to make this set available to network builds"
     }
     EmitDone $true 'staged'

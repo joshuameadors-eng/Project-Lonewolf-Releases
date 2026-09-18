@@ -268,6 +268,36 @@ if ([string]::IsNullOrWhiteSpace($script:ThisScriptVersion)) { $script:ThisScrip
 $script:UiVersion = $script:ThisScriptVersion
 $script:FbProductDisplayVersion = $FirstBaseProductVersion
 
+$script:FbSplashOsCurrentBuild = 0
+$script:FbSplashOsDisplayVersion = ''
+$script:FbSplashOsAlready25H2 = $false
+try {
+    $fbSplashCv = Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion' -ErrorAction Stop
+    try { $script:FbSplashOsCurrentBuild = [int]$fbSplashCv.CurrentBuild } catch {
+        try { $script:FbSplashOsCurrentBuild = [int]$fbSplashCv.CurrentBuildNumber } catch { $script:FbSplashOsCurrentBuild = 0 }
+    }
+    try { $script:FbSplashOsDisplayVersion = ([string]$fbSplashCv.DisplayVersion).Trim() } catch { $script:FbSplashOsDisplayVersion = '' }
+    if ($script:FbSplashOsCurrentBuild -ge 26100) {
+        $script:FbSplashOsAlready25H2 = $true
+    } elseif ($script:FbSplashOsDisplayVersion -match '(?i)25\s*H\s*2') {
+        $script:FbSplashOsAlready25H2 = $true
+    }
+} catch {}
+
+function Test-FbSplashIsRedundant25H2Title {
+    param([string]$Title = '')
+    $t = [string]$Title
+    if ([string]::IsNullOrWhiteSpace($t)) { return $false }
+    if ($t -match '(?i)Cumulative\s+Update|Security\s+Intelligence|Servicing\s+Stack|\.NET\s+Framework|Malicious\s+Software|Definition\s+Update|Quality\s+Update|Monthly\s+Rollup|\bLCU\b|\bSSU\b') {
+        return $false
+    }
+    if ($t -match '(?i)KB5054156') { return $true }
+    if ($t -match '(?i)enablement\s+package' -and $t -match '(?i)25\s*H\s*2') { return $true }
+    if ($t -match '(?i)(?:feature\s+update\s+to\s+)?(?:windows|win)\s*11,?\s*version\s*25\s*H\s*2') { return $true }
+    if ($t -match '(?i)^(?:windows|win)\s*11\s*25\s*H\s*2') { return $true }
+    return $false
+}
+
 $FbRoot = 'C:\Windows\Setup\FirstBase'
 $LogDir = Join-Path $FbRoot 'Logs'
 $Marker = 'C:\Windows\Setup\Scripts\FirstBase-Updates-Done.flag'
@@ -1703,6 +1733,9 @@ try {
     if (Test-Path -LiteralPath $fbIdentityPs1) {
         . $fbIdentityPs1
         $idRoots = New-Object System.Collections.Generic.List[string]
+        # Local payload first so a production C: stamp is not overridden by a destage USB.
+        if ($PSScriptRoot) { [void]$idRoots.Add($PSScriptRoot) }
+        [void]$idRoots.Add('C:\Windows\Setup\FirstBase')
         try {
             Get-CimInstance -ClassName Win32_LogicalDisk -Filter 'DriveType=2' -ErrorAction SilentlyContinue | ForEach-Object {
                 $usbRoot = $_.DeviceID + '\'
@@ -1710,8 +1743,6 @@ try {
                 [void]$idRoots.Add((Join-Path $usbRoot 'FirstBase\WUPayload'))
             }
         } catch {}
-        if ($PSScriptRoot) { [void]$idRoots.Add($PSScriptRoot) }
-        [void]$idRoots.Add('C:\Windows\Setup\FirstBase')
         $fbIdentity = Get-FbBuildIdentity -PayloadRoot @($idRoots)
     }
     $showDestageDev = $false
@@ -3006,6 +3037,10 @@ function Get-StatusFromStateFile {
         $updates = @()
         foreach ($u in @($obj.updates)) {
             if (-not $u) { continue }
+            $rowTitle = [string]$u.Title
+            if ($script:FbSplashOsAlready25H2 -and (Test-FbSplashIsRedundant25H2Title -Title $rowTitle)) {
+                continue
+            }
             $visual = Get-StatusVisual -Status ([string]$u.Status)
             $updates += [pscustomobject]@{
                 Title   = (Convert-FbSplashTextToAscii -Text ([string]$u.Title))
@@ -3056,6 +3091,9 @@ function Set-FbSplashUpdatesContent {
     param([object[]]$Items)
     $list = @()
     if ($null -ne $Items) { $list = @($Items) }
+    if ($script:FbSplashOsAlready25H2 -and $list.Count -gt 0) {
+        $list = @($list | Where-Object { $_ -and -not (Test-FbSplashIsRedundant25H2Title -Title ([string]$_.Title)) })
+    }
     if ($list.Count -gt 0) {
         $script:FbSplashLastKnownUpdates = $list
     } elseif (-not $script:FbSplashHandoffLayoutActive -and @($script:FbSplashLastKnownUpdates).Count -gt 0) {

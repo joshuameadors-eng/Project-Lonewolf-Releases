@@ -3,8 +3,10 @@
 :: fb-im.cmd -- FirstBase technician tool
 ::
 :: Usage:
-::   fb-im.cmd                -> LoneWolf WPF technician window
-::   fb-im.cmd -Action Status -> same window (status check on open)
+::   fb-im.cmd   -> always open the LoneWolf WPF technician window
+::
+:: Typing this path in cmd / PowerShell / Windows Terminal always launches
+:: the tool. Extra arguments are ignored (never -Action Status first).
 ::
 :: This launcher is the only technician entry point staged at the USB ROOT, so
 :: a tech sees it as soon as they open the stick (D:\fb-im.cmd). fb-dump.cmd is
@@ -21,7 +23,9 @@
 :: Window: device ready check, restart updates, pass hardware check,
 :: collect logs, Restart, Shutdown, and seal (sysprep /oobe).
 :: ============================================================================
-setlocal EnableExtensions EnableDelayedExpansion
+:: Do not EnableDelayedExpansion: "start" + quoted -UsbToolsDir "D:\...\Tools\"
+:: is the classic  ". was not expected at this time  parse error.
+setlocal EnableExtensions
 
 :: -------- PS resolution (WinPE-safe) ----------------------------------------
 set "FB_PS="
@@ -62,7 +66,7 @@ if not defined FB_IM_PS1 (
     exit /b 1
 )
 
-:: -------- Launch log (no console noise) --------------------------------------
+:: -------- Launch log ---------------------------------------------------------
 set "FB_USB_DRIVE=%~d0"
 if not exist "%FB_USB_DRIVE%\FirstBase-Logs\" mkdir "%FB_USB_DRIVE%\FirstBase-Logs" >nul 2>&1
 attrib -H -S "%FB_USB_DRIVE%\FirstBase-Logs" >nul 2>&1
@@ -72,13 +76,15 @@ set "FB_IM_LOG=%FB_USB_DRIVE%\FirstBase-Logs\fb-im-last-launch.log"
 >>"%FB_IM_LOG%" echo cwd=%CD%
 >>"%FB_IM_LOG%" echo ps=%FB_PS%
 >>"%FB_IM_LOG%" echo ps1=%FB_IM_PS1%
-set "FB_IM_ARGS=%*"
->>"%FB_IM_LOG%" echo args=%FB_IM_ARGS%
+>>"%FB_IM_LOG%" echo typedArgs=%*
+:: Always open the WPF tool. Do not forward stray Terminal quotes as -Action.
+set "FB_IM_ARGS="
 
-:: Stick Tools dir for identity / fb-dump after the TEMP copy. Strip trailing
-:: backslash so -UsbToolsDir "D:\...\Tools" is not eaten by cmd quoting.
+:: Stick Tools dir for identity / fb-dump after the TEMP copy.
+:: %%~dpI always ends in \ ; strip it unconditionally (no IF "\" which parses as
+:: an escaped quote and throws  ". was not expected at this time ).
 for %%I in ("%FB_IM_PS1%") do set "FB_IM_USB_TOOLS=%%~dpI"
-if defined FB_IM_USB_TOOLS if "%FB_IM_USB_TOOLS:~-1%"=="\" set "FB_IM_USB_TOOLS=%FB_IM_USB_TOOLS:~0,-1%"
+set "FB_IM_USB_TOOLS=%FB_IM_USB_TOOLS:~0,-1%"
 >>"%FB_IM_LOG%" echo usbTools=%FB_IM_USB_TOOLS%
 
 :: Local host folder. RunAs + USB cwd is Access denied on other PCs.
@@ -111,8 +117,9 @@ if not exist "%FB_IM_HOST%\fb-im.ps1" (
 )
 >>"%FB_IM_LOG%" echo host=%FB_IM_HOST%
 
-:: Leave the USB working directory BEFORE start / UAC. start /D is local.
-:: Relative -File fb-im.ps1 avoids start.exe quote-eating on paths with spaces.
+:: Leave the USB working directory BEFORE UAC. Do not use cmd start — stacked
+:: quotes around powershell.exe + -UsbToolsDir "D:\...\Tools" throw
+::  ". was not expected at this time  and never open the tool.
 pushd "%FB_IM_HOST%"
 if errorlevel 1 (
     echo.
@@ -123,9 +130,12 @@ if errorlevel 1 (
     exit /b 1
 )
 
-start "" /D "%FB_IM_HOST%" "%FB_PS%" -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File fb-im.ps1 -LaunchHost -UsbToolsDir "%FB_IM_USB_TOOLS%"
+echo.
+echo   Opening FirstBase technician tools
+echo.
+"%FB_PS%" -NoProfile -ExecutionPolicy Bypass -File "%FB_IM_HOST%\fb-im.ps1" -LaunchHost -UsbToolsDir "%FB_IM_USB_TOOLS%"
 set "FB_START_EC=%ERRORLEVEL%"
->>"%FB_IM_LOG%" echo launched=local-host startEc=%FB_START_EC%
+>>"%FB_IM_LOG%" echo launched=local-host launchEc=%FB_START_EC%
 if not "%FB_START_EC%"=="0" (
     echo.
     echo  [ERROR] Could not start fb-im (code %FB_START_EC%).

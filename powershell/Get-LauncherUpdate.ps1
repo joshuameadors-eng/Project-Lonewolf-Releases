@@ -82,10 +82,11 @@ try {
 
     if ($latestVersion -and $CurrentVersion) {
         $cmp = Compare-SemVer $latestVersion $CurrentVersion
-        if ($cmp -gt 0) {
+        if ($cmp -ne 0) {
             $output.updateAvailable = $true
             $output.exePath = $exeUrl
-        } elseif ($cmp -lt 0) {
+        }
+        if ($cmp -lt 0) {
             $output.launcherAhead = $true
         }
     }

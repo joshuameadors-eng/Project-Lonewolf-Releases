@@ -1205,6 +1205,20 @@ if errorlevel 1 (
     call :LOG "Autopilot enrollment endpoint firewall block rules added."
 )
 
+:: 5b) Microsoft Edge (UUP dump ISOs often omit it). After ARM so a slow MSI
+:: cannot block loop triggers. Best-effort; WU loop and YouTube PASS retry if needed.
+if exist "%FB_ROOT%\Install-FbMicrosoftEdge.ps1" (
+    call :LOG "Installing Microsoft Edge from payload if missing (UUP images omit Edge; YouTube PASS needs it)"
+    "%FB_PS%" -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "%FB_ROOT%\Install-FbMicrosoftEdge.ps1" >> "%FB_LOG%" 2>&1 <nul
+    if errorlevel 1 (
+        call :LOG "WARN: Edge install returned non-zero; WU loop / YouTube PASS will retry."
+    ) else (
+        call :LOG "Microsoft Edge present or installed."
+    )
+) else (
+    call :LOG "NOTE: Install-FbMicrosoftEdge.ps1 missing under %FB_ROOT%; YouTube PASS may fail on UUP images without Edge."
+)
+
 :: 5) Recovery-screen suppression (still before the audit reboot).
 call :SUPPRESS_RECOVERY_SCREEN
 if errorlevel 1 call :LOG "WARN: Recovery screen suppression returned non-zero; pipeline reboots may show recovery screen"

@@ -171,6 +171,76 @@ function Initialize-FbWuEnvironment {
     } catch {}
 }
 
+function Get-FbOsVersionIdentity {
+    <#
+    .SYNOPSIS
+        CurrentBuild + DisplayVersion from HKLM NT\CurrentVersion.
+        Already25H2: LoneWolf ships 25H2 media on the 26100 platform.
+        WU still re-offers the 25H2 feature/enablement package (and
+        Settings shows it after OOBE if it is not IsHidden). Treat
+        CurrentBuild >= 26100 as already on that platform so the
+        feature offer is hidden. Quality/LCU/driver updates still install.
+    #>
+    $build = 0
+    $dv = ''
+    try {
+        $cv = Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion' -ErrorAction Stop
+        try { $build = [int]$cv.CurrentBuild } catch {
+            try { $build = [int]$cv.CurrentBuildNumber } catch { $build = 0 }
+        }
+        try { $dv = ([string]$cv.DisplayVersion).Trim() } catch { $dv = '' }
+    } catch {}
+    $already = $false
+    if ($build -ge 26100) {
+        $already = $true
+    } elseif ($dv -match '(?i)25\s*H\s*2') {
+        $already = $true
+    }
+    return [pscustomobject]@{
+        CurrentBuild   = $build
+        DisplayVersion = $dv
+        Already25H2    = [bool]$already
+    }
+}
+
+function Test-FbIsRedundant25H2FeatureUpdate {
+    <#
+    .SYNOPSIS
+        True for the Windows 11 25H2 feature/enablement re-offer (KB5054156
+        or title "Windows 11, version 25H2"). False for quality/security/LCU/SSU.
+    #>
+    param(
+        [string]$Title = '',
+        [string]$KB = '',
+        [object]$KBArticleIDs = $null
+    )
+    $t = [string]$Title
+    if ([string]::IsNullOrWhiteSpace($t) -and [string]::IsNullOrWhiteSpace($KB) -and $null -eq $KBArticleIDs) {
+        return $false
+    }
+    if ($t -match '(?i)Cumulative\s+Update|Security\s+Intelligence|Servicing\s+Stack|\.NET\s+Framework|Malicious\s+Software|Definition\s+Update|Quality\s+Update|Monthly\s+Rollup|\bLCU\b|\bSSU\b') {
+        return $false
+    }
+    $kbBlob = ([string]$KB)
+    foreach ($k in @($KBArticleIDs)) {
+        if ($k) { $kbBlob = ($kbBlob + '|' + [string]$k) }
+    }
+    if ($kbBlob -match '5054156' -or $t -match '(?i)KB5054156') {
+        return $true
+    }
+    if ($t -match '(?i)enablement\s+package' -and $t -match '(?i)25\s*H\s*2') {
+        return $true
+    }
+    # "Windows 11, version 25H2" / "Windows 11 version 25H2" / "Win11 25H2"
+    if ($t -match '(?i)(?:feature\s+update\s+to\s+)?(?:windows|win)\s*11,?\s*version\s*25\s*H\s*2') {
+        return $true
+    }
+    if ($t -match '(?i)^(?:windows|win)\s*11\s*25\s*H\s*2') {
+        return $true
+    }
+    return $false
+}
+
 function Invoke-FbWuScan {
     <#
     .SYNOPSIS
@@ -184,6 +254,9 @@ function Invoke-FbWuScan {
         We instead always run `IsInstalled=0 and IsHidden=0`. Classifier
         labels (Critical / Driver / Cumulative / Optional) are log-only;
         each pass installs every offered update in one download/install cycle.
+        When the OS is already 25H2, the 25H2 feature/enablement re-offer
+        (title "Windows 11, version 25H2" / KB5054156) is IsHidden and
+        dropped from the returned list so it never reaches the splash.
 
         Legacy parameters (CategoryFilters / ExcludeCategories / TypeFilter)
         are accepted but IGNORED.
@@ -197,8 +270,13 @@ function Invoke-FbWuScan {
         [int]$TimeoutSeconds = 1800
     )
 
+    $osId = Get-FbOsVersionIdentity
+    try {
+        Write-FbLog ("OS identity for WU scan: CurrentBuild={0} DisplayVersion={1} Already25H2={2}" -f $osId.CurrentBuild, $osId.DisplayVersion, $osId.Already25H2) 'INFO'
+    } catch {}
+
     $job = Start-Job -ScriptBlock {
-        param($muServiceId)
+        param($muServiceId, $already25H2, $osBuild, $osDisplayVersion)
         $ErrorActionPreference = 'Stop'
 
         $svcManager = New-Object -ComObject Microsoft.Update.ServiceManager
@@ -220,6 +298,8 @@ function Invoke-FbWuScan {
         $cumulativeKeywordHints = @('Cumulative','Rollup','Servicing Stack','Latest Cumulative','LCU','SSU')
 
         $updates = @()
+        $hidden25H2 = @()
+        $hideFeature = [bool]$already25H2
         for ($i = 0; $i -lt $result.Updates.Count; $i++) {
             $u = $result.Updates.Item($i)
 
@@ -248,6 +328,39 @@ function Invoke-FbWuScan {
 
             $title = [string]$u.Title
             $catBlob = (($catNames -join '|') + '|' + $title)
+            $kb0 = if ($kbList.Count -gt 0) { [string]$kbList[0] } else { '' }
+            $kbBlob = ($kbList -join '|')
+
+            $isRedundant25H2 = $false
+            if ($hideFeature) {
+                $quality = $title -match '(?i)Cumulative\s+Update|Security\s+Intelligence|Servicing\s+Stack|\.NET\s+Framework|Malicious\s+Software|Definition\s+Update|Quality\s+Update|Monthly\s+Rollup|\bLCU\b|\bSSU\b'
+                if (-not $quality) {
+                    if ($kbBlob -match '5054156' -or $title -match '(?i)KB5054156') {
+                        $isRedundant25H2 = $true
+                    } elseif ($title -match '(?i)enablement\s+package' -and $title -match '(?i)25\s*H\s*2') {
+                        $isRedundant25H2 = $true
+                    } elseif ($title -match '(?i)(?:feature\s+update\s+to\s+)?(?:windows|win)\s*11,?\s*version\s*25\s*H\s*2') {
+                        $isRedundant25H2 = $true
+                    } elseif ($title -match '(?i)^(?:windows|win)\s*11\s*25\s*H\s*2') {
+                        $isRedundant25H2 = $true
+                    }
+                }
+            }
+            if ($isRedundant25H2) {
+                $uid = ''
+                try { $uid = [string]$u.Identity.UpdateID } catch {}
+                $hidOk = $false
+                try { $u.IsHidden = $true; $hidOk = $true } catch {}
+                $hidden25H2 += [pscustomobject]@{
+                    Title          = $title
+                    UpdateId       = $uid
+                    KB             = $kb0
+                    HideOk         = $hidOk
+                    CurrentBuild   = $osBuild
+                    DisplayVersion = $osDisplayVersion
+                }
+                if ($hidOk) { continue }
+            }
 
             $bucket = 'Optional'
             if ($rawType -eq 2) {
@@ -268,7 +381,7 @@ function Invoke-FbWuScan {
                 Title        = $title
                 UpdateId     = [string]$u.Identity.UpdateID
                 RevisionNum  = [int]$u.Identity.RevisionNumber
-                KB           = if ($kbList.Count -gt 0) { [string]$kbList[0] } else { '' }
+                KB           = $kb0
                 KBArticleIDs = @($kbList)
                 Categories   = @($catNames)
                 Type         = $typeStr
@@ -282,8 +395,11 @@ function Invoke-FbWuScan {
             }
         }
 
-        return $updates
-    } -ArgumentList $script:FbWuMicrosoftUpdateServiceId
+        return [pscustomobject]@{
+            Updates    = @($updates)
+            Hidden25H2 = @($hidden25H2)
+        }
+    } -ArgumentList $script:FbWuMicrosoftUpdateServiceId, [bool]$osId.Already25H2, [int]$osId.CurrentBuild, [string]$osId.DisplayVersion
 
     if (-not (Wait-Job -Job $job -Timeout $TimeoutSeconds)) {
         Stop-Job -Job $job -ErrorAction SilentlyContinue | Out-Null
@@ -292,7 +408,26 @@ function Invoke-FbWuScan {
     }
 
     try {
-        return @(Receive-Job -Job $job -ErrorAction Stop)
+        $payload = Receive-Job -Job $job -ErrorAction Stop
+        $hiddenRows = @()
+        $rows = @()
+        if ($null -eq $payload) {
+            $rows = @()
+        } elseif ($payload -is [System.Array]) {
+            $rows = @($payload)
+        } elseif ($payload.PSObject -and ($payload.PSObject.Properties.Name -contains 'Updates')) {
+            $rows = @($payload.Updates)
+            try { $hiddenRows = @($payload.Hidden25H2) } catch { $hiddenRows = @() }
+        } else {
+            $rows = @($payload)
+        }
+        foreach ($h in $hiddenRows) {
+            if (-not $h) { continue }
+            try {
+                Write-FbLog ("Scan-time hide 25H2 feature/enablement: Title='{0}' KB={1} Id={2} HideOk={3} (OS build={4} DisplayVersion={5})" -f $h.Title, $h.KB, $h.UpdateId, $h.HideOk, $h.CurrentBuild, $h.DisplayVersion) 'WARN'
+            } catch {}
+        }
+        return @($rows)
     } finally {
         Remove-Job -Job $job -Force -ErrorAction SilentlyContinue | Out-Null
     }
@@ -1355,6 +1490,8 @@ function Invoke-FbWuApply {
     $target = $null
     $rescanFoundIds = @()
     $rescanTotalCount = 0
+    $osIdApply = $null
+    try { $osIdApply = Get-FbOsVersionIdentity } catch { $osIdApply = $null }
     try {
         $result = $searcher.Search("IsInstalled=0 and IsHidden=0")
         $rescanTotalCount = [int]$result.Updates.Count
@@ -1364,6 +1501,26 @@ function Invoke-FbWuApply {
             $uid = [string]$u.Identity.UpdateID
             $rescanFoundIds += $uid
             if ($UpdateIds -contains $uid) {
+                $skip25 = $false
+                if ($osIdApply -and $osIdApply.Already25H2) {
+                    $applyTitle = ''
+                    try { $applyTitle = [string]$u.Title } catch {}
+                    $applyKbs = @()
+                    try {
+                        for ($ak = 0; $ak -lt $u.KBArticleIDs.Count; $ak++) {
+                            $applyKbs += ('KB' + [string]$u.KBArticleIDs.Item($ak))
+                        }
+                    } catch {}
+                    $applyKb0 = if ($applyKbs.Count -gt 0) { [string]$applyKbs[0] } else { '' }
+                    if (Test-FbIsRedundant25H2FeatureUpdate -Title $applyTitle -KB $applyKb0 -KBArticleIDs $applyKbs) {
+                        $skip25 = $true
+                        try { $u.IsHidden = $true } catch {}
+                        try {
+                            Write-FbLog ("Apply-time skip 25H2 feature/enablement: Title='{0}' KB={1} Id={2} (OS already 25H2)" -f $applyTitle, $applyKb0, $uid) 'WARN'
+                        } catch {}
+                    }
+                }
+                if ($skip25) { continue }
                 try { if (-not $u.EulaAccepted) { $null = $u.AcceptEula() } } catch {}
                 [void]$target.Add($u)
             }

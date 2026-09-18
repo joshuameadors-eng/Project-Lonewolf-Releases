@@ -160,11 +160,13 @@ function Get-LoneWolfInfo {
         lwWorkflowType = $null
         lwDevBuild = $false
         lwLauncherVersion = $null
+        lwPayloadVersion = $null
         lwScriptVersion = $null
         lwShareLauncherVersion = $null
         lwShareScriptVersion = $null
         lwImageBuildDate = $null
         lwWimBuildDate = $null
+        lwBuiltAt = $null
         lwArch = $null
         lwArchLabel = $null
         lwWindowsEdition = $null
@@ -252,11 +254,19 @@ function Get-LoneWolfInfo {
                     } catch {}
                     try {
                         if ($lwJson.PSObject.Properties['payloadVersion'] -and $lwJson.payloadVersion) {
+                            $lwInfo.lwPayloadVersion = [string]$lwJson.payloadVersion
                             $lwInfo.lwScriptVersion = [string]$lwJson.payloadVersion
                         } elseif ($lwJson.PSObject.Properties['scriptVersion'] -and $lwJson.scriptVersion) {
+                            $lwInfo.lwPayloadVersion = [string]$lwJson.scriptVersion
                             $lwInfo.lwScriptVersion = [string]$lwJson.scriptVersion
                         } elseif ($lwJson.version) {
+                            $lwInfo.lwPayloadVersion = [string]$lwJson.version
                             $lwInfo.lwScriptVersion = [string]$lwJson.version
+                        }
+                    } catch {}
+                    try {
+                        if ($lwJson.PSObject.Properties['builtAt'] -and $lwJson.builtAt) {
+                            $lwInfo.lwBuiltAt = [string]$lwJson.builtAt
                         }
                     } catch {}
                     try {
@@ -342,11 +352,13 @@ try {
                 lwWorkflowType = $lwInfo.lwWorkflowType
                 lwDevBuild     = [bool]$lwInfo.lwDevBuild
                 lwLauncherVersion = $lwInfo.lwLauncherVersion
+                lwPayloadVersion = $lwInfo.lwPayloadVersion
                 lwScriptVersion = $lwInfo.lwScriptVersion
                 lwShareLauncherVersion = $lwInfo.lwShareLauncherVersion
                 lwShareScriptVersion = $lwInfo.lwShareScriptVersion
                 lwImageBuildDate = $lwInfo.lwImageBuildDate
                 lwWimBuildDate = $lwInfo.lwWimBuildDate
+                lwBuiltAt = $lwInfo.lwBuiltAt
                 lwArch         = $lwInfo.lwArch
                 lwArchLabel    = $lwInfo.lwArchLabel
                 lwWindowsEdition = $lwInfo.lwWindowsEdition

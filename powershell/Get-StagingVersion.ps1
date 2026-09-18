@@ -36,7 +36,8 @@ param(
     [string]$SharePassword    = 'mer*HWE0upt*rqe@dud',
     [string]$WorkflowType     = 'AMD64',
     [string]$WindowsEdition   = 'Pro',  # Home | Pro. Presplit/ISO identity; not LoneWolf vs Quick Install.
-    [string]$LocalProjectRoot = ''   # When non-empty: skip share auth and read from this local path instead
+    [string]$LocalProjectRoot = '',  # When non-empty: skip share auth and read from this local path instead
+    [switch]$DestageMedia            # npm start: local UUP ISO + local UUP PreSplit only
 )
 
 $ErrorActionPreference = 'SilentlyContinue'
@@ -71,17 +72,28 @@ $wfUpper = $WorkflowType.ToUpper()
 $winEdition = 'Pro'
 if ($WindowsEdition -match '^(?i)home$') { $winEdition = 'Home' }
 
-if ([string]::IsNullOrWhiteSpace($LocalProjectRoot) -and $ShareRoot -match '^\\\\') {
+if ([string]::IsNullOrWhiteSpace($LocalProjectRoot) -and -not $DestageMedia -and $ShareRoot -match '^\\\\') {
     $shareHost = 'WIN-HQ5JDEACV3S'
     if ($ShareRoot -match '^\\\\([^\\]+)\\') { $shareHost = $Matches[1] }
     Connect-ShareCredentials -ShareHost $shareHost -User $ShareUser -Pass $SharePassword
 }
 $shareLayoutLib = Join-Path $PSScriptRoot 'lib\Resolve-LwShareLayout.ps1'
 if (Test-Path -LiteralPath $shareLayoutLib) { . $shareLayoutLib }
-$shareLayout = Resolve-LwShareLayout -ShareRoot $ShareRoot -LocalProjectRoot $LocalProjectRoot
-$StagingRoot = $shareLayout.StagingRoot
-$isoRoot     = $shareLayout.IsoRoot
-$preSplitRootResolved = $shareLayout.PreSplitRoot
+$isoFallbackRoot = ''
+if ($DestageMedia) {
+    # Destage Stage chip: local UUP ISO + local UUP PreSplit only (no share ISO).
+    $destageLayout = Resolve-LwDestageMediaLayout -ShareRoot $ShareRoot
+    $isoRoot     = $destageLayout.IsoRoot
+    $isoFallbackRoot = ''
+    $preSplitRootResolved = $destageLayout.PreSplitRoot
+    $shareLayout = $destageLayout
+    $StagingRoot = $destageLayout.UupRoot
+} else {
+    $shareLayout = Resolve-LwShareLayout -ShareRoot $ShareRoot -LocalProjectRoot $LocalProjectRoot
+    $StagingRoot = $shareLayout.StagingRoot
+    $isoRoot     = $shareLayout.IsoRoot
+    $preSplitRootResolved = $shareLayout.PreSplitRoot
+}
 # WIM stays under Staging\<ARCH>\<ARCH>.wim (legacy Remote\Staging when that tree exists).
 $wimPath     = Join-Path $StagingRoot "$wfUpper\$wfUpper.wim"
 
@@ -104,8 +116,10 @@ $output = [ordered]@{
     isoMissingReason     = $null
     shareLayout          = [string]$shareLayout.Layout
     isoRoot              = $isoRoot
+    isoFallbackRoot      = $isoFallbackRoot
     preSplitRoot         = $preSplitRootResolved
     wpeOcRoot            = [string]$shareLayout.WpeOcRoot
+    destageMedia         = [bool]$DestageMedia
 }
 
 # Product version and arch enablement come from this script's VERSION.json
@@ -178,10 +192,12 @@ if (Test-Path -LiteralPath $splitLib) {
 }
 
 # --- ISO availability: Staging\ISO\ (home/pro in filename); legacy ISO\<SKU>\ ----
+$foundIso = $null
 try {
-    $foundIso = $null
     if ($splitLibLoaded -and (Get-Command -Name Find-LWWindowsIso -ErrorAction SilentlyContinue)) {
-        $foundIso = Find-LWWindowsIso -StagingRoot $StagingRoot -IsoRoot $isoRoot -Arch $wfUpper -Edition $winEdition
+        $isoFindStaging = if ($DestageMedia) { $isoRoot } else { $StagingRoot }
+        $isoFind = @{ StagingRoot = $isoFindStaging; IsoRoot = $isoRoot; Arch = $wfUpper; Edition = $winEdition }
+        $foundIso = Find-LWWindowsIso @isoFind
     }
     if ($foundIso) {
         $output.isoAvailable = $true
@@ -193,7 +209,8 @@ try {
             $output.architectures[$wfUpper].wimBuildDate = $isoYmd
         }
     } elseif ($winEdition -eq 'Home') {
-        $output.isoMissingReason = "No Windows Home ISO for $wfUpper in $isoRoot. Place a *($wfUpper)*.iso with home in the name under ISO\ (do not use the Pro image)."
+        $isoHint = $isoRoot
+        $output.isoMissingReason = "No Windows Home ISO for $wfUpper in $isoHint. Place a *($wfUpper)*.iso with home in the name under ISO\ (do not use the Pro image)."
     }
 } catch { }
 
@@ -203,10 +220,21 @@ try {
 try {
     if ($splitLibLoaded) {
         $preSplitRoot = $preSplitRootResolved
-        if ([string]::IsNullOrWhiteSpace($preSplitRoot)) { $preSplitRoot = Join-Path $StagingRoot 'PreSplit' }
+        if ($DestageMedia) {
+            # Destage skip/current is local UUP PreSplit only — never share PreSplit.
+            if ([string]::IsNullOrWhiteSpace($preSplitRoot) -or $preSplitRoot -match '^\\\\') {
+                $preSplitRoot = (Get-LwDestageUupLayout).PreSplitRoot
+            }
+        } elseif ([string]::IsNullOrWhiteSpace($preSplitRoot)) {
+            $preSplitRoot = Join-Path $StagingRoot 'PreSplit'
+        }
         $psIso = $null
-        if ($output.isoFile) {
-            foreach ($dir in @(Get-LWIsoSearchDirs -StagingRoot $StagingRoot -IsoRoot $isoRoot -Edition $winEdition)) {
+        if ($foundIso -and (Test-Path -LiteralPath $foundIso.FullName)) {
+            $psIso = $foundIso
+        } elseif ($output.isoFile) {
+            $isoSearchStaging = if ($DestageMedia) { $isoRoot } else { $StagingRoot }
+            $isoSearchDirs = @(Get-LWIsoSearchDirs -StagingRoot $isoSearchStaging -IsoRoot $isoRoot -Edition $winEdition)
+            foreach ($dir in $isoSearchDirs) {
                 $p = Join-Path $dir $output.isoFile
                 if (Test-Path -LiteralPath $p) { $psIso = Get-Item -LiteralPath $p; break }
             }
@@ -233,6 +261,15 @@ try {
             } elseif ($winEdition -ne 'Pro') {
                 continue
             }
+            $manArch = $null
+            try {
+                if ($chk.Manifest.PSObject.Properties['arch'] -and $chk.Manifest.arch) {
+                    $manArch = Get-LWBareArch ([string]$chk.Manifest.arch)
+                }
+            } catch { }
+            if ($manArch -and $manArch -ne (Get-LWBareArch $wfUpper)) { continue }
+            $setLeaf = Split-Path -Leaf $setDir
+            if (-not (Test-LWPreSplitFolderMatches -FolderName $setLeaf -Arch $wfUpper -Edition $winEdition)) { continue }
             if (-not $output.preSplitAvailable) {
                 $output.preSplitAvailable    = $true
                 $output.preSplitImageVersion = [string]$chk.Manifest.imageVersion

@@ -13,8 +13,10 @@
     Runs FROM THE STICK against the C: install. Elevation via fb-im.cmd (-STA).
     fb-im.cmd copies this file to %LOCALAPPDATA% (or %TEMP%) and re-launches with
     -LaunchHost so UAC RunAs is not aimed at a USB working directory.
+    Typing fb-im.cmd always opens this window (never a status-only first pass).
 .PARAMETER Action
-    Menu (default WPF), Status, Updates, or Dump (opens WPF focused on that job).
+    Menu (default WPF), Updates, or Dump. Status is accepted as Menu — the
+    window opens immediately; device status refreshes after the UI is up.
 .PARAMETER Force
     Accepted for compatibility; restart no longer prompts on the happy path.
 .PARAMETER LaunchHost
@@ -69,14 +71,13 @@ if ($LaunchHost -and -not $Library) {
             [void]$list.Add($a)
         }
         if ($usb) { [void]$list.Add('-UsbToolsDir'); [void]$list.Add($usb) }
-        if ($env:FB_IM_ARGS) {
-            foreach ($p in @($env:FB_IM_ARGS -split ' ' | Where-Object { $_ })) { [void]$list.Add([string]$p) }
-        }
+        # Do not forward FB_IM_ARGS / stray Terminal quotes as -Action Status.
         $sp = @{
             FilePath         = $psExe
             WorkingDirectory = $here
             WindowStyle      = 'Hidden'
             ArgumentList     = $list.ToArray()
+            PassThru         = $true
         }
         $wid = [Security.Principal.WindowsIdentity]::GetCurrent()
         $admin = (New-Object Security.Principal.WindowsPrincipal($wid)).IsInRole(
@@ -86,8 +87,39 @@ if ($LaunchHost -and -not $Library) {
         Write-FbImLaunchLog ('LaunchHost usb=' + $usb)
         Write-FbImLaunchLog ('LaunchHost admin=' + $admin)
         Write-FbImLaunchLog ('LaunchHost wd=' + $here)
-        Start-Process @sp
-        Write-FbImLaunchLog 'LaunchHost Start-Process ok'
+        try { [Console]::CursorVisible = $false } catch {}
+        Write-Host ''
+        $frames = @('|', '/', '-', '\')
+        $i = 0
+        $child = Start-Process @sp
+        Write-FbImLaunchLog ('LaunchHost Start-Process ok pid=' + $(if ($child) { [string]$child.Id } else { '?' }))
+        $deadline = (Get-Date).AddSeconds(45)
+        $ready = $false
+        while ((Get-Date) -lt $deadline) {
+            try {
+                foreach ($p in @(Get-Process -ErrorAction SilentlyContinue)) {
+                    if (-not $p) { continue }
+                    $title = [string]$p.MainWindowTitle
+                    if ($title -match '(?i)Project LoneWolf - Technician Tools') {
+                        $ready = $true
+                        break
+                    }
+                }
+            } catch {}
+            if ($ready) { break }
+            $spin = $frames[$i % 4]
+            Write-Host -NoNewline ("`r  {0} launching FB-IM...  " -f $spin)
+            $i++
+            Start-Sleep -Milliseconds 220
+        }
+        try { [Console]::CursorVisible = $true } catch {}
+        if ($ready) {
+            Write-Host "`r  FB-IM is open.                    "
+            Write-Host ''
+        } else {
+            Write-Host "`r  FB-IM launched. If the window is not visible, check UAC."
+            Write-Host ''
+        }
         exit 0
     } catch {
         $failMsg = [string]$_.Exception.Message
@@ -108,7 +140,7 @@ if ($LaunchHost -and -not $Library) {
 
 $ErrorActionPreference = 'SilentlyContinue'
 
-$FbImVersion = '2.0.34'
+$FbImVersion = '2.0.35'
 
 function Initialize-FbImWpf {
     # Must run BEFORE Show-FbImWindow is invoked. Parameter binding resolves
@@ -144,6 +176,7 @@ $PipelineMarker   = Join-Path $FbPd '.pipeline-completed'
 $GateFailMarker   = Join-Path $FbPd '.hardware-gate-fail-restart'
 $HwDoneMarker     = Join-Path $FbPd '.hardware-gate-complete'
 $HwResultMarker   = Join-Path $FbPd '.hardware-gate-result.json'
+$HwRunningMarker  = Join-Path $FbPd '.hardware-gate-running'
 $ArmSuppressed    = Join-Path $FbPd '.firstbase-specialize-arm-suppressed'
 
 $DoneFlag         = Join-Path $FbScriptsDir 'FirstBase-Updates-Done.flag'
@@ -299,6 +332,90 @@ function Get-FbLoopProcess {
         }
     } catch {}
     return $null
+}
+
+function Test-FbImProcessAlive {
+    param([int]$ProcessId)
+    if ($ProcessId -le 0) { return $false }
+    try {
+        $p = Get-Process -Id $ProcessId -ErrorAction SilentlyContinue
+        return [bool]$p
+    } catch { return $false }
+}
+
+function Clear-FbImStaleHwRunningMarker {
+    if (Test-Path -LiteralPath $HwRunningMarker) {
+        $pidMark = 0
+        try {
+            $raw = [string](Get-Content -LiteralPath $HwRunningMarker -Raw -ErrorAction Stop)
+            if ($raw -match '(?i)pid\s*=\s*(\d+)') { $pidMark = [int]$Matches[1] }
+        } catch {}
+        $alive = $false
+        if ($pidMark -gt 0 -and (Test-FbImProcessAlive -ProcessId $pidMark)) { $alive = $true }
+        if (-not $alive) {
+            try { Remove-Item -LiteralPath $HwRunningMarker -Force -ErrorAction SilentlyContinue } catch {}
+        }
+    }
+    try {
+        if (Test-Path -LiteralPath $OperatorGateActive) {
+            $loopNow = Get-FbLoopProcess
+            if (-not $loopNow) {
+                Remove-Item -LiteralPath $OperatorGateActive -Force -ErrorAction SilentlyContinue
+            }
+        }
+    } catch {}
+}
+
+function Get-FbImHwResultObject {
+    if (-not (Test-Path -LiteralPath $HwResultMarker)) { return $null }
+    try { return (Get-Content -LiteralPath $HwResultMarker -Raw -ErrorAction Stop | ConvertFrom-Json) } catch { return $null }
+}
+
+function Test-FbImHardwareProbesPassed {
+    $json = Get-FbImHwResultObject
+    if ($json) {
+        try { if ([bool]$json.Passed) { return $true } } catch {}
+    }
+    if (-not (Test-Path -LiteralPath $HwDoneMarker)) { return $false }
+    if (Test-Path -LiteralPath $GateFailMarker) { return $false }
+    try {
+        $line = [string](Get-Content -LiteralPath $HwDoneMarker -TotalCount 1 -ErrorAction Stop)
+        if ($line -match '(?i)FAIL') { return $false }
+        if ($line -match '(?i)PASS') { return $true }
+    } catch {}
+    return $true
+}
+
+function Test-FbImHardwareGateInProgress {
+    Clear-FbImStaleHwRunningMarker
+    try {
+        $procs = Get-CimInstance -ClassName Win32_Process -Filter "Name='powershell.exe'" -ErrorAction SilentlyContinue
+        foreach ($p in @($procs)) {
+            if (-not $p) { continue }
+            $cmd = [string]$p.CommandLine
+            if ($cmd -match 'FirstBaseHardwareCheck\.ps1') {
+                return [pscustomobject]@{ InProgress = $true; Message = 'Hardware probes are running now.' }
+            }
+        }
+    } catch {}
+    if (Test-Path -LiteralPath $HwRunningMarker) {
+        return [pscustomobject]@{ InProgress = $true; Message = 'Hardware checks are running now.' }
+    }
+    $loop = Get-FbLoopProcess
+    $hbFresh = [bool](Test-FbImHeartbeatFresh)
+    $phase = ''
+    try {
+        $wu = Get-FbImWuStatusObject
+        if ($wu) { $phase = [string]$wu.phase }
+    } catch {}
+    $gateActive = $false
+    try { $gateActive = [bool](Test-Path -LiteralPath $OperatorGateActive) } catch {}
+    if ($loop -and $hbFresh -and ($phase -match '(?i)hardwaregate|handoff' -or $gateActive)) {
+        $msg = 'Hardware checks are already running.'
+        if ($gateActive) { $msg = 'Hardware checks are waiting on the operator confirmation window.' }
+        return [pscustomobject]@{ InProgress = $true; Message = $msg }
+    }
+    return [pscustomobject]@{ InProgress = $false; Message = '' }
 }
 
 function Get-FbFirstBaseTasks {
@@ -594,7 +711,13 @@ function Get-FbImDeviceStatus {
     $audit     = [bool](Test-FbImAuditMode -ImageState $imgState)
     $destage   = $false
     try { if ($FbBuild) { $destage = [bool]$FbBuild.Destage } } catch {}
-    $hwPassed  = [bool]((-not $gateFail) -and $hwDone)
+    Clear-FbImStaleHwRunningMarker
+    $hwPassed  = [bool](Test-FbImHardwareProbesPassed)
+    if ($hwPassed -and (Test-Path -LiteralPath $GateFailMarker)) {
+        # Probe PASS + leftover FAIL marker (YouTube timeout used to stamp FAIL).
+        try { Remove-Item -LiteralPath $GateFailMarker -Force -ErrorAction SilentlyContinue } catch {}
+        $gateFail = $false
+    }
     $techStopped = [bool](Test-FbImTechStopPresent)
     $wuObj = $null
     try { $wuObj = Get-FbImWuStatusObject } catch { $wuObj = $null }
@@ -635,8 +758,10 @@ function Get-FbImDeviceStatus {
     }
 
     $hwOkForSeal = (-not $gateFail) -and ($hwPassed -or $destage)
-    $modeOkForSeal = $destage -or $audit
-    $canSeal = $admin -and (-not $sealed) -and (-not $cbsUnsafe) -and $hwOkForSeal -and $modeOkForSeal
+    $modeOkForSeal = $destage -or $audit -or $hwPassed
+    # Seal markers written before sysprep must not block a retry while still in Audit.
+    $sealFinished = [bool]($sealed -and (-not $audit))
+    $canSeal = $admin -and (-not $sealFinished) -and (-not $cbsUnsafe) -and $hwOkForSeal -and $modeOkForSeal
     $manualSealed = $false
     try { $manualSealed = [bool](Test-Path -LiteralPath $ManualSealMarker) } catch { $manualSealed = $false }
     # Purple is a completed technician seal, not CanSeal / "seal is available".
@@ -660,7 +785,7 @@ function Get-FbImDeviceStatus {
     }
     if ($gateFail) {
         & $addIssue 'Hardware check failed' 'fail'
-    } elseif ((-not $hwDone) -and (-not $destage) -and (-not $sealed)) {
+    } elseif ((-not $hwPassed) -and (-not $destage) -and (-not $sealed)) {
         & $addIssue 'Hardware check not recorded' 'warn'
     }
     if ($actuallyInstalling) {
@@ -713,12 +838,12 @@ function Get-FbImDeviceStatus {
     }
 
     $sealBlock = ''
-    if ($sealed) { $sealBlock = 'This device is already sealed.' }
+    if ($sealFinished) { $sealBlock = 'This device is already sealed.' }
     elseif (-not $admin) { $sealBlock = 'Not running as Administrator - open fb-im.cmd from the USB stick.' }
     elseif ($cbsUnsafe) { $sealBlock = 'Seal is blocked while Windows is committing boot files. Wait for the update loop to reboot.' }
     elseif ($gateFail) { $sealBlock = 'Pass the hardware check before sealing.' }
     elseif ((-not $hwPassed) -and (-not $destage)) { $sealBlock = 'Pass the hardware check before sealing.' }
-    elseif (-not $modeOkForSeal) { $sealBlock = 'Seal is available in Audit mode, after the hardware check, or on a destage stick.' }
+    elseif (-not $modeOkForSeal) { $sealBlock = 'Seal is available after the hardware check passes, in Audit mode, or on a destage stick.' }
 
     $facts = New-Object System.Collections.ArrayList
     $pc = [string]$env:COMPUTERNAME
@@ -762,6 +887,7 @@ function Get-FbImDeviceStatus {
         LoopRunning = [bool]$loopProc
         HardwareFailed = [bool]$gateFail
         HardwarePassed = [bool]$hwPassed
+        HardwareInProgress = [bool]((Test-FbImHardwareGateInProgress).InProgress)
         ScriptsPresent = [bool]$scriptsPresent
         IncompleteUpdates = [bool]$incompleteUpdates
         UpdatesFailed = [bool]$wuFailed
@@ -940,11 +1066,18 @@ function Invoke-FbImRestartUpdates {
 
     $running = Get-FbLoopProcess
     if ($running) {
-        $result.Ok = $true
-        $result.Message = 'Updates are already running'
-        $result.Detail = 'Leave the device on power. The progress screen should appear shortly.'
-        $result.Pid = $running.ProcessId
-        return [pscustomobject]$result
+        $alive = [bool](Test-FbImHeartbeatFresh)
+        $installing = $false
+        try { $installing = [bool](Test-FbImWuActuallyInstalling) } catch {}
+        if ($alive -or $installing) {
+            $result.Ok = $true
+            $result.Message = 'Updates are already running'
+            $result.Detail = 'Leave the device on power. The progress screen should appear shortly.'
+            $result.Pid = $running.ProcessId
+            return [pscustomobject]$result
+        }
+        try { Stop-Process -Id $running.ProcessId -Force -ErrorAction SilentlyContinue } catch {}
+        Start-Sleep -Milliseconds 400
     }
 
     # Auto-clear destage Stop sentinel + stale lock so the loop may run again.
@@ -1557,9 +1690,29 @@ function Invoke-FbImStartHardwareGate {
         return [pscustomobject]$result
     }
     if ((Test-Path -LiteralPath $SealedMarker) -or (Test-Path -LiteralPath $PipelineMarker)) {
-        $result.Message = 'This device is already sealed'
-        $result.Detail = 'Hardware check cannot be started after seal.'
+        $stillAudit = [bool](Test-FbImAuditMode)
+        if (-not $stillAudit) {
+            $result.Message = 'This device is already sealed'
+            $result.Detail = 'Hardware check cannot be started after seal.'
+            return [pscustomobject]$result
+        }
+    }
+    $liveHw = Test-FbImHardwareGateInProgress
+    if ($liveHw -and [bool]$liveHw.InProgress) {
+        $result.Message = [string]$liveHw.Message
+        if ([string]::IsNullOrWhiteSpace($result.Message)) { $result.Message = 'Hardware checks are already running.' }
+        $result.Detail = 'Wait for the current check to finish, or use Seal device if hardware already passed.'
         return [pscustomobject]$result
+    }
+    if (Test-FbImHardwareProbesPassed) {
+        $loopNow = Get-FbLoopProcess
+        $hbNow = $false
+        try { $hbNow = [bool](Test-FbImHeartbeatFresh) } catch {}
+        if ($loopNow -and $hbNow) {
+            $result.Message = 'Hardware checks already passed'
+            $result.Detail = 'Use Seal device. A live FirstBase process is still finishing; starting another check would interrupt it.'
+            return [pscustomobject]$result
+        }
     }
     if (Test-FbImWuActuallyInstalling) {
         $result.Message = 'Updates are still installing'
@@ -1576,6 +1729,13 @@ function Invoke-FbImStartHardwareGate {
             $updatesDone = $true
         }
     } catch {}
+    if (-not $updatesDone) {
+        $destageKick = $false
+        try { if ($FbBuild) { $destageKick = [bool]$FbBuild.Destage } } catch {}
+        $auditKick = $false
+        try { $auditKick = [bool](Test-FbImAuditMode) } catch {}
+        if ($destageKick -or $auditKick) { $updatesDone = $true }
+    }
     if (-not $updatesDone) {
         $result.Message = 'Updates are not finished'
         $result.Detail = 'This clears stale update-running markers and starts the hardware check only after Windows Update is idle and complete.'
@@ -1622,6 +1782,17 @@ function Invoke-FbImStartHardwareGate {
     try {
         if (Test-Path -LiteralPath $GateFailMarker) {
             Remove-Item -LiteralPath $GateFailMarker -Force -ErrorAction SilentlyContinue
+        }
+    } catch {}
+    try {
+        if (Test-Path -LiteralPath $HwRunningMarker) {
+            Remove-Item -LiteralPath $HwRunningMarker -Force -ErrorAction SilentlyContinue
+            [void]$notes.Add('Cleared leftover hardware-running marker')
+        }
+    } catch {}
+    try {
+        if (Test-Path -LiteralPath $HwResultMarker) {
+            Remove-Item -LiteralPath $HwResultMarker -Force -ErrorAction SilentlyContinue
         }
     } catch {}
 
@@ -2443,6 +2614,17 @@ function Show-FbImWindow {
         $script:FbImBusy = $false
     }
 
+    $clearStaleFbImBusy = {
+        $overlayOn = $false
+        try {
+            $ov = $busyOverlay
+            if (-not $ov -and $script:FbImUi) { $ov = $script:FbImUi.BusyOverlay }
+            if ($ov -and $ov.Visibility -eq 'Visible') { $overlayOn = $true }
+        } catch {}
+        if (-not $overlayOn) { $script:FbImBusy = $false }
+    }
+    $script:FbImClearStaleBusy = $clearStaleFbImBusy
+
     $showSealPage = {
         if ($mainWorkArea) { $mainWorkArea.Visibility = 'Collapsed' }
         if ($sealPage) { $sealPage.Visibility = 'Visible' }
@@ -2457,7 +2639,13 @@ function Show-FbImWindow {
 
     $runSealWithPower = {
         param([string]$PowerAction)
-        if ($script:FbImBusy) { return }
+        $overlayOn = $false
+        try { if ($busyOverlay -and $busyOverlay.Visibility -eq 'Visible') { $overlayOn = $true } } catch {}
+        if ($script:FbImBusy -and $overlayOn) {
+            if ($sealStatus) { $sealStatus.Text = 'Already sealing — wait for this action to finish.' }
+            return
+        }
+        $script:FbImBusy = $false
         & $showFbImBusy ('Sealing device, then {0}...' -f $PowerAction.ToLower()) 'SEALING'
         if ($btnSealRestart) { $btnSealRestart.IsEnabled = $false }
         if ($btnSealShutdown) { $btnSealShutdown.IsEnabled = $false }
@@ -2753,11 +2941,13 @@ function Show-FbImWindow {
         try {
             if ($st.Destage -and (-not $st.Sealed) -and (-not $hwPassed)) { $showGateKick = $true }
             if ($stuckGate) { $showGateKick = $true }
-            if ($st.Sealed) { $showGateKick = $false }
+            if ((-not $st.Sealed) -and [bool]$st.Admin) { $showGateKick = $true }
+            if ($st.Audit -and (-not $st.Sealed)) { $showGateKick = $true }
+            if ($st.Sealed -and (-not $st.Audit)) { $showGateKick = $false }
         } catch {}
         if ($btnStartHardwareGate) {
             $btnStartHardwareGate.Visibility = $(if ($showGateKick) { 'Visible' } else { 'Collapsed' })
-            $btnStartHardwareGate.IsEnabled = [bool]$st.Admin -and $showGateKick -and (-not $actuallyInstalling) -and (-not $st.Sealed)
+            $btnStartHardwareGate.IsEnabled = [bool]$st.Admin -and $showGateKick -and (-not $st.Sealed -or [bool]$st.Audit)
         }
     }
 
@@ -2811,7 +3001,6 @@ function Show-FbImWindow {
         param($After)
         if ($script:FbImStatusQueued) { return }
         $script:FbImStatusQueued = $true
-        $script:FbImBusy = $true
         $script:FbImStatusAfter = $After
         try {
             if ($statusLabel) { $statusLabel.Text = 'Device' }
@@ -2847,6 +3036,7 @@ function Show-FbImWindow {
     if ($btnRefresh) {
         $btnRefresh.Add_Click({
             try {
+                if ($script:FbImClearStaleBusy) { & $script:FbImClearStaleBusy }
                 if ($script:FbImBusy) { return }
                 [void](& $runStatus)
             } catch {
@@ -2861,6 +3051,7 @@ function Show-FbImWindow {
     if ($btnRestart) {
     $btnRestart.Add_Click({
         try {
+            if ($script:FbImClearStaleBusy) { & $script:FbImClearStaleBusy }
             if ($script:FbImBusy) { return }
             & $showFbImBusy 'Starting updates...' 'STARTING'
             $btnRestart.IsEnabled = $false
@@ -2891,6 +3082,7 @@ function Show-FbImWindow {
     if ($btnStopUpdates) {
     $btnStopUpdates.Add_Click({
         try {
+            if ($script:FbImClearStaleBusy) { & $script:FbImClearStaleBusy }
             if ($script:FbImBusy) { return }
             & $showFbImBusy 'Stopping Windows Update...' 'STOPPING'
             $actionMessage.Foreground = [System.Windows.Media.BrushConverter]::new().ConvertFromString('#FF22D3EE')
@@ -2920,7 +3112,14 @@ function Show-FbImWindow {
     if ($btnStartHardwareGate) {
     $btnStartHardwareGate.Add_Click({
         try {
-            if ($script:FbImBusy) { return }
+            $overlayOn = $false
+            try { if ($busyOverlay -and $busyOverlay.Visibility -eq 'Visible') { $overlayOn = $true } } catch {}
+            if ($script:FbImBusy -and $overlayOn) {
+                $actionMessage.Foreground = [System.Windows.Media.BrushConverter]::new().ConvertFromString('#FFFFB74D')
+                $actionMessage.Text = 'Already working — wait for this action to finish.'
+                return
+            }
+            $script:FbImBusy = $false
             & $showFbImBusy 'Starting hardware checks...' 'HARDWARE'
             $btnStartHardwareGate.IsEnabled = $false
             $actionMessage.Foreground = [System.Windows.Media.BrushConverter]::new().ConvertFromString('#FF22D3EE')
@@ -3208,6 +3407,7 @@ function Show-FbImWindow {
     if ($btnShutdown) {
         $btnShutdown.Add_Click({
             try {
+                if ($script:FbImClearStaleBusy) { & $script:FbImClearStaleBusy }
                 if ($script:FbImBusy) { return }
                 if ($script:FbImEmbedHosted -and -not (Test-Path -LiteralPath $SealedMarker)) { return }
                 & $showFbImBusy 'Please wait - shutting down...' 'SHUTDOWN'
@@ -3232,6 +3432,7 @@ function Show-FbImWindow {
     if ($btnPowerRestart) {
         $btnPowerRestart.Add_Click({
             try {
+                if ($script:FbImClearStaleBusy) { & $script:FbImClearStaleBusy }
                 if ($script:FbImBusy) { return }
                 if ($script:FbImEmbedHosted -and -not (Test-Path -LiteralPath $SealedMarker)) { return }
                 & $showFbImBusy 'Please wait - restarting...' 'RESTART'
@@ -3256,6 +3457,7 @@ function Show-FbImWindow {
     if ($btnBios) {
         $btnBios.Add_Click({
             try {
+                if ($script:FbImClearStaleBusy) { & $script:FbImClearStaleBusy }
                 if ($script:FbImBusy) { return }
                 if ($script:FbImEmbedHosted -and -not (Test-Path -LiteralPath $SealedMarker)) { return }
                 & $showFbImBusy 'Please wait - restarting to BIOS...' 'BIOS'
@@ -3280,6 +3482,7 @@ function Show-FbImWindow {
     if ($btnPassHardware) {
         $btnPassHardware.Add_Click({
             try {
+                if ($script:FbImClearStaleBusy) { & $script:FbImClearStaleBusy }
                 if ($script:FbImBusy) { return }
                 & $showFbImBusy 'Marking hardware check passed...' 'HARDWARE'
                 $btnPassHardware.IsEnabled = $false
@@ -3311,7 +3514,14 @@ function Show-FbImWindow {
     if ($btnSeal) {
     $btnSeal.Add_Click({
         try {
-            if ($script:FbImBusy) { return }
+            $overlayOn = $false
+            try { if ($busyOverlay -and $busyOverlay.Visibility -eq 'Visible') { $overlayOn = $true } } catch {}
+            if ($script:FbImBusy -and $overlayOn) {
+                $actionMessage.Foreground = [System.Windows.Media.BrushConverter]::new().ConvertFromString('#FFFFB74D')
+                $actionMessage.Text = 'Already working — wait for this action to finish.'
+                return
+            }
+            $script:FbImBusy = $false
             & $showSealPage
         } catch {
             try {
@@ -3345,6 +3555,7 @@ function Show-FbImWindow {
     if ($btnSealCancel) {
         $btnSealCancel.Add_Click({
             try {
+                if ($script:FbImClearStaleBusy) { & $script:FbImClearStaleBusy }
                 if ($script:FbImBusy) { return }
                 & $hideSealPage
             } catch {}
@@ -3420,7 +3631,6 @@ function Show-FbImWindow {
 # =============================================================================
 if (-not $Library) {
     $focus = switch ($Action) {
-        'Status'  { 'Status' }
         'Updates' { 'Updates' }
         'Dump'    { 'Dump' }
         default   { 'Menu' }

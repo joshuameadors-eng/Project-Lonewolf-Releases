@@ -2495,6 +2495,8 @@ try {
     # in one of the two locations) is visible at a glance.
     $payloadProbeList = [ordered]@{
         'Invoke-WindowsUpdateLoop.ps1'    = @((Join-Path $FbRoot 'Invoke-WindowsUpdateLoop.ps1'))
+        'FirstBaseHardwareCheck.ps1'      = @((Join-Path $FbRoot 'FirstBaseHardwareCheck.ps1'))
+        'Install-FbMicrosoftEdge.ps1'     = @((Join-Path $FbRoot 'Install-FbMicrosoftEdge.ps1'))
         'FirstBaseWuEngine.ps1'           = @((Join-Path $FbRoot 'FirstBaseWuEngine.ps1'))
         'Show-UpdateProgress.ps1'         = @((Join-Path $FbRoot 'Show-UpdateProgress.ps1'))
         'FirstBaseSplashTechMenu.ps1'     = @((Join-Path $FbRoot 'FirstBaseSplashTechMenu.ps1'))
@@ -6837,6 +6839,13 @@ function Set-UiUpdateStatus {
     if ([string]::IsNullOrWhiteSpace($UpdateId)) { $UpdateId = [guid]::NewGuid().ToString() }
     if ([string]::IsNullOrWhiteSpace($Title))    { $Title = $UpdateId }
 
+    try {
+        $osUi = Get-FbOsVersionIdentity
+        if ($osUi.Already25H2 -and (Test-FbIsRedundant25H2FeatureUpdate -Title $Title)) {
+            return
+        }
+    } catch {}
+
     if ($script:UiUpdates.ContainsKey($UpdateId)) {
         $item = $script:UiUpdates[$UpdateId]
     } else {
@@ -8349,6 +8358,52 @@ function Hide-FbOfferedUpdate {
     } finally {
         Remove-Job -Job $job -Force -ErrorAction SilentlyContinue | Out-Null
     }
+}
+
+function Invoke-FbHideRedundant25H2FeatureUpdates {
+    <#
+    .SYNOPSIS
+        Drop already-installed 25H2 feature/enablement offers from a scan
+        list, hide them via WUA, and add them to GivenUp so STAGE 1 does
+        not treat them as residual. Quality/security updates are kept.
+    #>
+    param(
+        [Parameter(Mandatory)] [AllowNull()] [AllowEmptyCollection()] $Updates,
+        [System.Collections.Generic.HashSet[string]]$GivenUpSet = $null
+    )
+    $osId = $null
+    try { $osId = Get-FbOsVersionIdentity } catch { $osId = $null }
+    if (-not $osId -or -not $osId.Already25H2) {
+        return @($Updates)
+    }
+    $kept = @()
+    foreach ($u in @($Updates)) {
+        if (-not $u) { continue }
+        $title = ''
+        try { $title = [string]$u.Title } catch {}
+        $kb = ''
+        try { $kb = [string]$u.KB } catch {}
+        $kbs = @()
+        try { $kbs = @($u.KBArticleIDs) } catch {}
+        if (-not (Test-FbIsRedundant25H2FeatureUpdate -Title $title -KB $kb -KBArticleIDs $kbs)) {
+            $kept += $u
+            continue
+        }
+        $uid = ''
+        try { $uid = [string]$u.UpdateId } catch {}
+        Write-FbLog ("Scan-list hide 25H2 feature/enablement: Title='{0}' KB={1} Id={2} (OS build={3} DisplayVersion={4})" -f $title, $kb, $uid, $osId.CurrentBuild, $osId.DisplayVersion) 'WARN'
+        if ($GivenUpSet -and -not [string]::IsNullOrWhiteSpace($uid)) {
+            [void]$GivenUpSet.Add($uid)
+            try {
+                $key = [string](Get-FbRetryKey -Update $u)
+                if (-not [string]::IsNullOrWhiteSpace($key)) { [void]$GivenUpSet.Add($key) }
+            } catch {}
+        }
+        if (-not [string]::IsNullOrWhiteSpace($uid)) {
+            try { Hide-FbOfferedUpdate -UpdateId $uid | Out-Null } catch {}
+        }
+    }
+    return @($kept)
 }
 
 function Write-StuckRebootDiag {
@@ -10938,6 +10993,7 @@ function Copy-FbOobeOperatorProgramDataKit {
         'FirstBaseShowSplash.ps1'
         'FirstBaseOpenSettingsAndFinish.ps1'
         'FirstBaseHardwareCheck.ps1'
+        'Install-FbMicrosoftEdge.ps1'
         'FirstBaseHandoffSplash.ps1'
         'Install-FbMicrosoftEdge.ps1'
     )
@@ -13324,21 +13380,6 @@ function Invoke-FbHardwareGateOperatorStep {
         } else {
             Write-FbLog ("Hardware gate: YouTube PASS path did not complete (reason={0} seen={1}); retrying YouTube, not Settings." -f $reason, $seen) 'WARN'
         }
-        $ytAttempt = 0
-        while (-not $youtubeOk -and $ytAttempt -lt 8) {
-            $ytAttempt++
-            Write-FbLog ("Hardware gate PASS: YouTube retry {0}/8 (install Edge, then private YouTube, not Settings)." -f $ytAttempt) 'WARN'
-            Start-Sleep -Seconds 8
-            try { $null = Invoke-FbEnsureMicrosoftEdge -AllowDownload } catch {}
-            $ytN = $null
-            try { $ytN = Invoke-FbOperatorSettingsGateInSession -YouTubePass } catch {}
-            $reasonN = ''
-            try { $reasonN = [string]$ytN.Reason } catch { $reasonN = '' }
-            if ($reasonN -eq 'window-closed') {
-                $youtubeOk = $true
-                break
-            }
-        }
     }
 
     if ($youtubeOk) {
@@ -13353,14 +13394,14 @@ function Invoke-FbHardwareGateOperatorStep {
     }
 
     if ($hwPassed) {
+        # Probes passed. Walk-away / close-timeout is not FAIL and must not grey
+        # out Seal device. Do not write .hardware-gate-complete (a relaunch would
+        # skip the operator step and auto-sysprep). Result JSON Passed enables
+        # manual seal in fb-im. Device stays on.
         $script:FbHardwareGateFailed = $false
-        try {
-            Set-Content -LiteralPath $doneMarker -Value ('hardware-gate PASS at {0} youtube-unavailable-after-retries (not Settings)' -f (Get-Date -Format 'o')) -Encoding ascii -Force
-            Clear-FbHandoffPendingMarker
-        } catch {}
-        try { Start-FbHandoffSplashIndicator -Phase 'sealing' -AutoCloseSeconds 90 } catch {}
-        Write-FbLog 'Hardware gate PASS: hardware probes passed; YouTube did not stay open. Not opening Settings. Continuing seal.' 'WARN'
-        return $true
+        Write-FbLog 'Hardware gate: probes PASSED; operator confirmation did not complete. FAIL marker not written. Manual seal is available in fb-im. Device stays on.' 'WARN'
+        try { Start-FbHandoffSplashIndicator -Phase 'checks-pass' -AutoCloseSeconds 120 } catch {}
+        return $false
     }
 
     $script:FbHardwareGateFailed = $true
@@ -13569,6 +13610,12 @@ function Invoke-FbOobeHandoff {
                     }
                 }
             } catch {}
+
+            try {
+                $stage1Scan = @(Invoke-FbHideRedundant25H2FeatureUpdates -Updates @($stage1Scan) -GivenUpSet $givenUpIds)
+            } catch {
+                try { Write-FbLog ("OOBE handoff (STAGE 1 gate): 25H2 feature-hide threw: {0}" -f $_.Exception.Message) 'WARN' } catch {}
+            }
 
             # ==========================================================
             # 2026.05.19.2213m Bug FF reach: evaluate SoftGivenUp HERE,
@@ -13803,13 +13850,20 @@ function Invoke-FbOobeHandoff {
                                 }
                             }
                         }
-                        if ($fbIsRedundant) {
-                            Write-FbLog ("OOBE handoff (STAGE 1 gate) Fix B: Skipping feature-upgrade re-offer '{0}': OS DisplayVersion={1} build={2}. Adding to GivenUp." -f $fbScanTitle, $fbOsDisplayVersion, $(if ($fbOs) { $fbOs.CurrentBuild } else { '?' })) 'WARN'
-                            $fbScanKey = ''; try { $fbScanKey = [string](Get-FbRetryKey -Update $fbScanU) } catch {}
-                            [void]$givenUpIds.Add($fbScanUid)
-                            if (-not [string]::IsNullOrWhiteSpace($fbScanKey)) { [void]$givenUpIds.Add($fbScanKey) }
-                            $fbVersionGuardPromoted++
-                        }
+                        $fbScanKb = ''; try { $fbScanKb = [string]$fbScanU.KB } catch {}
+                        $fbScanKbs = @(); try { $fbScanKbs = @($fbScanU.KBArticleIDs) } catch {}
+                        try {
+                            $fbOs25 = Get-FbOsVersionIdentity
+                            if ($fbOs25.Already25H2 -and (Test-FbIsRedundant25H2FeatureUpdate -Title $fbScanTitle -KB $fbScanKb -KBArticleIDs $fbScanKbs)) {
+                                if (-not $givenUpIds.Contains($fbScanUid)) {
+                                    Write-FbLog ("OOBE handoff (STAGE 1 gate) Fix B: Skipping 25H2 feature/enablement '{0}' (OS already 25H2 build={1} DisplayVersion={2}). Adding to GivenUp." -f $fbScanTitle, $fbOs25.CurrentBuild, $fbOs25.DisplayVersion) 'WARN'
+                                    $fbScanKey = ''; try { $fbScanKey = [string](Get-FbRetryKey -Update $fbScanU) } catch {}
+                                    [void]$givenUpIds.Add($fbScanUid)
+                                    if (-not [string]::IsNullOrWhiteSpace($fbScanKey)) { [void]$givenUpIds.Add($fbScanKey) }
+                                    $fbVersionGuardPromoted++
+                                }
+                            }
+                        } catch {}
                     }
                     if ($fbVersionGuardPromoted -gt 0) {
                         try {
@@ -14042,6 +14096,7 @@ function Invoke-FbOobeHandoff {
                         $postScan = @()
                         try {
                             $postScan = @(Invoke-FbWuScan -TimeoutSeconds $RescanTimeoutSec)
+                            $postScan = @(Invoke-FbHideRedundant25H2FeatureUpdates -Updates @($postScan) -GivenUpSet $givenUpIds)
                         } catch {
                             $stage1ExitClass     = 'post-scan-threw'
                             $stage1PostScanThrew = $_.Exception.Message
@@ -14493,12 +14548,18 @@ function Invoke-FbOobeHandoff {
             Write-FbLog ("Hardware gate already complete (fail={0}); skipping operator step." -f $script:FbHardwareGateFailed) 'INFO'
             try { Clear-FbHandoffPendingMarker } catch {}
         } else {
+            $fbHwConfirmed = $false
             try {
-                Invoke-FbHardwareGateOperatorStep | Out-Null
+                $fbHwConfirmed = [bool](Invoke-FbHardwareGateOperatorStep)
             } catch {
                 Write-FbLog ('Hardware gate operator step threw: {0}; treating as FAIL and proceeding to scrub/seal.' -f $_.Exception.Message) 'ERROR'
                 $script:FbHardwareGateFailed = $true
                 try { Set-Content -LiteralPath $fbHwFail -Value ('hardware-gate FAIL threw at {0}' -f (Get-Date -Format 'o')) -Encoding ascii -Force } catch {}
+            }
+            if (-not $fbHwConfirmed -and -not $script:FbHardwareGateFailed) {
+                Write-FbLog 'Hardware probes passed; operator did not confirm. Not auto-sealing. Use Seal device in fb-im.' 'WARN'
+                try { Set-UiPhase -Phase 'HardwareGate' -Message 'Hardware passed. Seal the device from fb-im when you are ready.' } catch {}
+                return
             }
         }
 
@@ -16047,6 +16108,7 @@ function Invoke-FbWuInlineRetryPass {
     $scanRows = @()
     try {
         $scanRows = @(Invoke-FbWuScan -TimeoutSeconds $RescanTimeoutSec)
+        $scanRows = @(Invoke-FbHideRedundant25H2FeatureUpdates -Updates @($scanRows) -GivenUpSet $GivenUpSet)
     } catch {
         Write-FbLog ("[inline-retry] Invoke-FbWuScan threw: {0}; aborting inline retry." -f $_.Exception.Message) 'WARN'
         return $result
@@ -16280,6 +16342,8 @@ function Invoke-FbBucketApply {
     $skippedFromPrior   = @()
     $skippedFromDefender = @()
     $bucketUpdatesActive = @()
+    $osBkt = $null
+    try { $osBkt = Get-FbOsVersionIdentity } catch { $osBkt = $null }
     foreach ($u in $BucketUpdates) {
         $uid = [string]$u.UpdateId
         if ([string]::IsNullOrWhiteSpace($uid)) { continue }
@@ -16298,7 +16362,26 @@ function Invoke-FbBucketApply {
                 $skippedFromLedger = $true
             }
         } catch {}
-        if ($GivenUpSet.Contains($uid) -or $GivenUpSet.Contains($key) -or $ForceHiddenSet.Contains($uid) -or $ForceHiddenSet.Contains($key)) {
+        $skipRedundant25H2 = $false
+        try {
+            $bTitle = ''
+            try { $bTitle = [string]$u.Title } catch {}
+            $bKb = ''
+            try { $bKb = [string]$u.KB } catch {}
+            $bKbs = @()
+            try { $bKbs = @($u.KBArticleIDs) } catch {}
+            if ($osBkt -and $osBkt.Already25H2 -and (Test-FbIsRedundant25H2FeatureUpdate -Title $bTitle -KB $bKb -KBArticleIDs $bKbs)) {
+                $skipRedundant25H2 = $true
+                if ($GivenUpSet) {
+                    [void]$GivenUpSet.Add($uid)
+                    if ($key) { [void]$GivenUpSet.Add($key) }
+                }
+                Write-FbLog ("[{0}] skipping already-installed 25H2 feature/enablement '{1}' ({2}); not shown in splash." -f $BucketName, $bTitle, $uid) 'WARN'
+            }
+        } catch {}
+        if ($skipRedundant25H2) {
+            continue
+        } elseif ($GivenUpSet.Contains($uid) -or $GivenUpSet.Contains($key) -or $ForceHiddenSet.Contains($uid) -or $ForceHiddenSet.Contains($key)) {
             $skippedFromPrior += $u
         } elseif ($defenderDedupe) {
             $skippedFromDefender += $u
@@ -17686,6 +17769,7 @@ if ($script:DeferredStartupInstallsCompletedHandoff -and $script:InstallsComplet
         $gateScan = $null
         try {
             $gateScan = Invoke-FbWuScan -TimeoutSeconds $RescanTimeoutSec
+            $gateScan = @(Invoke-FbHideRedundant25H2FeatureUpdates -Updates @($gateScan) -GivenUpSet $givenUpSet)
         } catch {
             Write-FbLog ("InstallsCompleted gate: informational scan threw: {0}" -f $_.Exception.Message) 'WARN'
         }
@@ -17983,6 +18067,7 @@ while ($iter -lt $maxIterations) {
         # labels on rows are log-only; the pass installs everything offered.
         Write-FbLog "[Pass $iter] Single unfiltered online scan (IsInstalled=0 and IsHidden=0)"
         $available = Invoke-FbWuScan -TimeoutSeconds $ScanTimeoutSec
+        $available = @(Invoke-FbHideRedundant25H2FeatureUpdates -Updates @($available) -GivenUpSet $givenUpSet)
         $count = ($available | Measure-Object).Count
         Write-FbLog "[Pass $iter] Scan returned $count update(s) total"
         $scanRetry = 0
@@ -18275,6 +18360,7 @@ while (-not $finalCheckSucceeded) {
     Wait-ForInternet -SleepSeconds 30
     try {
         $finalCheck = Invoke-FbWuScan -TimeoutSeconds $RescanTimeoutSec
+        $finalCheck = @(Invoke-FbHideRedundant25H2FeatureUpdates -Updates @($finalCheck) -GivenUpSet $givenUpSet)
         $finalCheckSucceeded = $true
     } catch {
         if (-not (Test-InternetConnectivity)) {

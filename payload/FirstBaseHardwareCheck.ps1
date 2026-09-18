@@ -24,6 +24,7 @@ $FbRoot = 'C:\Windows\Setup\FirstBase'
 if ([string]::IsNullOrWhiteSpace($ResultPath)) {
     $ResultPath = Join-Path $FbPd '.hardware-gate-result.json'
 }
+$HwRunningMarker = Join-Path $FbPd '.hardware-gate-running'
 
 $fbVer = Join-Path $PSScriptRoot 'FirstBaseVersion.ps1'
 if (-not (Test-Path -LiteralPath $fbVer)) { $fbVer = Join-Path $FbRoot 'FirstBaseVersion.ps1' }
@@ -93,9 +94,33 @@ function Get-FbActiveMmAudioEndpoints {
     return @($hits)
 }
 
+function Get-FbPnpMicrophoneNames {
+    $ok = New-Object System.Collections.Generic.List[string]
+    foreach ($cls in @('MEDIA', 'AudioEndpoint', 'SoftwareDevice')) {
+        try {
+            foreach ($dev in @(Get-FbPnpDevicesPresent -ClassName $cls)) {
+                if (-not $dev) { continue }
+                $name = [string]$dev.FriendlyName
+                if ([string]::IsNullOrWhiteSpace($name)) { $name = [string]$dev.InstanceId }
+                if ($name -notmatch '(?i)microphone|mic array|\bmic\b|capture') { continue }
+                if ($name -match '(?i)speaker|headphone|hdmi|display audio') { continue }
+                $problem = 0
+                try {
+                    if ($null -ne $dev.Problem -and [string]$dev.Problem -ne '') { $problem = [int]$dev.Problem }
+                } catch { $problem = 0 }
+                if ([string]$dev.Status -eq 'OK' -and $problem -eq 0) {
+                    [void]$ok.Add($name)
+                }
+            }
+        } catch {}
+    }
+    return @($ok)
+}
+
 function Test-FbHardwareSound {
-    # Volume flyout / ms-settings:sound bind to ACTIVE Core Audio endpoints.
-    # Require Audiosrv + at least one ACTIVE render and one ACTIVE capture.
+    # Volume flyout / ms-settings:sound bind to Core Audio endpoints.
+    # After a WU/driver reboot the mic often is not ACTIVE for several
+    # seconds (or only shows as PnP OK). Retry before failing.
     $reasons = New-Object System.Collections.Generic.List[string]
     $svc = $null
     try { $svc = Get-Service -Name 'Audiosrv' -ErrorAction SilentlyContinue } catch {}
@@ -111,10 +136,23 @@ function Test-FbHardwareSound {
         return New-FbHardwareCheckItem -Name 'sound' -Passed $false -Detail ('Windows Audio service is {0}; volume sliders cannot bind.' -f $(if ($svc) { $svc.Status } else { 'missing' }))
     }
 
-    $render = @(Get-FbActiveMmAudioEndpoints -Flow Render)
-    $capture = @(Get-FbActiveMmAudioEndpoints -Flow Capture)
+    $render = @()
+    $capture = @()
+    $pnpMics = @()
+    $attempts = 12
+    for ($i = 1; $i -le $attempts; $i++) {
+        $render = @(Get-FbActiveMmAudioEndpoints -Flow Render)
+        $capture = @(Get-FbActiveMmAudioEndpoints -Flow Capture)
+        $pnpMics = @(Get-FbPnpMicrophoneNames)
+        if ($render.Count -gt 0 -and ($capture.Count -gt 0 -or $pnpMics.Count -gt 0)) { break }
+        Write-FbHardwareCheckLog ("sound retry {0}/{1}: render={2} capture={3} pnpMic={4}" -f $i, $attempts, $render.Count, $capture.Count, $pnpMics.Count) 'INFO'
+        Start-Sleep -Seconds 2
+        try { Start-Service -Name 'Audiosrv' -ErrorAction SilentlyContinue } catch {}
+    }
     if ($render.Count -eq 0) { [void]$reasons.Add('no ACTIVE render (output) endpoint') }
-    if ($capture.Count -eq 0) { [void]$reasons.Add('no ACTIVE capture (microphone) endpoint') }
+    if ($capture.Count -eq 0 -and $pnpMics.Count -eq 0) {
+        [void]$reasons.Add('no ACTIVE capture (microphone) endpoint and no working microphone PnP')
+    }
 
     # PnP corroboration: do not treat error-state MEDIA devices as a pass.
     # Get-PnpDevice -Class does not accept a comma list (FBTGJB4: "Argument types do not match").
@@ -140,13 +178,14 @@ function Test-FbHardwareSound {
             $pnpAudioOk = ($pnp.Count -gt 0)
         } catch {}
     }
-    if (-not $pnpAudioOk -and ($render.Count -eq 0 -or $capture.Count -eq 0)) {
+    if (-not $pnpAudioOk -and ($render.Count -eq 0 -or ($capture.Count -eq 0 -and $pnpMics.Count -eq 0))) {
         [void]$reasons.Add('no working audio PnP device')
     }
 
     $passed = ($reasons.Count -eq 0)
     $detail = if ($passed) {
-        ('Audiosrv running; ACTIVE render={0}; ACTIVE capture={1} (volume sliders can bind).' -f ($render -join ', '), ($capture -join ', '))
+        $capText = if ($capture.Count -gt 0) { ($capture -join ', ') } else { ('PnP {0}' -f ($pnpMics -join ', ')) }
+        ('Audiosrv running; ACTIVE render={0}; capture={1} (volume sliders can bind).' -f ($render -join ', '), $capText)
     } else {
         ('Sound not visible/usable: {0}.' -f ($reasons -join '; '))
     }
@@ -368,6 +407,12 @@ function Test-FbHardwareCriticalPnp {
 
 function Invoke-FbHardwareGate {
     Write-FbHardwareCheckLog ("start payload={0} script={1}" -f $FirstBasePayloadRevision, $script:ThisScriptVersion)
+    try {
+        if (-not (Test-Path -LiteralPath $FbPd)) {
+            New-Item -ItemType Directory -Path $FbPd -Force -ErrorAction SilentlyContinue | Out-Null
+        }
+        Set-Content -LiteralPath $HwRunningMarker -Value ('pid={0} at {1}' -f $PID, (Get-Date -Format 'o')) -Encoding ascii -Force
+    } catch {}
     $items = @()
     try { $items += Test-FbHardwareSound } catch {
         $items += New-FbHardwareCheckItem -Name 'sound' -Passed $false -Detail ('Sound probe threw: {0}' -f $_.Exception.Message)
@@ -430,4 +475,10 @@ if (-not $Quiet) {
     try { $result | ConvertTo-Json -Depth 6 | Write-Output } catch { Write-Output ($result | Out-String) }
 }
 
-if ($result -and $result.Passed) { exit 0 } else { exit 1 }
+if ($result -and $result.Passed) { $exitCode = 0 } else { $exitCode = 1 }
+try {
+    if (Test-Path -LiteralPath $HwRunningMarker) {
+        Remove-Item -LiteralPath $HwRunningMarker -Force -ErrorAction SilentlyContinue
+    }
+} catch {}
+exit $exitCode

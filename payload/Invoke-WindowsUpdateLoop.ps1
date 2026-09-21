@@ -2792,6 +2792,7 @@ try {
     $buildMarkerLines += '5.4.2: Official release. Consolidates USB (no post-apply disarm, Explorer icon, hide FirstBase, FirstBase-Logs), WinPE Braille wolf + Cascadia private-load, hardware-gate PnP, operator close then sysprep /oobe /reboot, and WU pipeline fixes since 5.4.1. Loop 1.0.25.'
     $buildMarkerLines += '5.4.10: Complete-without-handoff recovery - when WU is idle (no pending install) but hardware gate never started, clear stale Rebooting/Stopped markers and route to hardware gate. Do not treat Installed rows as installing. Loop 1.0.26->1.0.27.'
     $buildMarkerLines += '5.4.11: SD00HN3W-1126-LENOVO - hardware probes passed (camera/wifi/sound) but missing Edge/Chrome painted Fail Settings. PASS YouTube falls back to Sound settings confirmation; do not treat browser-missing as a hardware fail. Loop 1.0.27->1.0.28. OpenSettingsAndFinish 1.1.6->1.1.7.'
+    $buildMarkerLines += '6.0.1: Skip redundant Win11 25H2 feature/enablement re-offers on already-25H2 UUP images (quality LCUs still install). Install Edge from payload/share MSI before YouTube PASS; do not open Settings on hardware PASS. Loop 1.0.28->1.0.29. Engine 1.0.6->1.0.7. OpenSettingsAndFinish 1.1.8->1.1.9.'
     [System.IO.File]::WriteAllLines($buildMarkerPath, $buildMarkerLines, [System.Text.Encoding]::UTF8)
     Write-FbLog ("Build marker written: {0} (LoopVersion={1})" -f $buildMarkerPath, $loopVer) 'INFO'
 } catch {
@@ -12779,6 +12780,12 @@ function Invoke-FbInlineMdmScrub {
             Remove-ItemProperty -LiteralPath $au -Name 'NoAutoRebootWithLoggedOnUsers' -Force -ErrorAction SilentlyContinue
             Remove-ItemProperty -LiteralPath $au -Name 'NoAutoUpdate' -Force -ErrorAction SilentlyContinue
         }
+        $wuPol = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate'
+        if (Test-Path -LiteralPath $wuPol) {
+            Remove-ItemProperty -LiteralPath $wuPol -Name 'TargetReleaseVersion' -Force -ErrorAction SilentlyContinue
+            Remove-ItemProperty -LiteralPath $wuPol -Name 'TargetReleaseVersionInfo' -Force -ErrorAction SilentlyContinue
+            Remove-ItemProperty -LiteralPath $wuPol -Name 'ProductVersion' -Force -ErrorAction SilentlyContinue
+        }
         $items['WuAuPolicy'] = 'DONE'
         & $writeInline 'INFO' 'WU AU suppression policy removal attempted.'
     } catch { $items['WuAuPolicy'] = 'WARN'; & $writeInline 'WARN' ('WU AU EXC: ' + $_.Exception.Message) }
@@ -13093,6 +13100,12 @@ try {
     if (Test-Path -LiteralPath $au) {
         Remove-ItemProperty -LiteralPath $au -Name 'NoAutoRebootWithLoggedOnUsers' -Force -ErrorAction SilentlyContinue
         Remove-ItemProperty -LiteralPath $au -Name 'NoAutoUpdate' -Force -ErrorAction SilentlyContinue
+    }
+    $wuPol = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate'
+    if (Test-Path -LiteralPath $wuPol) {
+        Remove-ItemProperty -LiteralPath $wuPol -Name 'TargetReleaseVersion' -Force -ErrorAction SilentlyContinue
+        Remove-ItemProperty -LiteralPath $wuPol -Name 'TargetReleaseVersionInfo' -Force -ErrorAction SilentlyContinue
+        Remove-ItemProperty -LiteralPath $wuPol -Name 'ProductVersion' -Force -ErrorAction SilentlyContinue
     }
     $items['WuAuPolicy'] = 'DONE'
     Write-Scrub 'INFO' '2296: WU AU suppression policy removal attempted.'
@@ -13796,36 +13809,43 @@ function Invoke-FbOobeHandoff {
             }
 
             # ==========================================================
-            # 2026.06.12.2276-fix-0x80246017-terminal Fix B: OS version
-            # guard for feature-upgrade re-offers. If WU still offers
-            # "Windows X, version YH2" but the running OS already reports
-            # that DisplayVersion, the update cannot be installed (WU will
-            # fail with 0x80246017 DM_UNAUTHORIZED every time). Detect
-            # this and add the offending UpdateId to GivenUpIds BEFORE
-            # the residual filter so it is excluded on this same pass.
+            # Feature-upgrade guard: skip 25H2 enablement / Feature update
+            # when the UUP image is already 25H2 (DisplayVersion or build
+            # 26200 / Germanium family). Quality LCUs are not skipped.
+            # Scan-time Select-FbWuInstallableUpdates already hid these;
+            # this STAGE 1 pass is belt-and-suspenders for anything still
+            # offered (legacy title shapes, hide failed, etc.).
             # ==========================================================
             try {
+                $fbOs = $null
+                try { $fbOs = Get-FbOsReleaseIdentity } catch {}
                 $fbOsDisplayVersion = ''
-                try {
-                    $fbOsDisplayVersion = [string](Get-ItemProperty `
-                        'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion' `
-                        -Name 'DisplayVersion' -ErrorAction SilentlyContinue).DisplayVersion
-                } catch {}
-                if (-not [string]::IsNullOrWhiteSpace($fbOsDisplayVersion)) {
+                try { $fbOsDisplayVersion = [string]$fbOs.DisplayVersion } catch {}
+                if ($null -eq $fbOs) {
+                    try {
+                        $fbOsDisplayVersion = [string](Get-ItemProperty `
+                            'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion' `
+                            -Name 'DisplayVersion' -ErrorAction SilentlyContinue).DisplayVersion
+                    } catch {}
+                }
+                if ($true) {
                     $fbVersionGuardPromoted = 0
                     foreach ($fbScanU in $stage1Scan) {
                         $fbScanUid   = ''; try { $fbScanUid   = [string]$fbScanU.UpdateId } catch {}
                         $fbScanTitle = ''; try { $fbScanTitle = [string]$fbScanU.Title     } catch {}
                         if ([string]::IsNullOrWhiteSpace($fbScanUid) -or [string]::IsNullOrWhiteSpace($fbScanTitle)) { continue }
                         if ($givenUpIds.Contains($fbScanUid)) { continue }
-                        if ($fbScanTitle -match 'Windows\s+\d+,\s+version\s+(\w+)') {
-                            $fbOfferedVer = $Matches[1]
-                            if ($fbOfferedVer -ieq $fbOsDisplayVersion) {
-                                Write-FbLog ("OOBE handoff (STAGE 1 gate) Fix B: Skipping feature-upgrade re-offer '{0}': OS is already at DisplayVersion={1} which satisfies offered version={2}. Adding to GivenUp." -f $fbScanTitle, $fbOsDisplayVersion, $fbOfferedVer) 'WARN'
-                                $fbScanKey = ''; try { $fbScanKey = [string](Get-FbRetryKey -Update $fbScanU) } catch {}
-                                [void]$givenUpIds.Add($fbScanUid)
-                                if (-not [string]::IsNullOrWhiteSpace($fbScanKey)) { [void]$givenUpIds.Add($fbScanKey) }
-                                $fbVersionGuardPromoted++
+                        $fbScanKb = ''; try { $fbScanKb = [string]$fbScanU.KB } catch {}
+                        $fbScanCats = @(); try { $fbScanCats = @($fbScanU.Categories) } catch {}
+                        $fbIsRedundant = $false
+                        try {
+                            $fbIsRedundant = [bool](Test-FbWuIsRedundantFeatureUpgrade -Title $fbScanTitle -Categories $fbScanCats -KB $fbScanKb -Os $fbOs)
+                        } catch {
+                            if ($fbScanTitle -match 'Windows\s+\d+,\s+version\s+(\w+)') {
+                                $fbOfferedVer = $Matches[1]
+                                if ($fbOfferedVer -and $fbOsDisplayVersion -and ($fbOfferedVer -ieq $fbOsDisplayVersion)) {
+                                    $fbIsRedundant = $true
+                                }
                             }
                         }
                         $fbScanKb = ''; try { $fbScanKb = [string]$fbScanU.KB } catch {}

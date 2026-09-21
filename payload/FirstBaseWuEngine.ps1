@@ -169,6 +169,205 @@ function Initialize-FbWuEnvironment {
         $svcMgr = New-Object -ComObject Microsoft.Update.ServiceManager
         $null = $svcMgr.AddService2($script:FbWuMicrosoftUpdateServiceId, 7, '')
     } catch {}
+
+    # Pin WU to the already-installed feature release for this imaging pass only
+    # (cleared at seal). Stops the 25H2 feature/enablement re-offer on a UUP 25H2
+    # image without hiding quality/security LCUs.
+    try {
+        $os = Get-FbOsReleaseIdentity
+        $dv = [string]$os.DisplayVersion
+        if ($dv -match '^\d{2}H[12]$') {
+            $wuPol = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate'
+            if (-not (Test-Path -LiteralPath $wuPol)) {
+                New-Item -Path $wuPol -Force -ErrorAction SilentlyContinue | Out-Null
+            }
+            Set-ItemProperty -LiteralPath $wuPol -Name 'TargetReleaseVersion' -Value 1 -Type DWord -Force -ErrorAction SilentlyContinue
+            Set-ItemProperty -LiteralPath $wuPol -Name 'TargetReleaseVersionInfo' -Value $dv -Type String -Force -ErrorAction SilentlyContinue
+            Set-ItemProperty -LiteralPath $wuPol -Name 'ProductVersion' -Value 'Windows 11' -Type String -Force -ErrorAction SilentlyContinue
+        }
+    } catch {}
+}
+
+function Get-FbOsReleaseIdentity {
+    <#
+    .SYNOPSIS
+        Current Windows DisplayVersion / build for feature-upgrade skip.
+    #>
+    $display = ''
+    $build = 0
+    $ubr = 0
+    $product = ''
+    try {
+        $cv = Get-ItemProperty -LiteralPath 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion' -ErrorAction Stop
+        try { $display = [string]$cv.DisplayVersion } catch {}
+        try { $build = [int]$cv.CurrentBuild } catch {
+            try { $build = [int]$cv.CurrentBuildNumber } catch { $build = 0 }
+        }
+        try { $ubr = [int]$cv.UBR } catch { $ubr = 0 }
+        try { $product = [string]$cv.ProductName } catch {}
+    } catch {}
+    return [pscustomobject]@{
+        DisplayVersion = $display
+        CurrentBuild   = $build
+        UBR            = $ubr
+        ProductName    = $product
+        Is25H2         = ($display -ieq '25H2' -or $build -eq 26200)
+        IsGermanium    = ($build -eq 26100 -or $build -eq 26200)
+    }
+}
+
+function Test-FbWuTitleLooksLikeQualityPatch {
+    param([string]$Title)
+    if ([string]::IsNullOrWhiteSpace($Title)) { return $false }
+    # Real monthly/security/servicing packages — never skip these.
+    if ($Title -match '(?i)enablement\s+package') { return $false }
+    if ($Title -match '(?i)feature\s+update(\s+to)?\s+windows') { return $false }
+    return [bool]($Title -match '(?i)cumulative update|security update|quality update|servicing stack|\.NET Framework|defender|malware|definition update|monthly rollup|\bLCU\b|\bSSU\b')
+}
+
+function Test-FbWuIsRedundantFeatureUpgrade {
+    <#
+    .SYNOPSIS
+        True when WUA is offering a feature upgrade / enablement package
+        for a Windows 11 version the OS already has (or the same Germanium
+        25H2 family after a UUP 25H2 image). Quality/security LCUs stay.
+    #>
+    param(
+        [string]$Title,
+        [string[]]$Categories = @(),
+        [string]$KB = '',
+        $Os = $null
+    )
+    if ([string]::IsNullOrWhiteSpace($Title)) { return $false }
+    if (Test-FbWuTitleLooksLikeQualityPatch -Title $Title) { return $false }
+
+    if ($null -eq $Os) { $Os = Get-FbOsReleaseIdentity }
+    $display = ''
+    $build = 0
+    try { $display = [string]$Os.DisplayVersion } catch {}
+    try { $build = [int]$Os.CurrentBuild } catch { $build = 0 }
+    $already25H2 = ($display -ieq '25H2' -or $build -eq 26200)
+
+    $catBlob = ''
+    try { $catBlob = (@($Categories) -join '|') } catch {}
+    $isEnablement = [bool]($Title -match '(?i)enablement\s+package')
+    $isFeatureUpdate = [bool]($Title -match '(?i)feature\s+update(\s+to)?\s+windows')
+    $isUpgradeCategory = [bool]($catBlob -match '(?i)Upgrades')
+    $kbIs25H2Enablement = [bool]($KB -match '(?i)KB5054156')
+    if (-not ($isEnablement -or $isFeatureUpdate -or $isUpgradeCategory -or $kbIs25H2Enablement)) {
+        return $false
+    }
+
+    $offered = ''
+    if ($Title -match '(?i)version\s+(\d{2}H[12])') { $offered = $Matches[1] }
+    elseif ($Title -match '(?i)\b(\d{2}H[12])\b') { $offered = $Matches[1] }
+
+    if ($offered -and $display -and ($offered -ieq $display)) { return $true }
+
+    # 25H2 UUP (build 26200, or 26100 with DisplayVersion 25H2): skip the
+    # enablement package AND the full "Feature update to Windows 11, version 25H2"
+    # re-offer. 24H2 (26100 / DisplayVersion 24H2) still gets the small 25H2
+    # enablement KB; only the multi-GB Feature update is skipped on Germanium.
+    if ($offered -ieq '25H2' -or $Title -match '(?i)25H2' -or $kbIs25H2Enablement) {
+        if ($already25H2) { return $true }
+        if ($isFeatureUpdate -and -not $isEnablement -and ($build -eq 26100 -or $build -eq 26200)) { return $true }
+    }
+
+    if ($offered -ieq '24H2' -and ($display -ieq '24H2' -or $display -ieq '25H2' -or $build -eq 26100 -or $build -eq 26200)) {
+        return $true
+    }
+
+    return $false
+}
+
+function Hide-FbWuOfferedUpdates {
+    <#
+    .SYNOPSIS
+        Set IUpdate.IsHidden=true for the given UpdateIDs in one WUA search.
+    #>
+    param(
+        [string[]]$UpdateIds,
+        [int]$TimeoutSeconds = 120
+    )
+    $ids = @($UpdateIds | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -Unique)
+    if ($ids.Count -eq 0) { return 0 }
+
+    $job = Start-Job -ScriptBlock {
+        param($targetIds, $muServiceId)
+        $ErrorActionPreference = 'Stop'
+        $set = @{}
+        foreach ($id in @($targetIds)) { $set[[string]$id] = $true }
+        $hidden = 0
+        $svcManager = New-Object -ComObject Microsoft.Update.ServiceManager
+        try { $null = $svcManager.AddService2($muServiceId, 7, '') } catch {}
+        $session = New-Object -ComObject Microsoft.Update.Session
+        $searcher = $session.CreateUpdateSearcher()
+        $searcher.Online = $true
+        try {
+            $searcher.ServerSelection = 3
+            $searcher.ServiceID = $muServiceId
+        } catch {
+            $searcher.ServerSelection = 2
+        }
+        $result = $searcher.Search("IsInstalled=0 and IsHidden=0")
+        for ($i = 0; $i -lt $result.Updates.Count; $i++) {
+            $u = $result.Updates.Item($i)
+            $uid = [string]$u.Identity.UpdateID
+            if ($set.ContainsKey($uid)) {
+                try { $u.IsHidden = $true; $hidden++ } catch {}
+            }
+        }
+        return $hidden
+    } -ArgumentList @(, $ids), $script:FbWuMicrosoftUpdateServiceId
+
+    if (-not (Wait-Job -Job $job -Timeout $TimeoutSeconds)) {
+        Stop-Job -Job $job -ErrorAction SilentlyContinue | Out-Null
+        Remove-Job -Job $job -Force -ErrorAction SilentlyContinue | Out-Null
+        return 0
+    }
+    try {
+        return [int](Receive-Job -Job $job -ErrorAction SilentlyContinue)
+    } finally {
+        Remove-Job -Job $job -Force -ErrorAction SilentlyContinue | Out-Null
+    }
+}
+
+function Select-FbWuInstallableUpdates {
+    <#
+    .SYNOPSIS
+        Drop redundant same-version feature upgrades from a WUA scan and hide them.
+    #>
+    param(
+        [Parameter(Mandatory)]$Updates
+    )
+    $os = Get-FbOsReleaseIdentity
+    $kept = New-Object System.Collections.Generic.List[object]
+    $hideIds = New-Object System.Collections.Generic.List[string]
+    foreach ($u in @($Updates)) {
+        if ($null -eq $u) { continue }
+        $title = ''
+        $uid = ''
+        $kb = ''
+        $cats = @()
+        try { $title = [string]$u.Title } catch {}
+        try { $uid = [string]$u.UpdateId } catch {}
+        try { $kb = [string]$u.KB } catch {}
+        try { $cats = @($u.Categories) } catch {}
+        if (Test-FbWuIsRedundantFeatureUpgrade -Title $title -Categories $cats -KB $kb -Os $os) {
+            if (-not [string]::IsNullOrWhiteSpace($uid)) { [void]$hideIds.Add($uid) }
+            if (Get-Command -Name Write-FbLog -ErrorAction SilentlyContinue) {
+                try {
+                    Write-FbLog ("Skipping redundant feature upgrade '{0}' (UpdateId={1}; OS DisplayVersion={2} build={3}). Quality/security updates are not skipped." -f $title, $uid, $os.DisplayVersion, $os.CurrentBuild) 'WARN'
+                } catch {}
+            }
+            continue
+        }
+        [void]$kept.Add($u)
+    }
+    if ($hideIds.Count -gt 0) {
+        try { $null = Hide-FbWuOfferedUpdates -UpdateIds @($hideIds) } catch {}
+    }
+    return @($kept)
 }
 
 function Get-FbOsVersionIdentity {

@@ -2518,7 +2518,6 @@ try {
         'FirstBaseDeferredOobeSound.ps1' = @((Join-Path $FbRoot 'FirstBaseDeferredOobeSound.ps1'))
         'FirstBaseOobeOperatorFinalize.ps1' = @((Join-Path $FbRoot 'FirstBaseOobeOperatorFinalize.ps1'))
         'FirstBaseVersion.ps1'            = @((Join-Path $FbRoot 'FirstBaseVersion.ps1'))
-        'Install-FbMicrosoftEdge.ps1'     = @((Join-Path $FbRoot 'Install-FbMicrosoftEdge.ps1'))
         'SetupComplete.cmd'               = @(
             'C:\Windows\Setup\Scripts\SetupComplete.cmd'
             (Join-Path $FbRoot 'SetupComplete.cmd')
@@ -10995,7 +10994,6 @@ function Copy-FbOobeOperatorProgramDataKit {
         'FirstBaseHardwareCheck.ps1'
         'Install-FbMicrosoftEdge.ps1'
         'FirstBaseHandoffSplash.ps1'
-        'Install-FbMicrosoftEdge.ps1'
     )
     foreach ($leaf in $manualTriageLeaves) {
         $src = Resolve-FbOobeKitScriptSource -Leaf $leaf

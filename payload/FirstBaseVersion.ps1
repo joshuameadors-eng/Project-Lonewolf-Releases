@@ -112,8 +112,6 @@ $FirstBaseScriptVersion = @{
     'FirstBaseHardwareCheck.ps1'        = '1.0.3'
     'Install-FbMicrosoftEdge.ps1'       = '1.0.0'
 
-    'Install-FbMicrosoftEdge.ps1'       = '1.0.0'
-
 
 
 }

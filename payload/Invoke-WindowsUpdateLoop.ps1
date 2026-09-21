@@ -591,6 +591,9 @@ $FbSplashOobeOverlayMarkerPath = 'C:\ProgramData\FirstBase\FirstBase-Splash-Oobe
 $FbProgramDataFirstBase     = 'C:\ProgramData\FirstBase'
 $FbArmSuppressMarkerPath    = (Join-Path $FbProgramDataFirstBase '.firstbase-specialize-arm-suppressed')
 $FbPipelineCompletedMarkerPath = (Join-Path $FbProgramDataFirstBase '.pipeline-completed')
+# 6.1.13: same-image first-apply lock written by SetupComplete.cmd. Remove at STAGE 2
+# so post-sysprep specialize cannot treat it as "kick the Audit loop again".
+$FbFirstApplyArmedMarkerPath = (Join-Path $FbProgramDataFirstBase '.firstbase-first-apply-armed')
 # 2026.05.21.2217/2218: legacy gate file name. 2218 no longer waits on it from splash; optional diagnostic only.
 # Invoke-SysprepToOobe writes it ONLY after sysprep.exe validation exit 0.
 $FbOobeSoundUserRebootGatePath = Join-Path 'C:\ProgramData\FirstBase' '.oobe-sound-user-reboot-allowed'
@@ -14460,6 +14463,14 @@ function Invoke-FbOobeHandoff {
             Write-FbLog ("Bug U fence 1 (2226): wrote arm-suppress marker to {0}; post-sysprep specialize will skip arming. Operator .pipeline-completed is deferred until Settings close (FirstBaseOobeOperatorFinalize.ps1)." -f $FbArmSuppressMarkerPath) 'INFO'
         } catch {
             Write-FbLog ("Bug U fence 1 (2226): FAILED to write arm-suppress marker to {0}: {1}; Fence 1 may not engage on post-sysprep specialize pass; relying on Fence 2 (Winlogon scrub in Invoke-FbPreSysprepScrub STEP 3b) as sole defense against Bug U." -f $FbArmSuppressMarkerPath, $_.Exception.Message) 'ERROR'
+        }
+        try {
+            if (Test-Path -LiteralPath $FbFirstApplyArmedMarkerPath) {
+                Remove-Item -LiteralPath $FbFirstApplyArmedMarkerPath -Force -ErrorAction Stop
+                Write-FbLog '6.1.13: removed first-apply armed marker before sysprep (must not kick the Audit loop on post-sysprep specialize).' 'INFO'
+            }
+        } catch {
+            Write-FbLog ("6.1.13: failed to remove first-apply armed marker: {0}" -f $_.Exception.Message) 'WARN'
         }
         try {
             $stageKitForOobeOverlay = $false

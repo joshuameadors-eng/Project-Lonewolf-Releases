@@ -200,6 +200,11 @@ set "FB_PROGRAMDATA_DIR=C:\ProgramData\FirstBase"
 set "FB_SPLASH_OOBE_OVERLAY_MARKER=%FB_PROGRAMDATA_DIR%\FirstBase-Splash-Oobe-Overlay.mode"
 set "FB_ARM_SUPPRESS_MARKER=%FB_PROGRAMDATA_DIR%\.firstbase-specialize-arm-suppressed"
 set "FB_PIPELINE_COMPLETED_MARKER=%FB_PROGRAMDATA_DIR%\.pipeline-completed"
+:: 6.1.13 CQMLYB4-0805-DellInc: same-image first-apply lock. Autounattend RunSynchronous
+:: AND %WINDIR%\Setup\Scripts\SetupComplete.cmd both invoke this file. The second pass
+:: used to /F-replace ONSTART/ONLOGON tasks after the first pass had already queued
+:: them, then OOBE swallowed RunOnce so the update loop never started.
+set "FB_FIRST_APPLY_ARMED=%FB_PROGRAMDATA_DIR%\.firstbase-first-apply-armed"
 set "FB_SEALED_MARKER=%FB_PROGRAMDATA_DIR%\.firstbase-sealed"
 set "FB_DEFERRED_SOUND_ARMED=%FB_PROGRAMDATA_DIR%\.deferred-oobe-sound-runonce-armed"
 set "FB_DEFERRED_SOUND_PS=%FB_PROGRAMDATA_DIR%\FirstBaseDeferredOobeSound.ps1"
@@ -361,6 +366,10 @@ call :LOG "============================================================"
 :: is needed — we are jumping to :DONE via Fence 1 anyway.
 if exist "%FB_ARM_SUPPRESS_MARKER%" (
     call :LOG "2279: fence 1 pre-cleanup guard: arm-suppress present at %FB_ARM_SUPPRESS_MARKER% — post-sysprep OOBE boot detected. Skipping per-image cleanup; jumping to Fence 1 body."
+    goto :FENCE1_BODY
+)
+if exist "%FB_FIRST_APPLY_ARMED%" (
+    call :LOG "6.1.13: first-apply armed marker present at %FB_FIRST_APPLY_ARMED% — skipping per-image FRESH wipe on this SetupComplete re-entry."
     goto :FENCE1_BODY
 )
 
@@ -537,7 +546,15 @@ if exist "%FB_PIPELINE_COMPLETED_MARKER%" (
     call :LOG "Bug U fence 1 (2226): pipeline completion marker present at %FB_PIPELINE_COMPLETED_MARKER% (operator finalize or legacy). Post-sysprep specialize pass detected. SKIPPING auto-login arming + RunOnce/RunOnceEx/Run arming + scheduled-task creation. OOBE must run untainted."
     goto :DONE
 )
+if exist "%FB_FIRST_APPLY_ARMED%" (
+    call :LOG "6.1.13: first-apply armed marker present at %FB_FIRST_APPLY_ARMED%. Second SetupComplete this image (RunSynchronous + Scripts\SetupComplete.cmd). Skipping re-arm so /F does not kill a running or pending loop. Kicking the pipeline instead."
+    call :KICK_PIPELINE
+    goto :DONE
+)
 call :LOG "Bug U fence 1 (2226): no arm-suppress at %FB_ARM_SUPPRESS_MARKER% and no pipeline marker at %FB_PIPELINE_COMPLETED_MARKER%. First image-apply specialize pass. Proceeding with full arming."
+if not exist "%FB_PROGRAMDATA_DIR%" mkdir "%FB_PROGRAMDATA_DIR%" >nul 2>&1
+> "%FB_FIRST_APPLY_ARMED%" echo First-apply pipeline armed %DATE% %TIME%
+call :LOG "6.1.13: wrote first-apply armed marker %FB_FIRST_APPLY_ARMED% (re-entry will not /F-replace tasks)."
 :: 2285-arm-first: WU loop trigger registration MUST run before any slow
 :: security-hardening operations (ADD_DEFENDER_EXCLUSION, DISABLE_DEFENDER,
 :: SUPPRESS_MDM_ENROLLMENT). Field evidence on PF3THF6C-1003-Lenovo (payload
@@ -1076,14 +1093,6 @@ schtasks /Query /TN "%FB_DEBUG_HOTKEY_WATCHER_TASK%" /V /FO LIST >> "%FB_SCHTASK
     echo.
 ) >> "%FB_SCHTASKS_STATE_LOG%" 2>&1
 
-:: NOTE: We deliberately do NOT call 'schtasks /Run' here. SetupComplete is
-:: invoked from the specialize pass, BEFORE Reseal reboots the box into
-:: Audit Mode. Launching the loop now would run in a stripped specialize
-:: environment with no shell or networking, then get killed by the Audit
-:: reboot (it produced a misleading "started successfully" log line in
-:: prior builds). The RunOnce + ONLOGON triggers fire post-Audit-logon,
-:: which is the only viable launch point.
-
 :: ?? 2283-arm-verify Bug LL: post-creation verification pass ???????????????
 :: Query each critical loop trigger to confirm it actually exists in the
 :: scheduler / registry before declaring the arm succeeded.
@@ -1126,9 +1135,15 @@ if "!FB_RUNONCE_VERIFY_EC!"=="1" (
 if "!FB_VERIFY_FAIL!"=="1" (
     call :LOG "ERROR: [ARM] 2283-arm-verify: One or more critical loop trigger registrations failed or are absent. FB_ARM_STATUS=!FB_ARM_STATUS!. Device will NOT run the update pipeline automatically. Inspect schtasks-firstbase-state.log and SetupComplete.log. Re-image may be required."
 ) else (
-    call :LOG "OK: [ARM] 2283-arm-verify: All critical loop trigger layers verified present (FB_ARM_STATUS=!FB_ARM_STATUS!). Pipeline will run on next logon/startup."
+    call :LOG "OK: [ARM] 2283-arm-verify: All critical loop trigger layers verified present (FB_ARM_STATUS=!FB_ARM_STATUS!). Kicking the loop now; OOBE will not process RunOnce/ONLOGON."
 )
-call :LOG "Trigger summary: RunOnce=^^!FirstBaseWuLoop + RunOnceEx=FirstBaseWuLoop + Run=FirstBaseWuLoopRun + %FB_TASK% ONSTART/SYSTEM + %FB_LOGON_TASK% ONLOGON/Admins. Splash: %FB_SPLASH_WATCHER_TASK% SYSTEM ONSTART (watcher); %FB_SPLASH_TASK% TRIGGERLESS; HKLM RunOnce ^^!FirstBaseWuSplash; loop UpdateSplashLayer4 bridge. [DEBUG] 2249: %FB_DEBUG_HOTKEY_WATCHER_TASK% ONLOGON/IT. System will reboot to Audit Mode."
+call :LOG "Trigger summary: RunOnce=^^!FirstBaseWuLoop + RunOnceEx=FirstBaseWuLoop + Run=FirstBaseWuLoopRun + %FB_TASK% ONSTART/SYSTEM + %FB_LOGON_TASK% ONLOGON/Admins. Splash: %FB_SPLASH_WATCHER_TASK% SYSTEM ONSTART (watcher); %FB_SPLASH_TASK% TRIGGERLESS; HKLM RunOnce ^^!FirstBaseWuSplash; loop UpdateSplashLayer4 bridge. [DEBUG] 2249: %FB_DEBUG_HOTKEY_WATCHER_TASK% ONLOGON/IT. 6.1.13: explicit schtasks /Run (no Reseal reboot; OOBE swallows logon triggers)."
+:: 6.1.13 CQMLYB4-0805-DellInc: Bug B1 removed Reseal=Audit, so there is NO
+:: specialize->Audit reboot. The first interactive session is OOBE (WWAHost),
+:: which does not process HKLM Run/RunOnce and often skips ONLOGON tasks.
+:: ONSTART already missed if the task was created this boot. Explicit /Run
+:: is the launch; IgnoreNew makes a second kick a no-op if the loop is up.
+call :KICK_PIPELINE
 
 :: ?? 2295-hardening-reorder + PS-free MDM block ???????????????????????????????
 :: Pre-reboot hardening runs in this order so the MOST IMPORTANT step (MDM
@@ -1227,6 +1242,30 @@ if errorlevel 1 call :LOG "WARN: Recovery screen suppression returned non-zero; 
 call :LOG "SetupComplete exiting"
 endlocal
 exit /b 0
+
+:KICK_PIPELINE
+:: 6.1.13 CQMLYB4-0805-DellInc: start the WU loop and splash watcher now.
+:: RunOnce/ONLOGON do not fire under OOBE; ONSTART already missed this boot
+:: when tasks are created during specialize. IgnoreNew = second kick is a no-op.
+setlocal EnableDelayedExpansion
+if "%FB_SELFTEST_MODE%"=="1" (
+    call :LOG "SELF-TEST: skipped schtasks /Run pipeline kick"
+    endlocal & exit /b 0
+)
+call :LOG "Kicking %FB_TASK% and %FB_SPLASH_WATCHER_TASK% (OOBE swallows RunOnce/ONLOGON; no Reseal reboot)"
+schtasks /Run /TN "%FB_TASK%" >> "%FB_LOG%" 2>&1 <nul
+if !ERRORLEVEL! EQU 0 (
+    call :LOG "OK: schtasks /Run %FB_TASK%"
+) else (
+    call :LOG "WARN: schtasks /Run %FB_TASK% exit=!ERRORLEVEL! (IgnoreNew if already running is OK)"
+)
+schtasks /Run /TN "%FB_SPLASH_WATCHER_TASK%" >> "%FB_LOG%" 2>&1 <nul
+if !ERRORLEVEL! EQU 0 (
+    call :LOG "OK: schtasks /Run %FB_SPLASH_WATCHER_TASK%"
+) else (
+    call :LOG "WARN: schtasks /Run %FB_SPLASH_WATCHER_TASK% exit=!ERRORLEVEL!"
+)
+endlocal & exit /b 0
 
 :: ?? Subroutines ?????????????????????????????????????????????????????????
 :: Both RunOnce arming routines run with delayed expansion DISABLED so the
@@ -1875,14 +1914,20 @@ echo }
 echo if ($svc -and $svc.Status -ne 'Running') {
 echo     Write-Output "WARN: WinDefend not Running after ${waited}s — skipping Add-MpPreference (not critical)"
 echo } else {
-echo     try {
+echo     $job = Start-Job -ScriptBlock {
 echo         Add-MpPreference -ExclusionPath 'C:\Windows\Setup\FirstBase' -ErrorAction Stop
 echo         Add-MpPreference -ExclusionPath 'C:\ProgramData\FirstBase' -ErrorAction Stop
 echo         Add-MpPreference -ExclusionPath 'C:\ProgramData\Microsoft\Windows\Start Menu\Programs\Startup' -ErrorAction Stop
-echo         Write-Output 'OK: Defender exclusions added for FirstBase directories'
-echo     } catch {
-echo         Write-Output ('WARN: Add-MpPreference threw: ' + $_.Exception.Message^)
+echo         'OK: Defender exclusions added for FirstBase directories'
 echo     }
+echo     $done = Wait-Job -Job $job -Timeout 25
+echo     if ($done) {
+echo         Receive-Job -Job $job
+echo     } else {
+echo         Stop-Job -Job $job -ErrorAction SilentlyContinue
+echo         Write-Output 'WARN: Add-MpPreference timed out after 25s — continuing (not critical)'
+echo     }
+echo     Remove-Job -Job $job -Force -ErrorAction SilentlyContinue
 echo }
 ) > "%FB_DEFEXCL_TMPSCRIPT%"
 :: 2295-fail-isolation: run the temp .ps1 in a detached process tree so a Defender

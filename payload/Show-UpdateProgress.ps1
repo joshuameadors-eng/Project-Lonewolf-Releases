@@ -323,6 +323,7 @@ $FbSealedMarker = 'C:\ProgramData\FirstBase\.firstbase-sealed'
 # so the operator's Settings window can take the foreground.
 $FbSplashOperatorGateActive = 'C:\ProgramData\FirstBase\.operator-settings-gate-active'
 $script:FbSplashOperatorGateStoodDown = $false
+$script:FbSplashLoopKickAttempted = $false
 
 function Test-FbSplash2222OobeOverlayHandoffActive {
     # 2222: Updates-done marker is present AND OOBE overlay handoff is still active  -  keep OOBE Z-order
@@ -3016,6 +3017,51 @@ function Get-LatestLog {
         Select-Object -First 1
 }
 
+function Invoke-FbSplashKickLoopIfStalled {
+    # 6.1.13 CQMLYB4-0805-DellInc: splash can sit over OOBE while the WU loop
+    # never starts (OOBE swallows RunOnce/ONLOGON; a second SetupComplete /F
+    # can kill ONSTART). Kick FirstBase\WindowsUpdateLoop once after 60s if
+    # there is still no loop evidence.
+    if ($script:Preview) { return }
+    if ($script:FbSplashLoopKickAttempted) { return }
+    if (Test-Path -LiteralPath $Marker) { return }
+    if (Test-Path -LiteralPath $FbSplashSealTeardownMarker) { return }
+    $elapsedSec = 0
+    try {
+        if ($null -eq $script:startTime) { return }
+        $elapsedSec = [int]((Get-Date) - $script:startTime).TotalSeconds
+    } catch { return }
+    if ($elapsedSec -lt 60) { return }
+
+    $statusFile = Join-Path $FbRoot 'wu-status.json'
+    $heartbeat = Join-Path $FbRoot 'wu-loop-heartbeat.txt'
+    if ((Test-Path -LiteralPath $statusFile) -or (Test-Path -LiteralPath $heartbeat) -or (Test-Path -LiteralPath $FbSplashWuLoopPaintingMarker)) {
+        $script:FbSplashLoopKickAttempted = $true
+        return
+    }
+    $loopRunning = $false
+    try {
+        $loopRunning = [bool]@(
+            Get-CimInstance -ClassName Win32_Process -Filter "Name='powershell.exe'" -ErrorAction SilentlyContinue |
+                Where-Object { $_.CommandLine -and ($_.CommandLine -match 'Invoke-WindowsUpdateLoop\.ps1') }
+        )
+    } catch {}
+    if ($loopRunning) {
+        $script:FbSplashLoopKickAttempted = $true
+        return
+    }
+
+    $script:FbSplashLoopKickAttempted = $true
+    try { Write-SplashLog '6.1.13: no wu-status/heartbeat after 60s; kicking FirstBase\WindowsUpdateLoop (OOBE/logon triggers did not fire)' 'WARN' } catch {}
+    try {
+        $runOut = & "$env:SystemRoot\System32\schtasks.exe" /Run /TN 'FirstBase\WindowsUpdateLoop' 2>&1
+        $runExit = $LASTEXITCODE
+        try { Write-SplashLog ("6.1.13: schtasks /Run WindowsUpdateLoop exit={0} output={1}" -f $runExit, (($runOut | ForEach-Object { "$_" }) -join ' ')) } catch {}
+    } catch {
+        try { Write-SplashLog ("6.1.13: schtasks /Run WindowsUpdateLoop threw: {0}" -f $_.Exception.Message) 'ERROR' } catch {}
+    }
+}
+
 function Get-StatusFromStateFile {
     if (-not (Test-Path $StatusFile)) { return $null }
     $raw = $null
@@ -3252,6 +3298,7 @@ $script:timer = $timer
 $timer.Interval = [TimeSpan]::FromSeconds(1)
 $timer.Add_Tick({
     try { Invoke-FbSplashHonorOperatorSettingsGate } catch {}
+    try { Invoke-FbSplashKickLoopIfStalled } catch {}
     # 2305: seal-window teardown - the update loop opened the OOBE handoff seal window; stand down so only the real
     # customer OOBE shows (the splash can no longer take the foreground once Layer 2 is seal-gated). Bypasses the
     # Updates-Done close guard via $script:FbSplashTeardownRequested.

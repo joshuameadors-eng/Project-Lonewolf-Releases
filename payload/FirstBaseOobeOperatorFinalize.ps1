@@ -119,17 +119,29 @@ function Clear-FbPostOperatorWinlogonAutologon {
         }
     }
     try {
-        $p = Start-Process -FilePath 'net.exe' -ArgumentList @('user', 'Administrator', '/active:no') -WindowStyle Hidden -PassThru -ErrorAction SilentlyContinue
-        if ($p) {
-            $exited = $p.WaitForExit(3000)
-            if (-not $exited) {
-                try { $p.Kill() } catch {}
-                Write-FbOperatorFinalizeMirror '2250: net.exe Administrator disable timed out (3000ms); process killed; continuing.' 'WARN'
+        $disableNames = New-Object System.Collections.Generic.List[string]
+        try {
+            $rid500 = Get-CimInstance -ClassName Win32_UserAccount -Filter "LocalAccount=True" -ErrorAction Stop |
+                Where-Object { [string]$_.SID -match '-500$' } |
+                Select-Object -First 1
+            if ($rid500 -and $rid500.Name) { [void]$disableNames.Add([string]$rid500.Name) }
+        } catch {}
+        foreach ($auditName in @('Project Lonewolf', 'Administrator')) {
+            if (-not $disableNames.Contains($auditName)) { [void]$disableNames.Add($auditName) }
+        }
+        foreach ($auditName in @($disableNames)) {
+            $p = Start-Process -FilePath 'net.exe' -ArgumentList @('user', $auditName, '/active:no') -WindowStyle Hidden -PassThru -ErrorAction SilentlyContinue
+            if ($p) {
+                $exited = $p.WaitForExit(3000)
+                if (-not $exited) {
+                    try { $p.Kill() } catch {}
+                    Write-FbOperatorFinalizeMirror ("2250: net.exe disable of '{0}' timed out (3000ms); process killed; continuing." -f $auditName) 'WARN'
+                }
             }
         }
-        Write-FbOperatorFinalizeMirror '2231: post-operator scrub net user Administrator /active:no issued.' 'INFO'
+        Write-FbOperatorFinalizeMirror '2231: post-operator scrub disabled the temporary audit admin (Project Lonewolf / RID 500 / Administrator).' 'INFO'
     } catch {
-        Write-FbOperatorFinalizeMirror ("2231: post-operator Administrator disable WARN: {0}" -f $_.Exception.Message) 'WARN'
+        Write-FbOperatorFinalizeMirror ("2231: post-operator audit admin disable WARN: {0}" -f $_.Exception.Message) 'WARN'
     }
     Write-FbOperatorFinalizeMirror ("2231: post-operator Winlogon scrub finished ({0} value(s) removed)." -f $removed) 'INFO'
     return $removed
@@ -149,7 +161,7 @@ Write-FbOperatorFinalizeMirror ("2231: operator finalize starting (payload={0} s
 
 # 2250: Operator context guard — informational only; delivery must complete regardless.
 $fbFinalizeUser = $env:USERNAME
-$fbIsOobeContext = ($fbFinalizeUser -eq 'defaultuser0') -or ($fbFinalizeUser -eq 'SYSTEM') -or ($fbFinalizeUser -eq 'Administrator') -or ([string]::IsNullOrWhiteSpace($fbFinalizeUser))
+$fbIsOobeContext = ($fbFinalizeUser -eq 'defaultuser0') -or ($fbFinalizeUser -eq 'SYSTEM') -or ($fbFinalizeUser -eq 'Administrator') -or ($fbFinalizeUser -eq 'Project Lonewolf') -or ([string]::IsNullOrWhiteSpace($fbFinalizeUser))
 if (-not $fbIsOobeContext) {
     Write-FbOperatorFinalizeMirror ("2250: WARN finalize running for non-OOBE user [{0}]; delivery will still complete." -f $fbFinalizeUser) 'WARN'
 }

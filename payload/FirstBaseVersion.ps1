@@ -66,9 +66,9 @@ $FirstBaseScriptVersion = @{
 
     'Build-UsbStick.ps1'               = '1.1.0'
 
-    'Invoke-WindowsUpdateLoop.ps1'       = '1.0.32'
+    'Invoke-WindowsUpdateLoop.ps1'       = '1.0.50'
 
-    'SetupComplete.cmd'                = '1.0.8'
+    'SetupComplete.cmd'                = '1.0.15'
 
 
 
@@ -76,7 +76,7 @@ $FirstBaseScriptVersion = @{
 
 
 
-    'Show-UpdateProgress.ps1'          = '3.0.16'
+    'Show-UpdateProgress.ps1'          = '3.0.28'
 
 
 
@@ -90,12 +90,12 @@ $FirstBaseScriptVersion = @{
 
 
 
-    'FirstBaseDeferredOobeSound.ps1'   = '1.0.6'
+    'FirstBaseDeferredOobeSound.ps1'   = '1.0.7'
 
 
 
-    'FirstBaseOobeOperatorFinalize.ps1' = '1.0.10'
-    'FirstBaseOobeDeferredSoundBootstrap.ps1' = '1.0.5'
+    'FirstBaseOobeOperatorFinalize.ps1' = '1.0.11'
+    'FirstBaseOobeDeferredSoundBootstrap.ps1' = '1.0.6'
 
 
 
@@ -105,11 +105,11 @@ $FirstBaseScriptVersion = @{
 
     'FirstBaseShowSplash.ps1'          = '1.0.0'
 
-    'FirstBaseHandoffSplash.ps1'        = '1.0.4'
+    'FirstBaseHandoffSplash.ps1'        = '1.0.5'
 
-    'FirstBaseOpenSettingsAndFinish.ps1' = '1.1.9'
+    'FirstBaseOpenSettingsAndFinish.ps1' = '1.1.12'
 
-    'FirstBaseHardwareCheck.ps1'        = '1.0.3'
+    'FirstBaseHardwareCheck.ps1'        = '1.0.4'
     'Install-FbMicrosoftEdge.ps1'       = '1.0.1'
 
 

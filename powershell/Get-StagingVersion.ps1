@@ -32,8 +32,9 @@
 [CmdletBinding()]
 param(
     [string]$ShareRoot        = '\\WIN-HQ5JDEACV3S\Images\FB Image Creation',
-    [string]$ShareUser        = 'Reflect',
-    [string]$SharePassword    = 'mer*HWE0upt*rqe@dud',
+    # KEEP IN SYNC: LONEWOLF_SHARE_USER / LONEWOLF_SHARE_PASSWORD env-first (see Invoke-LoneWolfBuild.ps1).
+    [string]$ShareUser        = $(if (-not [string]::IsNullOrWhiteSpace($env:LONEWOLF_SHARE_USER)) { $env:LONEWOLF_SHARE_USER } else { 'Reflect' }),
+    [string]$SharePassword    = $(if (-not [string]::IsNullOrWhiteSpace($env:LONEWOLF_SHARE_PASSWORD)) { $env:LONEWOLF_SHARE_PASSWORD } else { 'mer*HWE0upt*rqe@dud' }),
     [string]$WorkflowType     = 'AMD64',
     [string]$WindowsEdition   = 'Pro',  # Home | Pro. Presplit/ISO identity; not LoneWolf vs Quick Install.
     [string]$LocalProjectRoot = '',  # When non-empty: skip share auth and read from this local path instead

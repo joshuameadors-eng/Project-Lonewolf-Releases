@@ -91,10 +91,21 @@ public static class FbSettingsWin32 {
     [DllImport("user32.dll")] static extern bool BringWindowToTop(IntPtr h);
     [DllImport("user32.dll")] static extern bool AllowSetForegroundWindow(int pid);
     [DllImport("user32.dll")] public static extern bool IsWindow(IntPtr h);
+    [DllImport("user32.dll")] static extern bool SetWindowPos(IntPtr hWnd, IntPtr hWndInsertAfter, int X, int Y, int cx, int cy, uint uFlags);
+    [DllImport("user32.dll")] static extern int GetSystemMetrics(int nIndex);
     [DllImport("dwmapi.dll")] static extern int DwmGetWindowAttribute(IntPtr h, int attr, out int val, int size);
     const int SW_SHOWMAXIMIZED = 3;
     const int ASFW_ANY = -1;
     const int DWMWA_CLOAKED = 14;
+    const int SM_CXSCREEN = 0;
+    const int SM_CYSCREEN = 1;
+    const uint SWP_NOSIZE = 0x0001;
+    const uint SWP_NOMOVE = 0x0002;
+    const uint SWP_NOACTIVATE = 0x0010;
+    const uint SWP_SHOWWINDOW = 0x0040;
+    static readonly IntPtr HWND_TOPMOST = new IntPtr(-1);
+    static readonly IntPtr HWND_NOTOPMOST = new IntPtr(-2);
+    static readonly IntPtr HWND_BOTTOM = new IntPtr(1);
 
     static string ClassOf(IntPtr h){ var sb = new StringBuilder(256); GetClassName(h, sb, sb.Capacity); return sb.ToString(); }
     static string TextOf(IntPtr h){ int n = GetWindowTextLength(h); var sb = new StringBuilder(n + 2); GetWindowText(h, sb, sb.Capacity); return sb.ToString(); }
@@ -201,12 +212,28 @@ public static class FbSettingsWin32 {
         return anyFrame;                            // audit OOBE fallback: only Settings is open
     }
 
-    public static bool ForegroundMaximize(IntPtr h){
+    public static void SendToBack(IntPtr h){
+        if (h == IntPtr.Zero) return;
+        uint behind = SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE;
+        SetWindowPos(h, HWND_NOTOPMOST, 0, 0, 0, 0, behind);
+        SetWindowPos(h, HWND_BOTTOM, 0, 0, 0, 0, behind | SWP_SHOWWINDOW);
+    }
+
+    public static bool ForegroundFullscreen(IntPtr h){
         if (h == IntPtr.Zero) return false;
         try { AllowSetForegroundWindow(ASFW_ANY); } catch {}
+        int cx = GetSystemMetrics(SM_CXSCREEN);
+        int cy = GetSystemMetrics(SM_CYSCREEN);
+        if (cx < 640) cx = 1920;
+        if (cy < 480) cy = 1080;
         ShowWindowAsync(h, SW_SHOWMAXIMIZED);
+        SetWindowPos(h, HWND_TOPMOST, 0, 0, cx, cy, SWP_SHOWWINDOW);
         BringWindowToTop(h);
         return SetForegroundWindow(h);
+    }
+
+    public static bool ForegroundMaximize(IntPtr h){
+        return ForegroundFullscreen(h);
     }
 }
 '@
@@ -228,14 +255,49 @@ function Set-FbSettingsForegroundMaximized {
         $h = [IntPtr]::Zero
         try { $h = [FbSettingsWin32]::FindSettingsWindow() } catch {}
         if ($h -ne [IntPtr]::Zero) {
-            $ok = $false
-            try { $ok = [FbSettingsWin32]::ForegroundMaximize($h) } catch {}
-            Write-FbManualSettingsFinishLog ("2380: Settings window hwnd={0} SW_SHOWMAXIMIZED + foreground applied (SetForegroundWindow={1})." -f $h, $ok) 'INFO'
+            $ok = Assert-FbOperatorWindowFullscreen -Hwnd $h
+            Write-FbManualSettingsFinishLog ("2380: Settings window hwnd={0} fullscreen + in front; splash sent behind (SetForegroundWindow={1})." -f $h, $ok) 'INFO'
             return
         }
         Start-Sleep -Milliseconds 750
     }
     Write-FbManualSettingsFinishLog '2380: Settings ApplicationFrameWindow not found within timeout; splash stand-down still applied so the desktop is usable.' 'WARN'
+}
+
+function Initialize-FbSettingsWin32 {
+    try {
+        if (-not ([System.Management.Automation.PSTypeName]'FbSettingsWin32').Type) {
+            Add-Type -TypeDefinition $FbSettingsWin32Src -ErrorAction Stop
+        }
+        return $true
+    } catch {
+        Write-FbManualSettingsFinishLog ("2380: Add-Type for Settings foreground failed: {0}" -f $_.Exception.Message) 'WARN'
+        return $false
+    }
+}
+
+function Send-FbSplashBehindOperatorWindow {
+    if (-not (Initialize-FbSettingsWin32)) { return }
+    try {
+        $procs = @(Get-CimInstance -ClassName Win32_Process -ErrorAction SilentlyContinue | Where-Object {
+            $_.Name -and ($_.Name -match '^(powershell|pwsh)\.exe$') -and
+            $_.CommandLine -and ($_.CommandLine -match 'Show-UpdateProgress\.ps1')
+        })
+        foreach ($cim in $procs) {
+            if (-not $cim) { continue }
+            $gp = Get-Process -Id ([int]$cim.ProcessId) -ErrorAction SilentlyContinue
+            if ($gp -and $gp.MainWindowHandle -and ($gp.MainWindowHandle -ne [IntPtr]::Zero)) {
+                [FbSettingsWin32]::SendToBack($gp.MainWindowHandle)
+            }
+        }
+    } catch {}
+}
+
+function Assert-FbOperatorWindowFullscreen {
+    param([IntPtr]$Hwnd = [IntPtr]::Zero)
+    Send-FbSplashBehindOperatorWindow
+    if ($Hwnd -eq [IntPtr]::Zero) { return $false }
+    try { return [bool]([FbSettingsWin32]::ForegroundFullscreen($Hwnd)) } catch { return $false }
 }
 
 function Set-FbOperatorGateMarker {
@@ -256,6 +318,32 @@ function Set-FbOperatorGateMarker {
 
 function Start-FbGateCloseWaitSplash {
     try {
+        $mainSplash = @(Get-CimInstance -ClassName Win32_Process -ErrorAction SilentlyContinue |
+            Where-Object {
+                $_.Name -and ($_.Name -match '^(powershell|pwsh)\.exe$') -and
+                $_.CommandLine -and ($_.CommandLine -match 'Show-UpdateProgress\.ps1')
+            })
+        if ($mainSplash.Count -gt 0) {
+            $statusPath = Join-Path $FbSetup 'wu-status.json'
+            $updates = @()
+            try {
+                if (Test-Path -LiteralPath $statusPath) {
+                    $prev = Get-Content -LiteralPath $statusPath -Raw -ErrorAction Stop | ConvertFrom-Json -ErrorAction Stop
+                    if ($prev -and $prev.updates) { $updates = @($prev.updates) }
+                }
+            } catch {}
+            $payload = @{
+                phase     = 'OperatorGate'
+                message   = 'Close the YouTube window or Settings to continue. Walking away does not shut the device down.'
+                updatedAt = (Get-Date).ToString('o')
+                updates   = $updates
+            }
+            try {
+                [System.IO.File]::WriteAllText($statusPath, ($payload | ConvertTo-Json -Depth 6), [System.Text.Encoding]::UTF8)
+            } catch {}
+            Write-FbManualSettingsFinishLog '6.1.16: close-wait status on WU splash; not spawning FirstBaseHandoffSplash.' 'INFO'
+            return
+        }
         $candidates = @(
             (Join-Path $FbSetup 'FirstBaseHandoffSplash.ps1')
             (Join-Path $FbPd 'FirstBaseHandoffSplash.ps1')
@@ -361,6 +449,32 @@ function Get-FbHardwareGateBrowserProcs {
         })
     } catch {}
     return @($hits)
+}
+
+function Get-FbHardwareGateBrowserHwnd {
+    param(
+        [string]$ProfileDir = '',
+        [switch]$AnyInstance
+    )
+    if (-not $AnyInstance -and -not [string]::IsNullOrWhiteSpace($ProfileDir)) {
+        foreach ($cim in @(Get-FbHardwareGateBrowserProcs -ProfileDir $ProfileDir)) {
+            if (-not $cim) { continue }
+            try {
+                $gp = Get-Process -Id ([int]$cim.ProcessId) -ErrorAction SilentlyContinue
+                if ($gp -and $gp.MainWindowHandle -ne [IntPtr]::Zero -and [int64]$gp.MainWindowHandle -ne 0) {
+                    return $gp.MainWindowHandle
+                }
+            } catch {}
+        }
+    }
+    foreach ($gp in @(Get-Process -Name 'msedge','chrome' -ErrorAction SilentlyContinue)) {
+        try {
+            if ($gp -and $gp.MainWindowHandle -ne [IntPtr]::Zero -and [int64]$gp.MainWindowHandle -ne 0) {
+                return $gp.MainWindowHandle
+            }
+        } catch {}
+    }
+    return [IntPtr]::Zero
 }
 
 function Test-FbHardwareGateBrowserWindowLive {
@@ -599,6 +713,15 @@ function Invoke-FbYoutubePassAndWait {
 
     $url = $YouTubeUrl
     if ([string]::IsNullOrWhiteSpace($url)) { $url = $script:FbHardwareGateYoutubeUrl }
+    # The watch page is the YouTube website. The embed player is the video.
+    $videoUrl = $url
+    if ($url -match '[?&]v=([A-Za-z0-9_-]{6,})') {
+        $videoUrl = ('https://www.youtube.com/embed/{0}?autoplay=1&rel=0' -f $Matches[1])
+    } elseif ($url -match 'youtu\.be/([A-Za-z0-9_-]{6,})') {
+        $videoUrl = ('https://www.youtube.com/embed/{0}?autoplay=1&rel=0' -f $Matches[1])
+    } elseif ($url -notmatch 'youtube\.com/embed/') {
+        $videoUrl = $url
+    }
     $browser = Get-FbHardwareGateBrowser
     $profileDir = $script:FbHardwareGateBrowserProfile
     $useAnyInstance = $false
@@ -619,7 +742,7 @@ function Invoke-FbYoutubePassAndWait {
 
         $launched = $false
         if ($browser) {
-            Write-FbManualSettingsFinishLog ("hardware-gate PASS: launching {0} {1} url={2} profile={3}" -f $browser.Name, $browser.PrivateArg, $url, $profileDir) 'INFO'
+            Write-FbManualSettingsFinishLog ("hardware-gate PASS: launching {0} video fullscreen {1} url={2} profile={3}" -f $browser.Name, $browser.PrivateArg, $videoUrl, $profileDir) 'INFO'
             try {
                 $argList = @(
                     $browser.PrivateArg
@@ -627,7 +750,8 @@ function Invoke-FbYoutubePassAndWait {
                     '--no-first-run'
                     '--no-default-browser-check'
                     '--autoplay-policy=no-user-gesture-required'
-                    $url
+                    '--start-fullscreen'
+                    ('--app={0}' -f $videoUrl)
                 )
                 Start-Process -FilePath $browser.Path -ArgumentList $argList -ErrorAction Stop | Out-Null
                 $launched = $true
@@ -638,13 +762,13 @@ function Invoke-FbYoutubePassAndWait {
         if (-not $launched) {
             Write-FbManualSettingsFinishLog 'hardware-gate PASS: classic Edge/Chrome exe missing or launch failed; trying microsoft-edge protocol.' 'WARN'
             try {
-                Start-Process -FilePath ('microsoft-edge:{0}' -f $url) -ErrorAction Stop | Out-Null
+                Start-Process -FilePath ('microsoft-edge:{0}' -f $videoUrl) -ErrorAction Stop | Out-Null
                 $launched = $true
                 $useAnyInstance = $true
             } catch {
                 try {
                     $cmdExe = Join-Path $env:SystemRoot 'System32\cmd.exe'
-                    Start-Process -FilePath $cmdExe -ArgumentList @('/c', 'start', '', ('microsoft-edge:{0}' -f $url)) -WindowStyle Hidden -ErrorAction Stop | Out-Null
+                    Start-Process -FilePath $cmdExe -ArgumentList @('/c', 'start', '', ('microsoft-edge:{0}' -f $videoUrl)) -WindowStyle Hidden -ErrorAction Stop | Out-Null
                     $launched = $true
                     $useAnyInstance = $true
                 } catch {
@@ -683,6 +807,7 @@ function Invoke-FbYoutubePassAndWait {
         $graceSec = 3
         $timeoutNotices = 0
         $noticeAt = (Get-Date).AddSeconds($CloseWaitSec)
+        $frontAt = [datetime]::MinValue
         while ($true) {
             $live = $false
             if ($useAnyInstance) {
@@ -692,6 +817,11 @@ function Invoke-FbYoutubePassAndWait {
             }
             if ($live) {
                 $goneStart = $null
+                if (((Get-Date) - $frontAt).TotalSeconds -ge 2) {
+                    $ytHwnd = if ($useAnyInstance) { Get-FbHardwareGateBrowserHwnd -AnyInstance } else { Get-FbHardwareGateBrowserHwnd -ProfileDir $profileDir }
+                    [void](Assert-FbOperatorWindowFullscreen -Hwnd $ytHwnd)
+                    $frontAt = Get-Date
+                }
             } else {
                 if ($null -eq $goneStart) { $goneStart = Get-Date }
                 elseif (((Get-Date) - $goneStart).TotalSeconds -ge $graceSec) {
@@ -796,10 +926,16 @@ if ($haveWin32) {
         #                                             $WindowCloseGraceSec, conclude window-closed.
         $closeDeadline = (Get-Date).AddSeconds($WindowCloseWaitSec)
         $graceStart = $null
+        [void](Assert-FbOperatorWindowFullscreen -Hwnd $acquiredHwnd)
+        $frontAt = Get-Date
         while ((Get-Date) -lt $closeDeadline) {
             $live = $false
             try { $live = [FbSettingsWin32]::IsSettingsWindowLive($acquiredHwnd) } catch { $live = $false }
             if ($live) {
+                if (((Get-Date) - $frontAt).TotalSeconds -ge 2) {
+                    [void](Assert-FbOperatorWindowFullscreen -Hwnd $acquiredHwnd)
+                    $frontAt = Get-Date
+                }
                 if ($null -ne $graceStart) {
                     Write-FbManualSettingsFinishLog ("2382: tracked Settings hwnd={0} is live again; cancelling close-grace." -f $acquiredHwnd) 'INFO'
                     $graceStart = $null
@@ -860,6 +996,10 @@ if ($haveWin32) {
                         $closeReason = 'window-closed'
                         break
                     }
+                }
+                if ($live -and (((Get-Date) - $frontAt).TotalSeconds -ge 2)) {
+                    [void](Assert-FbOperatorWindowFullscreen -Hwnd $acquiredHwnd)
+                    $frontAt = Get-Date
                 }
                 if ((Get-Date) -ge $closeDeadline) {
                     Write-FbManualSettingsFinishLog ("5.4.8: Settings still open after another {0}s; NOT sealing. Close Settings to continue. Device stays on." -f $WindowCloseWaitSec) 'WARN'

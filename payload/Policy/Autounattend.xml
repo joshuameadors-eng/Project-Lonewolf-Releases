@@ -41,20 +41,37 @@
     input. Device sat at Audit desktop with that dialog open for ~14 hours
     on the test machine.
 
-    Audit Mode persistence across reboots is now driven purely by the
-    AutoLogon + AutoAdminLogon + AutoLogonCount=5 + ForceAutoLogon=1 registry
-    values that SetupComplete.cmd's :ARM_AUTOLOGIN sets during the specialize
-    pass - verified working across multiple reboots in the same dump. The
-    loop drives all real sysprep invocations explicitly via
-    Invoke-FbOobeHandoff -> sysprep.exe /oobe /generalize /quiet, so there
-    is no functional need for a passive <Reseal> directive.
+    Audit Mode persistence across reboots is the AutoLogon registry
+    values that SetupComplete.cmd's :ARM_AUTOLOGIN sets during specialize.
+    Those values do not choose Audit versus OOBE. Without Reseal, Setup
+    finishes specialize and continues into oobeSystem (Just a Moment, then
+    defaultuser0). 6.1.25 puts Reseal back on oobeSystem only.
 
     The Microsoft-Windows-Shell-Setup OOBE configuration below stays in place
     so the eventual sysprep /oobe handoff fires with the right OOBE flags
     (HideEULAPage / HideOEMRegistrationScreen / HideWirelessSetupInOOBE /
     ProtectYourPC).
+
+    6.1.25: Reseal is valid in oobeSystem, auditSystem, and generalize.
+    It is NOT valid in specialize. 6.1.23 put Mode=Audit on the specialize
+    pass, Windows skipped it, and a fresh apply still painted Just a Moment
+    then the defaultuser0 login. Mode=Audit belongs on oobeSystem, which is
+    the pass SetupComplete.cmd already requires. auditSystem runs
+    SetupComplete.cmd STRIP_RESEAL_ONLY before audit.exe /user so the cached
+    answer file cannot replay Reseal as sysprep.exe /reboot with no mode
+    (2213d Bug B1, the System Preparation Tool GUI on every Audit logon).
   -->
   <settings pass="oobeSystem">
+    <component name="Microsoft-Windows-Deployment" processorArchitecture="amd64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State">
+      <Reseal>
+        <Mode>Audit</Mode>
+      </Reseal>
+    </component>
+    <component name="Microsoft-Windows-Deployment" processorArchitecture="arm64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State">
+      <Reseal>
+        <Mode>Audit</Mode>
+      </Reseal>
+    </component>
     <component name="Microsoft-Windows-Shell-Setup" processorArchitecture="amd64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State">
       <OOBE>
         <HideEULAPage>true</HideEULAPage>
@@ -64,6 +81,26 @@
         <HideWirelessSetupInOOBE>true</HideWirelessSetupInOOBE>
         <ProtectYourPC>3</ProtectYourPC>
       </OOBE>
+    </component>
+  </settings>
+  <settings pass="auditSystem">
+    <component name="Microsoft-Windows-Deployment" processorArchitecture="amd64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State">
+      <RunSynchronous>
+        <RunSynchronousCommand wcm:action="add">
+          <Order>1</Order>
+          <Description>Strip oobeSystem Reseal before audit.exe user logon</Description>
+          <Path>cmd /c if exist C:\Windows\Setup\Scripts\SetupComplete.cmd C:\Windows\Setup\Scripts\SetupComplete.cmd STRIP_RESEAL_ONLY</Path>
+        </RunSynchronousCommand>
+      </RunSynchronous>
+    </component>
+    <component name="Microsoft-Windows-Deployment" processorArchitecture="arm64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State">
+      <RunSynchronous>
+        <RunSynchronousCommand wcm:action="add">
+          <Order>1</Order>
+          <Description>Strip oobeSystem Reseal before audit.exe user logon</Description>
+          <Path>cmd /c if exist C:\Windows\Setup\Scripts\SetupComplete.cmd C:\Windows\Setup\Scripts\SetupComplete.cmd STRIP_RESEAL_ONLY</Path>
+        </RunSynchronousCommand>
+      </RunSynchronous>
     </component>
   </settings>
 </unattend>

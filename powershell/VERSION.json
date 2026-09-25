@@ -1,8 +1,8 @@
 {
     "_comment":  "Product/payload version (version and payloadVersion) is independent of launcherVersion. npm start destage staging product version (chips, image dates, changelog, arch enablement) always comes from this file. Packaged Dev and production changelog/update feeds use public GitHub latest.json (main) or latest-dev.json (packaged Dev). The ISO share and Drive VERSION.json must not host launcher exe, payload zip, or live version overlay.",
-    "version":  "6.1.13",
-    "payloadVersion":  "6.1.13",
-    "launcherVersion":  "6.1.11",
+    "version":  "6.1.35",
+    "payloadVersion":  "6.1.35",
+    "launcherVersion":  "6.1.12",
     "launcherExeName":  "LoneWolf-Launcher.exe",
     "dev":  {
                 "_comment":  "npm start destage always versions from this checkout VERSION.json (local ISO, HQ UNC, Drive Desktop, or any other media). Packaged Dev uses the public dev branch / latest-dev.json. Packaged production uses main / latest.json. ISO/PreSplit/WinPE-OCs are filesystem-only: Google Drive for Desktop if mounted, else HQ UNC. A Drive folder URL is never ShareRoot. Do not publish exe/zip to Drive. Do not overlay Drive HTTPS VERSION.json on destage.",
@@ -25,6 +25,99 @@
                                     }
                       },
     "changelog":  [
+                      {
+                          "version":  "6.1.35",
+                          "date":  "2026-09-25",
+                          "changes":  [
+                                          "Splash status screens are small boxes with their own transitions. Update cards are narrower, a fourth row fits, and download or install cards show a loading bar."
+                                      ]
+                      },
+                      {
+                          "version":  "6.1.34",
+                          "date":  "2026-09-25",
+                          "changes":  [
+                                          "The splash preview keeps status buttons around the logo. Each button opens that imaging status, and the buttons stay on screen."
+                                      ]
+                      },
+                      {
+                          "version":  "6.1.33",
+                          "date":  "2026-09-25",
+                          "changes":  [
+                                          "The temporary imaging administrator account is named Project Lonewolf.",
+                                          "After a reboot, the splash waits for this boot's updates instead of showing the previous boot's list.",
+                                          "Updates on the splash are cards. Each card glows in that update's status color, and a failure shows as Error."
+                                      ]
+                      },
+                      {
+                          "version":  "6.1.32",
+                          "date":  "2026-09-25",
+                          "changes":  [
+                                          "A driver that already installed is not downloaded again when Windows offers that same title, including the version, under a new update id. A different version still installs."
+                                      ]
+                      },
+                      {
+                          "version":  "6.1.31",
+                          "date":  "2026-09-25",
+                          "changes":  [
+                                          "Total elapsed keeps counting through the hardware check. It no longer restarts when Windows finishes settling.",
+                                          "fb-im shows that elapsed time beside the sealed or not sealed marker.",
+                                          "A hardware pass opens the YouTube video fullscreen, without the browser page around it.",
+                                          "A second splash no longer opens on top of the first, and the tools menu can open fb-im.",
+                                          "The same UpdateId is not downloaded again after it installs. A new UpdateId for the same driver title is still installed, and that repeat is written to the update log."
+                                      ]
+                      },
+                      {
+                          "version":  "6.1.30",
+                          "date":  "2026-09-25",
+                          "changes":  [
+                                          "Update repeats are logged. Each time a title goes to Downloading, Installing, or Done, the log records whether it is the same package or a new Windows Update id for a title that already finished."
+                                      ]
+                      },
+                      {
+                          "version":  "6.1.29",
+                          "date":  "2026-09-25",
+                          "changes":  [
+                                          "Splash tools can open fb-im again. A restart that Windows accepts and then drops no longer tells the technician to hold the power button. The splash says Restart the device and starts the update loop again so the next restart step can run."
+                                      ]
+                      },
+                      {
+                          "version":  "6.1.28",
+                          "date":  "2026-09-23",
+                          "changes":  [
+                                          "After a hardware check, YouTube (pass) or Settings (fail) covers the screen. The splash moves behind that window until it is closed."
+                                      ]
+                      },
+                      {
+                          "version":  "6.1.27",
+                          "date":  "2026-09-23",
+                          "changes":  [
+                                          "Splash rows distinguish a staged install from a finished one. An update that still needs a reboot shows Pending Restart. Downloading it again shows Reapplying, including byte progress. An update Windows still lists after we already installed that exact package shows Still offered."
+                                      ]
+                      },
+                      {
+                          "version":  "6.1.26",
+                          "date":  "2026-09-23",
+                          "changes":  [
+                                          "A restart that Windows accepts but never starts no longer leaves the splash on Rebooting with the update loop dead.",
+                                          "The splash starts the loop again. That retry skips the shutdown call that already failed on this boot. If it still cannot restart, the splash asks for a power-cycle."
+                                      ]
+                      },
+                      {
+                          "version":  "6.1.25",
+                          "date":  "2026-09-23",
+                          "changes":  [
+                                          "Fresh image applies enter Audit before OOBE. Reseal Mode=Audit is on the oobeSystem pass, which Windows actually processes. The 6.1.23 specialize Reseal was ignored, so Just a Moment and the defaultuser0 login still ran.",
+                                          "auditSystem strips that Reseal before the first Audit logon so audit.exe does not open the System Preparation Tool."
+                                      ]
+                      },
+                      {
+                          "version":  "6.1.24",
+                          "date":  "2026-09-23",
+                          "changes":  [
+                                          "Reverted the 6.1.22 detached sysprep /audit waiter and the 6.1.23 specialize Reseal plus auditSystem strip.",
+                                          "First boot is the 6.1.21 path again: specialize SetupComplete arms Administrator autologon (computer name, blank password) and the update triggers, then returns. No unattend Reseal. The update loop starts on the next logon or startup."
+                                      ]
+                      },
                       {
                           "version":  "6.1.11",
                           "date":  "2026-09-21",

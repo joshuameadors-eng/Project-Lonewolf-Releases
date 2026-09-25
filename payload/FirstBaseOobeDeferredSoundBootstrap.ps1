@@ -210,7 +210,7 @@ $fb2270ResolvedUser = $env:USERNAME
 if ([string]::IsNullOrWhiteSpace($fb2270ResolvedUser)) {
     try { $fb2270ResolvedUser = ([System.Security.Principal.WindowsIdentity]::GetCurrent().Name -split '\\')[-1] } catch {}
 }
-$fb2270IsOobeSession = ($fb2270ResolvedUser -eq 'defaultuser0') -or ($fb2270ResolvedUser -eq 'SYSTEM') -or ($fb2270ResolvedUser -eq 'Administrator')
+$fb2270IsOobeSession = ($fb2270ResolvedUser -eq 'defaultuser0') -or ($fb2270ResolvedUser -eq 'SYSTEM') -or ($fb2270ResolvedUser -eq 'Administrator') -or ($fb2270ResolvedUser -eq 'Project Lonewolf')
 if (-not $fb2270IsOobeSession) {
     Write-FbOobeDeferredBootstrapLog ('2270: ABORT — bootstrap fired for real user [{0}] (resolved from [{1}]) before seal (.firstbase-sealed absent). Comprehensive emergency disarm (2270 early guard, pre-arm-check).' -f $fb2270ResolvedUser, $env:USERNAME) 'WARN'
     try {
@@ -302,7 +302,7 @@ if (-not $armed) {
 # immediately (so SplashWatcher and SplashSingleInstance suppress themselves on this and all future
 # logons), removes all RunOnce and Run delivery keys, deletes all delivery-related scheduled tasks,
 # removes the Startup cmd, removes arm markers, and deletes splash script files directly.
-$isOobeUser = ($env:USERNAME -eq 'defaultuser0') -or ($env:USERNAME -eq 'SYSTEM') -or ($env:USERNAME -eq 'Administrator') -or ($fb2270ResolvedUser -eq 'defaultuser0') -or ($fb2270ResolvedUser -eq 'SYSTEM') -or ($fb2270ResolvedUser -eq 'Administrator')
+$isOobeUser = ($env:USERNAME -eq 'defaultuser0') -or ($env:USERNAME -eq 'SYSTEM') -or ($env:USERNAME -eq 'Administrator') -or ($env:USERNAME -eq 'Project Lonewolf') -or ($fb2270ResolvedUser -eq 'defaultuser0') -or ($fb2270ResolvedUser -eq 'SYSTEM') -or ($fb2270ResolvedUser -eq 'Administrator') -or ($fb2270ResolvedUser -eq 'Project Lonewolf')
 if (-not $isOobeUser -and -not (Test-Path -LiteralPath $PipelineDone)) {
     Write-FbOobeDeferredBootstrapLog ('2250: ABORT - bootstrap fired for real user [{0}] before pipeline complete. Comprehensive emergency disarm (2261).' -f $env:USERNAME) 'WARN'
 

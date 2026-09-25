@@ -6,6 +6,7 @@
 .DESCRIPTION
     Dotsourced by Show-UpdateProgress.ps1 and FirstBaseHandoffSplash.ps1.
     Click the wolf for a left/bottom/right arc (fb-im, Settings, Close, Restart, BIOS).
+    -Preview replaces that arc with compact status-page buttons that stay on screen.
     Destage sticks also get a Destage tools folder on the wheel: opening it
     replaces the radial with destage-only items (Stop updates, Back).
     Shutdown is on fb-im (splash embed: only when the device is Sealed).
@@ -18,6 +19,9 @@
     UI) sit over the splash. Tabbing to a console parks that console behind
     the splash without yanking operator apps under it. F12 still opts out.
     Do not use a global always-on-top that covers everything.
+    While .operator-settings-gate-active exists (hardware pass YouTube or
+    fail Settings), splash drops out of the topmost band to HWND_BOTTOM so
+    that window can cover the screen.
 #>
 
 Set-StrictMode -Off
@@ -34,6 +38,7 @@ public static class FbSplashWin32Z {
     public static readonly IntPtr HWND_TOP = IntPtr.Zero;
     public static readonly IntPtr HWND_TOPMOST = new IntPtr(-1);
     public static readonly IntPtr HWND_NOTOPMOST = new IntPtr(-2);
+    public static readonly IntPtr HWND_BOTTOM = new IntPtr(1);
     public const uint SWP_NOSIZE = 0x0001;
     public const uint SWP_NOMOVE = 0x0002;
     public const uint SWP_NOZORDER = 0x0004;
@@ -246,12 +251,53 @@ function Test-FbSplashShouldYieldToOperator {
     } catch { return $false }
 }
 
+function Test-FbSplashOperatorGateMarker {
+    $path = 'C:\ProgramData\FirstBase\.operator-settings-gate-active'
+    try {
+        $v = Get-Variable -Name FbSplashOperatorGateActive -Scope Script -ErrorAction SilentlyContinue
+        if (-not $v) { $v = Get-Variable -Name FbSplashOperatorGateActive -ErrorAction SilentlyContinue }
+        if ($v -and $v.Value) { $path = [string]$v.Value }
+    } catch {}
+    try { return [bool](Test-Path -LiteralPath $path) } catch { return $false }
+}
+
+function Invoke-FbSplashSendBehindOperatorGate {
+    # Leave the topmost band, then HWND_BOTTOM. A topmost window ignores
+    # HWND_BOTTOM until HWND_NOTOPMOST clears WS_EX_TOPMOST.
+    try {
+        if ($window) { $window.Topmost = $false }
+    } catch {}
+    try {
+        $hw = $script:SplashNativeHwnd
+        if (-not $hw -or $hw -eq [IntPtr]::Zero) { return }
+        $null = [FbSplashWin32Z]
+        if (Get-Command Invoke-FbSplashApplyWin32ZOrder -ErrorAction SilentlyContinue) {
+            Invoke-FbSplashApplyWin32ZOrder -WantTopmost $false
+        } else {
+            try {
+                $cur = [FbSplashWin32Z]::GetWindowLongPtr($hw, [FbSplashWin32Z]::GWL_EXSTYLE).ToInt64()
+                $cleared = $cur -band (-bnot [FbSplashWin32Z]::WS_EX_TOPMOST)
+                [void][FbSplashWin32Z]::SetWindowLongPtr($hw, [FbSplashWin32Z]::GWL_EXSTYLE, [IntPtr]::new($cleared))
+            } catch {}
+        }
+        $flags = [uint32]([FbSplashWin32Z]::SWP_NOMOVE -bor [FbSplashWin32Z]::SWP_NOSIZE -bor [FbSplashWin32Z]::SWP_NOACTIVATE)
+        [void][FbSplashWin32Z]::SetWindowPos($hw, [FbSplashWin32Z]::HWND_NOTOPMOST, 0, 0, 0, 0, $flags)
+        $bottomFlags = $flags -bor [FbSplashWin32Z]::SWP_SHOWWINDOW
+        [void][FbSplashWin32Z]::SetWindowPos($hw, [FbSplashWin32Z]::HWND_BOTTOM, 0, 0, 0, 0, $bottomFlags)
+    } catch {}
+}
+
 function Invoke-FbSplashHonorOperatorForeground {
     # Splash covers OOBE + consoles only. Operator apps stay above splash.
     # Returns $true when the caller must skip splash Activate / extra HWND_TOPMOST
     # restack (that restack is what yanks Settings under the splash when tabbing
     # to a terminal).
     try {
+        if (Test-FbSplashOperatorGateMarker) {
+            Invoke-FbSplashSendBehindOperatorGate
+            $script:FbSplashYieldLatched = $true
+            return $true
+        }
         if ($script:UserPreferredTopmostOff) {
             $script:FbSplashYieldLatched = $true
             return $true
@@ -317,20 +363,38 @@ function Find-FbSplashFbImScript {
 }
 
 function Import-FbSplashFbImLibrary {
-    if (Get-Module -Name FbImSplash -ErrorAction SilentlyContinue) { return $true }
+    if (Get-Command -Name Show-FbImWindow -ErrorAction SilentlyContinue) { return $true }
     $path = Find-FbSplashFbImScript
     if (-not $path) {
         Write-FbSplashTechLog 'fb-im.ps1 not found on device (C: payload) or USB.' 'WARN'
         return $false
     }
     try {
-        New-Module -Name FbImSplash -ScriptBlock {
+        # Windows PowerShell 5.1 optimizes $ErrorActionPreference inside a module.
+        # A direct assignment then throws and the splash says fb-im was not found
+        # (dumps 4FVGN94-1443 and 4FVGN94-0639). Rewrite those assignments, then
+        # import globally so Show-FbImWindow stays available after this function returns.
+        $null = New-Module -Name FbImSplash -ScriptBlock {
             param([string]$FbImPath)
             Set-StrictMode -Off
-            $ErrorActionPreference = 'SilentlyContinue'
-            . $FbImPath -Library
+            $text = [System.IO.File]::ReadAllText($FbImPath)
+            $text = [regex]::Replace(
+                $text,
+                '(?m)(?<!`)\$ErrorActionPreference\s*=\s*([^\r\n]+)',
+                'Set-Variable -Name ErrorActionPreference -Value $1 -Scope Script'
+            )
+            if ($text.StartsWith('#Requires')) {
+                $nl = $text.IndexOf("`n")
+                if ($nl -gt 0) { $text = $text.Substring($nl + 1) }
+            }
+            $sb = [scriptblock]::Create($text)
+            . $sb -Library
             Export-ModuleMember -Function * -Variable * -Alias *
-        } -ArgumentList $path | Import-Module -Global -Force
+        } -ArgumentList $path | Import-Module -Global -Force -PassThru
+        if (-not (Get-Command -Name Show-FbImWindow -ErrorAction SilentlyContinue)) {
+            Write-FbSplashTechLog ("fb-im library loaded from {0} but Show-FbImWindow is missing." -f $path) 'WARN'
+            return $false
+        }
         Write-FbSplashTechLog ("fb-im library loaded from {0}" -f $path) 'INFO'
         return $true
     } catch {
@@ -395,9 +459,23 @@ function Update-FbSplashRadialItemPositions {
     $cy = [double]$origin.Y
     $script:FbSplashRadialLogoX = $cx
     $script:FbSplashRadialLogoY = $cy
+    $compact = [bool]$script:Preview
     $orbit = 172.0
     $halfW = 40.0
     $halfCircle = 34.0
+    $btnW = 80.0
+    $btnH = 104.0
+    $minY = 48.0
+    if ($compact) {
+        # Smaller chips on the side and lower arc. The logo sits near the top
+        # of the design canvas, so a full circle clips through the top edge.
+        $orbit = 118.0
+        $halfW = 24.0
+        $halfCircle = 13.0
+        $btnW = 48.0
+        $btnH = 42.0
+        $minY = 52.0
+    }
     $maxX = [double]$canvas.ActualWidth
     $maxY = [double]$canvas.ActualHeight
     if ($maxX -lt 100) { $maxX = 1280 }
@@ -408,9 +486,9 @@ function Update-FbSplashRadialItemPositions {
         $x = $cx + [math]::Cos($rad) * $orbit - $halfW
         $y = $cy + [math]::Sin($rad) * $orbit - $halfCircle
         if ($x -lt 8) { $x = 8 }
-        if ($y -lt 48) { $y = 48 }
-        if ($x -gt ($maxX - 88)) { $x = $maxX - 88 }
-        if ($y -gt ($maxY - 110)) { $y = $maxY - 110 }
+        if ($y -lt $minY) { $y = $minY }
+        if ($x -gt ($maxX - $btnW - 8)) { $x = $maxX - $btnW - 8 }
+        if ($y -gt ($maxY - $btnH - 8)) { $y = $maxY - $btnH - 8 }
         $item.TargetX = $x
         $item.TargetY = $y
         if ($script:FbSplashRadialOpen) {
@@ -455,6 +533,7 @@ function Show-FbSplashRadialMenu {
 
 function Toggle-FbSplashRadialMenu {
     if ($script:FbSplashFbImOpen) { return }
+    if ($script:Preview -and $script:FbSplashRadialOpen) { return }
     if ($script:FbSplashRadialOpen) { Hide-FbSplashRadialMenu } else { Show-FbSplashRadialMenu }
 }
 
@@ -662,9 +741,9 @@ function Start-FbSplashTechRestart {
     $kind = if ($Firmware) { 'firmware' } else { 'restart' }
     $proc = Invoke-FbSplashIssueShutdown -Kind $kind
     $fail = if ($Firmware) {
-        'Firmware restart did not start. Overlay closing - try Restart or hold the power button.'
+        'Restart the device'
     } else {
-        'Restart did not start. Overlay closing - hold the power button if needed.'
+        'Restart the device'
     }
     $fallback = if ($Firmware) { 'restart' } else { '' }
     Start-FbSplashPowerWatch -Proc $proc -FallbackKind $fallback -BusyFailText $fail
@@ -768,10 +847,21 @@ function Start-FbSplashTechStopUpdates {
 }
 
 function New-FbSplashRadialButton {
-    param([string]$Caption, [string]$Glyph, [scriptblock]$Click)
+    param(
+        [string]$Caption,
+        [string]$Glyph,
+        [scriptblock]$Click,
+        [switch]$Compact,
+        [string]$ToolTip = ''
+    )
     $btn = New-Object System.Windows.Controls.Button
-    $btn.Width = 80
-    $btn.Height = 104
+    if ($Compact) {
+        $btn.Width = 48
+        $btn.Height = 42
+    } else {
+        $btn.Width = 80
+        $btn.Height = 104
+    }
     $btn.Cursor = [System.Windows.Input.Cursors]::Hand
     $btn.Background = $script:FbSplashBrushTransparent
     $btn.BorderThickness = New-Object System.Windows.Thickness 0
@@ -783,9 +873,15 @@ function New-FbSplashRadialButton {
     $stack.VerticalAlignment = 'Top'
 
     $chip = New-Object System.Windows.Controls.Border
-    $chip.Width = 68
-    $chip.Height = 68
-    $chip.CornerRadius = New-Object System.Windows.CornerRadius 34
+    if ($Compact) {
+        $chip.Width = 26
+        $chip.Height = 26
+        $chip.CornerRadius = New-Object System.Windows.CornerRadius 13
+    } else {
+        $chip.Width = 68
+        $chip.Height = 68
+        $chip.CornerRadius = New-Object System.Windows.CornerRadius 34
+    }
     $chip.Background = $script:FbSplashBrushChip
     $chip.BorderBrush = $script:FbSplashBrushCyan
     $chip.BorderThickness = New-Object System.Windows.Thickness 1.5
@@ -794,7 +890,7 @@ function New-FbSplashRadialButton {
     $icon = New-Object System.Windows.Controls.TextBlock
     $icon.Text = $Glyph
     $icon.FontFamily = $script:FbSplashFontMdl2
-    $icon.FontSize = 22
+    $icon.FontSize = $(if ($Compact) { 12 } else { 22 })
     $icon.Foreground = $script:FbSplashBrushText
     $icon.HorizontalAlignment = 'Center'
     $icon.VerticalAlignment = 'Center'
@@ -803,14 +899,19 @@ function New-FbSplashRadialButton {
 
     $label = New-Object System.Windows.Controls.TextBlock
     $label.Text = $Caption
-    $label.FontSize = 11
+    $label.FontSize = $(if ($Compact) { 8 } else { 11 })
     $label.FontWeight = [System.Windows.FontWeights]::SemiBold
     $label.Foreground = $script:FbSplashBrushText
     $label.HorizontalAlignment = 'Center'
     $label.TextAlignment = 'Center'
     $label.TextWrapping = [System.Windows.TextWrapping]::Wrap
-    $label.Width = 80
-    $label.Margin = New-Object System.Windows.Thickness 0, 6, 0, 0
+    if ($Compact) {
+        $label.Width = 48
+        $label.Margin = New-Object System.Windows.Thickness 0, 1, 0, 0
+    } else {
+        $label.Width = 80
+        $label.Margin = New-Object System.Windows.Thickness 0, 6, 0, 0
+    }
 
     [void]$stack.Children.Add($chip)
     [void]$stack.Children.Add($label)
@@ -831,7 +932,10 @@ function New-FbSplashRadialButton {
     $btn.Add_MouseLeave({
         try {
             $c = $args[0].RadialChip
-            if ($c) { $c.Background = $script:FbSplashBrushChip }
+            if ($c) {
+                if ($args[0].RadialActive) { $c.Background = $script:FbSplashBrushChipPress }
+                else { $c.Background = $script:FbSplashBrushChip }
+            }
             $st = $args[0].RadialScale
             if ($st -and -not $script:FbSplashRadialPressing) { $st.ScaleX = 1; $st.ScaleY = 1 }
         } catch {}
@@ -854,13 +958,18 @@ function New-FbSplashRadialButton {
             if ($c) { $c.Background = $script:FbSplashBrushChipHover }
         } catch {}
     })
-    $btn.Add_Click($Click)
+    if ($Click) { $btn.Add_Click($Click) }
+    if (-not [string]::IsNullOrWhiteSpace($ToolTip)) {
+        try { $btn.ToolTip = $ToolTip } catch {}
+    }
 
     $st = New-Object System.Windows.Media.ScaleTransform 1, 1
     $btn.RenderTransform = $st
     $btn.RenderTransformOrigin = New-Object System.Windows.Point 0.5, 0.34
     $btn | Add-Member -NotePropertyName RadialScale -NotePropertyValue $st -Force
     $btn | Add-Member -NotePropertyName RadialChip -NotePropertyValue $chip -Force
+    $btn | Add-Member -NotePropertyName RadialCaption -NotePropertyValue $Caption -Force
+    $btn | Add-Member -NotePropertyName RadialActive -NotePropertyValue $false -Force
     return $btn
 }
 
@@ -1000,9 +1109,72 @@ function Invoke-FbSplashRadialPageLater {
     Set-FbSplashRadialPage -Page $Page
 }
 
+function Set-FbSplashRadialActiveCaption {
+    param([string]$Caption)
+    foreach ($item in @($script:FbSplashRadialItems)) {
+        $btn = $item.Button
+        if (-not $btn) { continue }
+        $on = ([string]$btn.RadialCaption -eq [string]$Caption)
+        try { $btn.RadialActive = $on } catch {}
+        $chip = $null
+        try { $chip = $btn.RadialChip } catch {}
+        if (-not $chip) { continue }
+        try {
+            if ($on) {
+                $chip.Background = $script:FbSplashBrushChipPress
+                $chip.BorderThickness = New-Object System.Windows.Thickness 2
+            } else {
+                $chip.Background = $script:FbSplashBrushChip
+                $chip.BorderThickness = New-Object System.Windows.Thickness 1
+            }
+        } catch {}
+    }
+}
+
+function Get-FbSplashPreviewRadialSpec {
+    # Lower arc only: 205° (upper left) clockwise through the bottom to 345°
+    # (upper right). Straight up clips off the top of the design canvas.
+    $pages = @(
+        @{ Caption = 'Check';    Tip = 'Checking for updates'; Glyph = [string][char]0xE721 }
+        @{ Caption = 'Updates';  Tip = 'Downloading and installing'; Glyph = [string][char]0xE896 }
+        @{ Caption = 'Error';    Tip = 'Install error'; Glyph = [string][char]0xE783 }
+        @{ Caption = 'Boot';     Tip = 'Waiting for this boot'; Glyph = [string][char]0xE7E8 }
+        @{ Caption = 'Settle';   Tip = 'Waiting for Windows to settle'; Glyph = [string][char]0xE916 }
+        @{ Caption = 'Checks';   Tip = 'Hardware checks'; Glyph = [string][char]0xE9D9 }
+        @{ Caption = 'Passed';   Tip = 'Hardware passed'; Glyph = [string][char]0xE73E }
+        @{ Caption = 'Failed';   Tip = 'Hardware failed'; Glyph = [string][char]0xE711 }
+        @{ Caption = 'Gate';     Tip = 'YouTube or Settings gate'; Glyph = [string][char]0xE8A7 }
+        @{ Caption = 'Restart';  Tip = 'Restart the device'; Glyph = [string][char]0xE777 }
+        @{ Caption = 'Seal';     Tip = 'Sealing'; Glyph = [string][char]0xE72E }
+        @{ Caption = 'Done';     Tip = 'Updates complete'; Glyph = [string][char]0xE930 }
+    )
+    $start = 205.0
+    $span = 230.0
+    $n = $pages.Count
+    $spec = @()
+    for ($i = 0; $i -lt $n; $i++) {
+        $page = $pages[$i]
+        $name = [string]$page.Caption
+        $deg = $start - (($span * $i) / [math]::Max(1, ($n - 1)))
+        while ($deg -lt 0) { $deg += 360 }
+        $spec += @{
+            Caption = $name
+            Glyph   = [string]$page.Glyph
+            Deg     = [math]::Round($deg, 1)
+            ToolTip = [string]$page.Tip
+        }
+    }
+    return $spec
+}
+
 function Get-FbSplashRadialSpec {
     param([string]$Page = 'main')
+    if ($script:Preview) {
+        return @(Get-FbSplashPreviewRadialSpec)
+    }
     if ($Page -eq 'destage') {
+        # Hardware probes: use fb-im Start Hardware Checks (real Wi-Fi/sound/camera).
+        # destageSkipWu auto-passes probes on this flavor; Pass hardware is marker-only.
         return @(
             @{ Caption = 'Stop updates'; Glyph = [string][char]0xE71A; Deg = 180; Click = { Start-FbSplashTechStopUpdates } }
             @{ Caption = 'Back'; Glyph = [string][char]0xE72B; Deg = 90; Click = { Invoke-FbSplashRadialPageLater -Page 'main' } }
@@ -1041,7 +1213,19 @@ function Build-FbSplashRadialItems {
     Clear-FbSplashRadialItems
     $script:FbSplashRadialPage = $Page
     foreach ($s in @(Get-FbSplashRadialSpec -Page $Page)) {
-        $btn = New-FbSplashRadialButton -Caption $s.Caption -Glyph $s.Glyph -Click $s.Click
+        $radialArgs = @{
+            Caption = [string]$s.Caption
+            Glyph   = [string]$s.Glyph
+            Compact = [bool]$script:Preview
+            ToolTip = [string]$s.ToolTip
+        }
+        if ($s.Click) { $radialArgs.Click = $s.Click }
+        $btn = New-FbSplashRadialButton @radialArgs
+        if ($script:Preview) {
+            $btn.Add_Click({
+                try { Invoke-FbSplashPreviewStatus -Page ([string]$args[0].RadialCaption) } catch {}
+            })
+        }
         [void]$layer.Children.Add($btn)
         $script:FbSplashRadialItems += [pscustomobject]@{
             Deg     = $s.Deg
@@ -1119,6 +1303,12 @@ function Register-FbSplashTechChrome {
         try { Hide-FbSplashRadialMenu } catch {}
     })
     [void]$layer.Children.Add($dim)
+    $script:FbSplashRadialDim = $dim
+    if ($script:Preview) {
+        $dim.Visibility = [System.Windows.Visibility]::Collapsed
+        $dim.IsHitTestVisible = $false
+        $dim.Opacity = 0
+    }
 
     $script:FbSplashRadialItems = @()
     $script:FbSplashRadialPage = 'main'
@@ -1168,7 +1358,7 @@ function Register-FbSplashTechChrome {
     $logo = $script:FbSplashLogoHost
     if ($logo) {
         try { $logo.Cursor = [System.Windows.Input.Cursors]::Hand } catch {}
-        try { $logo.ToolTip = 'Technician tools' } catch {}
+        try { $logo.ToolTip = $(if ($script:Preview) { 'Status pages' } else { 'Technician tools' }) } catch {}
         $logo.Add_MouseLeftButtonUp({
             try {
                 if ($args.Count -ge 2 -and $args[1]) { $args[1].Handled = $true }

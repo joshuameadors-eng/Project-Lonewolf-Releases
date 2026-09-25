@@ -354,6 +354,11 @@ if "%FB_SELFTEST_MODE%"=="1" (
 )
 call :LOG "============================================================"
 
+:: 6.1.25: auditSystem only. Do not arm tasks and do not delete Reseal during
+:: specialize — oobeSystem still has to read Mode=Audit and reboot into Audit.
+:: Stripping here runs before audit.exe /user so Bug B1 cannot open sysprep.
+if /I "%~1"=="STRIP_RESEAL_ONLY" goto :STRIP_RESEAL_ONLY
+
 :: ?? 2279-fence1-oobe-fix: arm-suppress pre-cleanup guard ??????????????????
 :: sysprep /generalize resets InstallDate, so every post-sysprep OOBE boot
 :: looks like a "fresh image" to the per-image cleanup below. If the marker
@@ -547,8 +552,7 @@ if exist "%FB_PIPELINE_COMPLETED_MARKER%" (
     goto :DONE
 )
 if exist "%FB_FIRST_APPLY_ARMED%" (
-    call :LOG "6.1.13: first-apply armed marker present at %FB_FIRST_APPLY_ARMED%. Second SetupComplete this image (RunSynchronous + Scripts\SetupComplete.cmd). Skipping re-arm so /F does not kill a running or pending loop. Kicking the pipeline instead."
-    call :KICK_PIPELINE
+    call :LOG "6.1.13: first-apply armed marker present at %FB_FIRST_APPLY_ARMED%. Second SetupComplete this image. Not replacing tasks and not starting the loop."
     goto :DONE
 )
 call :LOG "Bug U fence 1 (2226): no arm-suppress at %FB_ARM_SUPPRESS_MARKER% and no pipeline marker at %FB_PIPELINE_COMPLETED_MARKER%. First image-apply specialize pass. Proceeding with full arming."
@@ -571,20 +575,21 @@ set "FB_ARM_STATUS=OK"
 :: Dell CloudExperienceHost / WWAHost "Just a moment" as OOBE overlay
 :: and fight it for the whole update loop (dump BWT3CB4-1420-DellInc).
 
-:: ?? Audit Mode auto-login arming (must happen before Reseal reboot) ?????
+:: Audit Mode auto-login arming (must happen before Reseal reboot).
 :: Empirical: <AutoLogon>/<UserAccounts> in oobeSystem don't reliably take
 :: effect when Reseal Mode=Audit short-circuits OOBE. We bypass the pass
 :: system entirely and write the Winlogon registry values + enable the
-:: local Administrator with a blank password directly into the live OS.
+:: temporary local admin with a blank password directly into the live OS.
+:: The built-in admin is renamed to Project Lonewolf for this window.
 :: Blank password is acceptable because the device is offline/airgapped
 :: during the Audit Mode window; the technician sets a real password
 :: during the OOBE handoff after sysprep.
-call :LOG "Arming Audit Mode auto-login (Administrator / blank password / AutoLogonCount=5)"
+call :LOG "Arming Audit Mode auto-login (Project Lonewolf / blank password / AutoLogonCount=5)"
 call :ARM_AUTOLOGIN
 if errorlevel 1 (
     call :LOG "WARN: Auto-login arming returned errors; Audit Mode auto-logon may not fire."
 ) else (
-    call :LOG "Auto-login registry values written and Administrator account enabled."
+    call :LOG "Auto-login registry values written and Project Lonewolf account enabled."
 )
 
 set "FB_PS="
@@ -1093,6 +1098,14 @@ schtasks /Query /TN "%FB_DEBUG_HOTKEY_WATCHER_TASK%" /V /FO LIST >> "%FB_SCHTASK
     echo.
 ) >> "%FB_SCHTASKS_STATE_LOG%" 2>&1
 
+:: NOTE: We deliberately do NOT call 'schtasks /Run' here. SetupComplete is
+:: invoked from the specialize pass, BEFORE Reseal reboots the box into
+:: Audit Mode. Launching the loop now would run in a stripped specialize
+:: environment with no shell or networking, then get killed by the Audit
+:: reboot (it produced a misleading "started successfully" log line in
+:: prior builds). The RunOnce + ONLOGON triggers fire post-Audit-logon,
+:: which is the only viable launch point.
+
 :: ?? 2283-arm-verify Bug LL: post-creation verification pass ???????????????
 :: Query each critical loop trigger to confirm it actually exists in the
 :: scheduler / registry before declaring the arm succeeded.
@@ -1135,15 +1148,9 @@ if "!FB_RUNONCE_VERIFY_EC!"=="1" (
 if "!FB_VERIFY_FAIL!"=="1" (
     call :LOG "ERROR: [ARM] 2283-arm-verify: One or more critical loop trigger registrations failed or are absent. FB_ARM_STATUS=!FB_ARM_STATUS!. Device will NOT run the update pipeline automatically. Inspect schtasks-firstbase-state.log and SetupComplete.log. Re-image may be required."
 ) else (
-    call :LOG "OK: [ARM] 2283-arm-verify: All critical loop trigger layers verified present (FB_ARM_STATUS=!FB_ARM_STATUS!). Kicking the loop now; OOBE will not process RunOnce/ONLOGON."
+    call :LOG "OK: [ARM] 2283-arm-verify: All critical loop trigger layers verified present (FB_ARM_STATUS=!FB_ARM_STATUS!). Pipeline will run on next logon/startup."
 )
-call :LOG "Trigger summary: RunOnce=^^!FirstBaseWuLoop + RunOnceEx=FirstBaseWuLoop + Run=FirstBaseWuLoopRun + %FB_TASK% ONSTART/SYSTEM + %FB_LOGON_TASK% ONLOGON/Admins. Splash: %FB_SPLASH_WATCHER_TASK% SYSTEM ONSTART (watcher); %FB_SPLASH_TASK% TRIGGERLESS; HKLM RunOnce ^^!FirstBaseWuSplash; loop UpdateSplashLayer4 bridge. [DEBUG] 2249: %FB_DEBUG_HOTKEY_WATCHER_TASK% ONLOGON/IT. 6.1.13: explicit schtasks /Run (no Reseal reboot; OOBE swallows logon triggers)."
-:: 6.1.13 CQMLYB4-0805-DellInc: Bug B1 removed Reseal=Audit, so there is NO
-:: specialize->Audit reboot. The first interactive session is OOBE (WWAHost),
-:: which does not process HKLM Run/RunOnce and often skips ONLOGON tasks.
-:: ONSTART already missed if the task was created this boot. Explicit /Run
-:: is the launch; IgnoreNew makes a second kick a no-op if the loop is up.
-call :KICK_PIPELINE
+call :LOG "Trigger summary: RunOnce=^^!FirstBaseWuLoop + RunOnceEx=FirstBaseWuLoop + Run=FirstBaseWuLoopRun + %FB_TASK% ONSTART/SYSTEM + %FB_LOGON_TASK% ONLOGON/Admins. Splash: %FB_SPLASH_WATCHER_TASK% SYSTEM ONSTART (watcher); %FB_SPLASH_TASK% TRIGGERLESS; HKLM RunOnce ^^!FirstBaseWuSplash; loop UpdateSplashLayer4 bridge. [DEBUG] 2249: %FB_DEBUG_HOTKEY_WATCHER_TASK% ONLOGON/IT. System will reboot to Audit Mode."
 
 :: ?? 2295-hardening-reorder + PS-free MDM block ???????????????????????????????
 :: Pre-reboot hardening runs in this order so the MOST IMPORTANT step (MDM
@@ -1167,9 +1174,11 @@ call :KICK_PIPELINE
 :: 0xff) BEFORE the MDM block ever ran, so Intune/Autopilot enrolled the device
 :: mid-pipeline and it landed at the Administrator password screen.
 ::
-:: TEMPORARY: everything below is undone at the OOBE handoff by
-:: FirstBaseOobeOperatorFinalize.ps1 (2277 MDM restore, 2280 exclusion + firewall
-:: removal, 2284 recovery-screen restore). Do NOT permanently disable MDM.
+:: TEMPORARY: everything below is undone at seal by Invoke-FbInlineMdmScrub
+:: + Set-FbDefenderRealtime restore in Invoke-WindowsUpdateLoop.ps1 (Option B
+:: load-bearing path). fb-im Seal and Tools\seal_command.txt must do the same.
+:: FirstBaseOobeOperatorFinalize.ps1 is recovery/legacy ([RETIRED 5.0.38]) and
+:: is NOT the teardown owner. Do NOT permanently disable MDM.
 
 :: 1) MDM enrollment suppression - PS-FREE (sc + reg), runs FIRST.
 call :LOG "Suppressing MDM enrollment (DmEnrollmentSvc + registry policy, PS-free sc/reg, pre-audit-reboot, prevents Autopilot/Intune policy interference with pipeline)"
@@ -1197,8 +1206,8 @@ if errorlevel 1 (
 )
 
 :: 3) Add Defender path exclusions (real-time already off; Add-MpPreference is also
-:: not blocked by Tamper Protection). Removed by FirstBaseOobeOperatorFinalize.ps1
-:: (2280) before seal.
+:: not blocked by Tamper Protection). Removed by Invoke-FbInlineMdmScrub in the
+:: WU loop (Option B); Finalize is recovery/legacy ([RETIRED 5.0.38]).
 call :LOG "Adding Defender path exclusions for FirstBase directories (2280, pre-audit-reboot, prevents AMSI quarantine of payload scripts on Tamper Protection devices)"
 call :ADD_DEFENDER_EXCLUSION
 if errorlevel 1 (
@@ -1211,7 +1220,8 @@ if errorlevel 1 (
 :: The WCOOBE / oobeldr.exe / msoobe.exe stack bypasses DmEnrollmentSvc suppression
 :: and the AutoEnrollMDM keys entirely. login.microsoftonline.com and
 :: portal.manage.microsoft.com are intentionally omitted (WU may use AAD auth
-:: endpoints). Rule is removed by FirstBaseOobeOperatorFinalize.ps1 (2280).
+:: endpoints). Rule is removed by Invoke-FbInlineMdmScrub in the WU loop
+:: (Option B). Finalize is recovery/legacy ([RETIRED 5.0.38]).
 call :LOG "Blocking Autopilot enrollment endpoints via Windows Firewall outbound rules (2280, pre-audit-reboot, prevents WCOOBE/oobeldr enrollment bypass of DmEnrollmentSvc suppression)"
 call :BLOCK_AUTOPILOT_ENDPOINTS
 if errorlevel 1 (
@@ -1243,29 +1253,40 @@ call :LOG "SetupComplete exiting"
 endlocal
 exit /b 0
 
-:KICK_PIPELINE
-:: 6.1.13 CQMLYB4-0805-DellInc: start the WU loop and splash watcher now.
-:: RunOnce/ONLOGON do not fire under OOBE; ONSTART already missed this boot
-:: when tasks are created during specialize. IgnoreNew = second kick is a no-op.
-setlocal EnableDelayedExpansion
-if "%FB_SELFTEST_MODE%"=="1" (
-    call :LOG "SELF-TEST: skipped schtasks /Run pipeline kick"
-    endlocal & exit /b 0
-)
-call :LOG "Kicking %FB_TASK% and %FB_SPLASH_WATCHER_TASK% (OOBE swallows RunOnce/ONLOGON; no Reseal reboot)"
-schtasks /Run /TN "%FB_TASK%" >> "%FB_LOG%" 2>&1 <nul
-if !ERRORLEVEL! EQU 0 (
-    call :LOG "OK: schtasks /Run %FB_TASK%"
-) else (
-    call :LOG "WARN: schtasks /Run %FB_TASK% exit=!ERRORLEVEL! (IgnoreNew if already running is OK)"
-)
-schtasks /Run /TN "%FB_SPLASH_WATCHER_TASK%" >> "%FB_LOG%" 2>&1 <nul
-if !ERRORLEVEL! EQU 0 (
-    call :LOG "OK: schtasks /Run %FB_SPLASH_WATCHER_TASK%"
-) else (
-    call :LOG "WARN: schtasks /Run %FB_SPLASH_WATCHER_TASK% exit=!ERRORLEVEL!"
-)
-endlocal & exit /b 0
+:STRIP_RESEAL_ONLY
+:: Remove every Reseal node from the unattend copies Setup and audit.exe read.
+:: Specialize must not call this. oobeSystem Reseal is what enters Audit.
+call :LOG "6.1.25: stripping unattend Reseal before Audit logon."
+setlocal DisableDelayedExpansion
+set "FB_STRIP_PS=%TEMP%\Strip-FbUnattendReseal.ps1"
+> "%FB_STRIP_PS%" echo $log = 'C:\Windows\Setup\FirstBase\Logs\SetupComplete.log'
+>> "%FB_STRIP_PS%" echo function Write-Strip([string]$Message) { try { Add-Content -LiteralPath $log -Value ((Get-Date -Format 'yyyy-MM-dd HH:mm:ss') + '  ' + $Message) -Encoding ASCII } catch {} }
+>> "%FB_STRIP_PS%" echo $paths = New-Object System.Collections.Generic.List[string]
+>> "%FB_STRIP_PS%" echo foreach ($p in @('C:\Windows\Panther\unattend.xml','C:\Windows\System32\Sysprep\unattend.xml','C:\Windows\System32\Sysprep\Panther\unattend.xml')) { [void]$paths.Add($p) }
+>> "%FB_STRIP_PS%" echo if (Test-Path -LiteralPath 'C:\Windows\Panther') { Get-ChildItem -LiteralPath 'C:\Windows\Panther' -Filter 'unattend*.xml' -File -ErrorAction SilentlyContinue ^| ForEach-Object { [void]$paths.Add($_.FullName) } }
+>> "%FB_STRIP_PS%" echo $seen = @{}
+>> "%FB_STRIP_PS%" echo foreach ($p in $paths) {
+>> "%FB_STRIP_PS%" echo   if ($seen.ContainsKey($p)) { continue }
+>> "%FB_STRIP_PS%" echo   $seen[$p] = $true
+>> "%FB_STRIP_PS%" echo   if (-not (Test-Path -LiteralPath $p)) { Write-Strip ('6.1.25: Reseal strip skip missing ' + $p); continue }
+>> "%FB_STRIP_PS%" echo   try {
+>> "%FB_STRIP_PS%" echo     [xml]$xml = Get-Content -LiteralPath $p -Raw -ErrorAction Stop
+>> "%FB_STRIP_PS%" echo     $nsm = New-Object System.Xml.XmlNamespaceManager($xml.NameTable)
+>> "%FB_STRIP_PS%" echo     $nsm.AddNamespace('u','urn:schemas-microsoft-com:unattend')
+>> "%FB_STRIP_PS%" echo     $nodes = @($xml.SelectNodes('//u:Reseal', $nsm))
+>> "%FB_STRIP_PS%" echo     if ($nodes.Count -eq 0) { Write-Strip ('6.1.25: no Reseal in ' + $p); continue }
+>> "%FB_STRIP_PS%" echo     foreach ($n in $nodes) { [void]$n.ParentNode.RemoveChild($n) }
+>> "%FB_STRIP_PS%" echo     $xml.Save($p)
+>> "%FB_STRIP_PS%" echo     Write-Strip ('6.1.25: removed ' + $nodes.Count + ' Reseal node(s) from ' + $p)
+>> "%FB_STRIP_PS%" echo   } catch { Write-Strip ('6.1.25: Reseal strip failed on ' + $p + ': ' + $_.Exception.Message) }
+>> "%FB_STRIP_PS%" echo }
+"%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -ExecutionPolicy Bypass -File "%FB_STRIP_PS%" >> "%FB_LOG%" 2>&1
+set "FB_STRIP_EC=%ERRORLEVEL%"
+del /f /q "%FB_STRIP_PS%" >nul 2>&1
+endlocal & set "FB_STRIP_EC=%FB_STRIP_EC%"
+call :LOG "6.1.25: Reseal strip finished exit=!FB_STRIP_EC!."
+endlocal
+exit /b 0
 
 :: ?? Subroutines ?????????????????????????????????????????????????????????
 :: Both RunOnce arming routines run with delayed expansion DISABLED so the
@@ -1294,8 +1315,11 @@ endlocal & exit /b %ERRORLEVEL%
 :: Maximized, Topmost=False with an F12 hotkey to toggle Topmost,
 :: so it is fullscreen-windowed (not borderless+topmost) and the
 :: tech can Alt+Tab / minimize / pin without using Ctrl+Alt+Del.
+:: 6.1.31: launch the single-instance wrapper via FirstBaseSplashLauncher.cmd.
+:: A direct -File Show-UpdateProgress.ps1 opened a second splash that
+:: bypassed splash-launcher.lock (dump 4FVGN94-0639, PID 7028).
 setlocal DisableDelayedExpansion
-reg add "%FB_RUNONCE_KEY%" /v "!FirstBaseWuSplash" /t REG_SZ /d "\"%FB_PS%\" -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File \"%FB_SPLASH_PS%\"" /f >> "%FB_LOG%" 2>&1 <nul
+reg add "%FB_RUNONCE_KEY%" /v "!FirstBaseWuSplash" /t REG_SZ /d "\"%FB_SPLASH_LAUNCHER%\"" /f >> "%FB_LOG%" 2>&1 <nul
 endlocal & exit /b %ERRORLEVEL%
 
 :ARM_RUNONCEEX_LOOP
@@ -1815,6 +1839,17 @@ endlocal & exit /b 0
 :: "FirstBase\UpdateSplashInteractive" /F is a manual one-liner.
 
 :DISABLE_DEFENDER
+:: KEEP IN SYNC: Set-FbDefenderRealtime (Invoke-WindowsUpdateLoop.ps1) /
+::   Invoke-FbImSealToOobe / Tools\seal_command.txt
+:: GATE: specialize-pass only (this subroutine). Loop pre-install may disable
+::   again. Do not add a new disable path.
+:: CLEANUP: restore is NOT this subroutine. Restore owners:
+::   (1) automated — Set-FbDefenderRealtime + Invoke-FbInlineMdmScrub in the WU loop
+::   (2) fb-im Seal — Invoke-FbImSealToOobe (imports the same helpers)
+::   (3) seal_command.txt — Set-MpPreference -DisableRealtimeMonitoring $false
+:: SEAL: all three seal paths must restore Defender realtime AND scrub MDM/
+::   exclusions before writing .firstbase-sealed.
+::
 :: 2213d: disable Microsoft Defender real-time monitoring HERE, in
 :: specialize pass, BEFORE the Reseal-to-audit reboot. Forensic post-
 :: mortem on F:\fb-dump-final-1430 (and F:\fb-dump-final-0635) proved
@@ -1875,9 +1910,11 @@ endlocal & exit /b 0
 :: NEVER blocks (all sc/reg output redirected to the log; always returns 0).
 ::
 :: TEMPORARY / KEEP IN SYNC: the service name, registry path and value names below
-:: MUST match the teardown in FirstBaseOobeOperatorFinalize.ps1 (2277), which
-:: Remove-ItemProperty's AutoEnrollMDM + UseAADCredentialType and restores
-:: DmEnrollmentSvc to StartupType=Automatic + Start at the OOBE handoff. Do NOT
+:: MUST match the teardown in Invoke-FbInlineMdmScrub (Invoke-WindowsUpdateLoop.ps1),
+:: which Remove-ItemProperty's AutoEnrollMDM + UseAADCredentialType and restores
+:: DmEnrollmentSvc to StartupType=Automatic + Start at seal. fb-im Seal and
+:: seal_command.txt must do the same. FirstBaseOobeOperatorFinalize.ps1 is
+:: recovery/legacy ([RETIRED 5.0.38]) and is NOT the load-bearing owner. Do NOT
 :: rename these without updating that teardown, or the device will ship unable to
 :: enroll.
 setlocal DisableDelayedExpansion
@@ -1900,7 +1937,8 @@ endlocal & exit /b 0
 :: Set-MpPreference -DisableRealtimeMonitoring). This prevents the false-positive
 :: AMSI quarantine (Trojan:Win32/AmsiTamper.A!ams) that blocked payload scripts on
 :: devices with Tamper Protection enabled. Exclusions are removed by
-:: FirstBaseOobeOperatorFinalize.ps1 (2280) before seal.
+:: Invoke-FbInlineMdmScrub in the WU loop (Option B) before seal.
+:: FirstBaseOobeOperatorFinalize.ps1 is recovery/legacy ([RETIRED 5.0.38]).
 setlocal DisableDelayedExpansion
 set "FB_DEFEXCL_TMPSCRIPT=%TEMP%\fb-defexcl-add.ps1"
 (
@@ -1943,8 +1981,9 @@ endlocal & exit /b 0
 :: keys entirely. Resolves hostnames to IPs first for rule reliability; falls back
 :: to hostname string if DNS resolution fails. login.microsoftonline.com and
 :: portal.manage.microsoft.com are intentionally omitted to avoid breaking Windows
-:: Update AAD authentication. Rule is removed by FirstBaseOobeOperatorFinalize.ps1
-:: (2280) before seal.
+:: Update AAD authentication. Rule is removed by Invoke-FbInlineMdmScrub in the
+:: WU loop (Option B) before seal. FirstBaseOobeOperatorFinalize.ps1 is
+:: recovery/legacy ([RETIRED 5.0.38]).
 setlocal DisableDelayedExpansion
 set "FB_APBLOCK_TMPSCRIPT=%TEMP%\fb-autopilot-block.ps1"
 (
@@ -2015,7 +2054,8 @@ endlocal & exit /b 0
 :: 2284-recovery-screen: Suppress "Why did my PC restart?" and automatic WinRE
 :: boot during the FirstBase update pipeline. Pipeline reboots (watchdog, forced
 :: restart) trigger the recovery screen if Windows sees an unexpected shutdown.
-:: Reversed in FirstBaseOobeOperatorFinalize.ps1 before seal.
+:: Reversed by Invoke-FbInlineMdmScrub (RecoveryBcd) in the WU loop before seal.
+:: FirstBaseOobeOperatorFinalize.ps1 is recovery/legacy ([RETIRED 5.0.38]).
 setlocal DisableDelayedExpansion
 call :LOG "Suppressing recovery screen (bootstatuspolicy + recoveryenabled, pre-pipeline)"
 bcdedit /set {current} bootstatuspolicy ignoreallfailures >> "%FB_LOG%" 2>&1 <nul
@@ -2091,25 +2131,45 @@ call :LOG "2293: ProgramData All Users Startup (VBS) armed at %FB_DEFERRED_START
 exit /b 0
 
 :ARM_AUTOLOGIN
-:: Enable local Administrator with a BLANK password. Audit Mode auto-login
-:: works reliably with a blank Administrator password and is acceptable
-:: because the device is offline/airgapped during this window. The password
-:: gets set during OOBE post-sysprep when the technician hands the box off
-:: to the end user.
-net user Administrator "" /active:yes >> "%FB_LOG%" 2>&1 <nul
+:: Temporary Audit admin is the built-in local account, renamed to
+:: Project Lonewolf. Password stays blank. A later re-arm finds the
+:: new name and does not rename again. If the rename cannot be enabled,
+:: fall back to Administrator so autologon still has a real account.
+set "FB_AUDIT_USER=Project Lonewolf"
+set "FB_PS_RENAME=%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe"
+if exist "%FB_PS_RENAME%" (
+    "%FB_PS_RENAME%" -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command "if (-not (Get-LocalUser -Name 'Project Lonewolf' -ErrorAction SilentlyContinue)) { Rename-LocalUser -Name 'Administrator' -NewName 'Project Lonewolf' }" >> "%FB_LOG%" 2>&1
+)
+net user "Project Lonewolf" "" /active:yes /passwordchg:no /logonpasswordchg:no >> "%FB_LOG%" 2>&1 <nul
 set "AUTOLOGIN_EC=!ERRORLEVEL!"
 if not "!AUTOLOGIN_EC!"=="0" (
-    echo [%DATE% %TIME%]   WARN: net user Administrator failed exit=!AUTOLOGIN_EC! >> "%FB_LOG%"
+    echo [%DATE% %TIME%]   WARN: net user Project Lonewolf failed exit=!AUTOLOGIN_EC!; falling back to Administrator >> "%FB_LOG%"
+    set "FB_AUDIT_USER=Administrator"
+    net user Administrator "" /active:yes /passwordchg:no /logonpasswordchg:no >> "%FB_LOG%" 2>&1 <nul
+    set "AUTOLOGIN_EC=!ERRORLEVEL!"
+    if not "!AUTOLOGIN_EC!"=="0" (
+        echo [%DATE% %TIME%]   WARN: net user Administrator failed exit=!AUTOLOGIN_EC! >> "%FB_LOG%"
+    )
 )
 
 set "WL_KEY=HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon"
+:: DefaultDomainName="." makes Winlogon try a domain named "." and show
+:: "Username or password is incorrect" on a black screen. OK then falls
+:: through to the blank local Administrator. Use the computer name.
+:: DefaultPassword must be a real empty string (blank Audit password).
+:: AutoLogonSID from a previous account causes the same credential dialog.
+reg delete "%WL_KEY%" /v "AutoLogonSID" /f >nul 2>&1
 reg add "%WL_KEY%" /v "AutoAdminLogon"     /t REG_SZ    /d "1"             /f >> "%FB_LOG%" 2>&1 <nul
-reg add "%WL_KEY%" /v "DefaultUserName"    /t REG_SZ    /d "Administrator" /f >> "%FB_LOG%" 2>&1 <nul
+reg add "%WL_KEY%" /v "DefaultUserName"    /t REG_SZ    /d "!FB_AUDIT_USER!" /f >> "%FB_LOG%" 2>&1 <nul
 reg add "%WL_KEY%" /v "DefaultPassword"    /t REG_SZ    /d ""              /f >> "%FB_LOG%" 2>&1 <nul
-reg add "%WL_KEY%" /v "DefaultDomainName"  /t REG_SZ    /d "."             /f >> "%FB_LOG%" 2>&1 <nul
+reg add "%WL_KEY%" /v "DefaultDomainName"  /t REG_SZ    /d "%COMPUTERNAME%" /f >> "%FB_LOG%" 2>&1 <nul
 reg add "%WL_KEY%" /v "AutoLogonCount"     /t REG_DWORD /d 5               /f >> "%FB_LOG%" 2>&1 <nul
 reg add "%WL_KEY%" /v "ForceAutoLogon"     /t REG_SZ    /d "1"             /f >> "%FB_LOG%" 2>&1 <nul
-echo [%DATE% %TIME%]   AutoAdminLogon=1, AutoLogonCount=5, ForceAutoLogon=1 >> "%FB_LOG%"
+:: Audit-only. Blank autologon is rejected with the credential-error dialog
+:: when this policy treats the attempt as a non-console logon. Pre-sysprep
+:: scrub restores 1 before the customer image is sealed.
+reg add "HKLM\SYSTEM\CurrentControlSet\Control\Lsa" /v "LimitBlankPasswordUse" /t REG_DWORD /d 0 /f >> "%FB_LOG%" 2>&1 <nul
+echo [%DATE% %TIME%]   AutoAdminLogon=1, DefaultUserName=!FB_AUDIT_USER!, DefaultDomainName=%COMPUTERNAME%, blank DefaultPassword, AutoLogonCount=5, ForceAutoLogon=1 >> "%FB_LOG%"
 exit /b 0
 
 :LOG

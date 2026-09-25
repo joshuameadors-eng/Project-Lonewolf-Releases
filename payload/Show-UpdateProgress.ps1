@@ -929,6 +929,27 @@ if (-not $script:Preview) {
         Write-SplashLog '2305: seal-window teardown marker present at startup; exiting before WPF so the customer OOBE is clean.' 'INFO'
         exit 0
     }
+    # Dump 4FVGN94-0639: HKLM RunOnce !FirstBaseWuSplash starts this script
+    # directly, beside the single-instance wrapper. Both painted a window.
+    # The first process keeps the splash. A second one exits.
+    $script:FbSplashInstanceMutex = $null
+    $fbSplashOwned = $false
+    try {
+        $script:FbSplashInstanceMutex = New-Object System.Threading.Mutex($false, 'Global\FirstBaseShowUpdateProgress')
+        try {
+            $fbSplashOwned = $script:FbSplashInstanceMutex.WaitOne(0)
+        } catch [System.Threading.AbandonedMutexException] {
+            $fbSplashOwned = $true
+        }
+    } catch {
+        try { Write-SplashLog ("6.1.31: splash single-window mutex failed: {0}" -f $_.Exception.Message) 'WARN' } catch {}
+        $fbSplashOwned = $true
+    }
+    if (-not $fbSplashOwned) {
+        Write-SplashLog '6.1.31: another splash is already open; exiting before a second window.' 'WARN'
+        try { if ($script:FbSplashInstanceMutex) { $script:FbSplashInstanceMutex.Dispose() } } catch {}
+        exit 0
+    }
 }
 
 Write-SplashLog ("STARTUP: Show-UpdateProgress.ps1 entered (product={0} script={1} payload={2})" -f $FirstBaseProductVersion, $script:ThisScriptVersion, $FirstBasePayloadRevision)
@@ -953,6 +974,7 @@ public static class FbSplashWin32Z {
     public static readonly IntPtr HWND_TOP = IntPtr.Zero;
     public static readonly IntPtr HWND_TOPMOST = new IntPtr(-1);
     public static readonly IntPtr HWND_NOTOPMOST = new IntPtr(-2);
+    public static readonly IntPtr HWND_BOTTOM = new IntPtr(1);
     public const uint SWP_NOSIZE = 0x0001;
     public const uint SWP_NOMOVE = 0x0002;
     public const uint SWP_NOZORDER = 0x0004;
@@ -1273,6 +1295,12 @@ try {
                 </DoubleAnimation.EasingFunction>
             </DoubleAnimation>
         </Storyboard>
+        <Storyboard x:Key="StatusNoticeSpinStory" RepeatBehavior="Forever">
+            <DoubleAnimation Storyboard.TargetName="StatusNoticeSpin"
+                             Storyboard.TargetProperty="Angle"
+                             From="0" To="360"
+                             Duration="0:0:0.9"/>
+        </Storyboard>
     </Window.Resources>
 
     <Grid Name="SplashRoot" Background="#FF000000">
@@ -1325,13 +1353,13 @@ try {
                 <TextBlock Name="WarningText" Text="" FontSize="13" Foreground="#FFF0C14B" HorizontalAlignment="Center" TextAlignment="Center" TextWrapping="Wrap" MaxWidth="980" Margin="0,10,0,0"/>
             </StackPanel>
 
-            <Border Grid.Row="1" Name="UpdatesPanel" Width="1060" MaxWidth="1060" CornerRadius="10" Background="#FF071428" BorderBrush="#FF22D3EE" BorderThickness="1" HorizontalAlignment="Center" VerticalAlignment="Stretch" MinHeight="280">
+            <Border Grid.Row="1" Name="UpdatesPanel" Width="1060" MaxWidth="1060" CornerRadius="0" Background="Transparent" BorderThickness="0" HorizontalAlignment="Center" VerticalAlignment="Stretch" MinHeight="280">
                 <Grid>
                     <Grid.RowDefinitions>
-                        <RowDefinition Height="48"/>
+                        <RowDefinition Height="Auto"/>
                         <RowDefinition Height="*"/>
                     </Grid.RowDefinitions>
-                    <Border Grid.Row="0" Background="#FF071428" BorderBrush="#FF1E4A7A" BorderThickness="0,0,0,1" CornerRadius="9,9,0,0">
+                    <Border Grid.Row="0" Margin="0,0,0,10" Padding="0,6" Background="#FF071428" BorderBrush="#FF22D3EE" BorderThickness="1" CornerRadius="18">
                         <!-- Indicator row: STATUS pill left; REBOOTS / TOTAL ELAPSED / ELAPSED right. -->
                         <Grid Margin="12,0,12,0">
                             <StackPanel Orientation="Horizontal" HorizontalAlignment="Left" VerticalAlignment="Center">
@@ -1364,53 +1392,58 @@ try {
                             </StackPanel>
                         </Grid>
                     </Border>
-                    <!-- Header-less data list (no UPDATE | STATUS | RETRIES header row). Vertical scrollbar stays. -->
+                    <!-- Phase banner (Waiting / hardware) sits above the list so row statuses stay visible. -->
                     <Grid Grid.Row="1">
-                    <ListView Name="UpdatesList"
-                          Background="Transparent" Foreground="#FFE8F4FF"
-                          BorderThickness="0" FontSize="13"
-                          AlternationCount="2"
-                          ScrollViewer.HorizontalScrollBarVisibility="Disabled"
-                          ScrollViewer.VerticalScrollBarVisibility="Auto">
-                    <ListView.View>
-                        <GridView>
-                            <GridViewColumn Header="" Width="700">
-                                <GridViewColumn.CellTemplate>
-                                    <DataTemplate>
-                                        <Border BorderBrush="#FF1E4A7A" BorderThickness="0,0,1,0" Padding="12,0,8,0">
-                                            <TextBlock Text="{Binding Title}" Foreground="#FFE8F4FF" TextTrimming="CharacterEllipsis" VerticalAlignment="Center"/>
-                                        </Border>
-                                    </DataTemplate>
-                                </GridViewColumn.CellTemplate>
-                            </GridViewColumn>
-                            <GridViewColumn Header="" Width="220">
-                                <GridViewColumn.CellTemplate>
-                                    <DataTemplate>
-                                        <Border BorderBrush="#FF1E4A7A" BorderThickness="0,0,1,0" Padding="12,0,8,0">
-                                            <TextBlock Text="{Binding Status}" Foreground="{Binding StatusColor}" FontWeight="SemiBold" VerticalAlignment="Center"/>
-                                        </Border>
-                                    </DataTemplate>
-                                </GridViewColumn.CellTemplate>
-                            </GridViewColumn>
-                            <GridViewColumn Header="" Width="90">
-                                <GridViewColumn.CellTemplate>
-                                    <DataTemplate>
-                                        <Border Padding="12,0,8,0">
-                                            <TextBlock Text="{Binding Retries}" Foreground="#FFB0C4DE" VerticalAlignment="Center"/>
-                                        </Border>
-                                    </DataTemplate>
-                                </GridViewColumn.CellTemplate>
-                            </GridViewColumn>
-                        </GridView>
-                    </ListView.View>
-                    </ListView>
-                    <Border Name="HandoffCopyHost" Visibility="Collapsed" Background="#FF071428" Padding="36,28">
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="*"/>
+                    </Grid.RowDefinitions>
+                    <Border Name="HandoffCopyHost" Grid.Row="0" Visibility="Collapsed" Background="#FF071428" Padding="24,14" BorderBrush="#FF1E4A7A" BorderThickness="0,0,0,1">
                         <StackPanel VerticalAlignment="Center" HorizontalAlignment="Center" MaxWidth="820">
                             <TextBlock Name="HandoffEyebrowText" Text="OOBE HANDOFF" Foreground="#FF22D3EE" FontSize="13" FontWeight="Bold" HorizontalAlignment="Center"/>
-                            <TextBlock Name="HandoffHeaderText" Text="Preparing hardware checks" Foreground="White" FontSize="26" FontWeight="SemiBold" TextAlignment="Center" TextWrapping="Wrap" Margin="0,12,0,10"/>
-                            <TextBlock Name="HandoffDetailText" Text="Updates are complete. FirstBase will verify Wi-Fi, camera, and sound, then open YouTube or Settings." Foreground="#FF87CEEB" FontSize="16" TextAlignment="Center" TextWrapping="Wrap"/>
+                            <TextBlock Name="HandoffHeaderText" Text="Preparing hardware checks" Foreground="White" FontSize="22" FontWeight="SemiBold" TextAlignment="Center" TextWrapping="Wrap" Margin="0,8,0,6"/>
+                            <TextBlock Name="HandoffDetailText" Text="Updates are complete. FirstBase will verify Wi-Fi, camera, and sound, then open YouTube or Settings." Foreground="#FF87CEEB" FontSize="15" TextAlignment="Center" TextWrapping="Wrap"/>
                         </StackPanel>
                     </Border>
+                    <!-- Update cards wrap in the panel. Scroll only when the count cannot fit. -->
+                    <Grid Grid.Row="1">
+                        <ScrollViewer Name="UpdatesList"
+                                      Background="Transparent"
+                                      HorizontalScrollBarVisibility="Disabled"
+                                      VerticalScrollBarVisibility="Auto">
+                            <WrapPanel Name="UpdatesWrap" Orientation="Horizontal" Margin="0,6,0,0"/>
+                        </ScrollViewer>
+                        <TextBlock Name="UpdatesPlaceholder"
+                                   Text="Waiting for this boot's updates"
+                                   Foreground="#FF87CEEB"
+                                   FontSize="16"
+                                   HorizontalAlignment="Center"
+                                   VerticalAlignment="Center"
+                                   TextAlignment="Center"
+                                   Visibility="Collapsed"/>
+                        <Border Name="StatusNoticeHost" Visibility="Collapsed" HorizontalAlignment="Center" VerticalAlignment="Center"
+                                Padding="28,18" CornerRadius="14" Background="#FF071428" BorderBrush="#FF22D3EE" BorderThickness="1.5"
+                                MaxWidth="460" MinWidth="280" RenderTransformOrigin="0.5,0.5">
+                            <Border.RenderTransform>
+                                <TransformGroup>
+                                    <ScaleTransform x:Name="StatusNoticeScale" ScaleX="1" ScaleY="1"/>
+                                    <TranslateTransform x:Name="StatusNoticeShift" X="0" Y="0"/>
+                                </TransformGroup>
+                            </Border.RenderTransform>
+                            <StackPanel>
+                                <Ellipse Name="StatusNoticeSpinner" Width="28" Height="28" HorizontalAlignment="Center" Margin="0,0,0,10"
+                                         Stroke="#FF22D3EE" StrokeThickness="3" StrokeDashArray="3 1.6"
+                                         RenderTransformOrigin="0.5,0.5" Visibility="Collapsed">
+                                    <Ellipse.RenderTransform>
+                                        <RotateTransform x:Name="StatusNoticeSpin" Angle="0"/>
+                                    </Ellipse.RenderTransform>
+                                </Ellipse>
+                                <TextBlock Name="StatusNoticeTitle" Text="" Foreground="White" FontSize="20" FontWeight="SemiBold" TextAlignment="Center" TextWrapping="Wrap"/>
+                                <TextBlock Name="StatusNoticeDetail" Text="" Foreground="#FFB8D4EA" FontSize="14" TextAlignment="Center" TextWrapping="Wrap" Margin="0,8,0,0" MaxWidth="400"/>
+                                <TextBlock Name="StatusNoticeTimer" Text="" Foreground="#FF22D3EE" FontSize="28" FontFamily="Consolas" FontWeight="Bold" TextAlignment="Center" Margin="0,10,0,0" Visibility="Collapsed"/>
+                            </StackPanel>
+                        </Border>
+                    </Grid>
                     </Grid>
                 </Grid>
             </Border>
@@ -1444,6 +1477,7 @@ $elapsedText          = $window.FindName('ElapsedText')
 $elapsedHost          = $window.FindName('ElapsedHost')
 $warningText          = $window.FindName('WarningText')
 $updatesList          = $window.FindName('UpdatesList')
+$updatesWrap          = $window.FindName('UpdatesWrap')
 $updatesPlaceholder   = $window.FindName('UpdatesPlaceholder')
 $handoffCopyHost      = $window.FindName('HandoffCopyHost')
 $splashRoot           = $window.FindName('SplashRoot')
@@ -1451,6 +1485,13 @@ $designCanvas         = $window.FindName('DesignCanvas')
 $handoffEyebrowText   = $window.FindName('HandoffEyebrowText')
 $handoffHeaderText    = $window.FindName('HandoffHeaderText')
 $handoffDetailText    = $window.FindName('HandoffDetailText')
+$statusNoticeHost     = $window.FindName('StatusNoticeHost')
+$statusNoticeTitle    = $window.FindName('StatusNoticeTitle')
+$statusNoticeDetail   = $window.FindName('StatusNoticeDetail')
+$statusNoticeTimer    = $window.FindName('StatusNoticeTimer')
+$statusNoticeSpinner  = $window.FindName('StatusNoticeSpinner')
+$statusNoticeScale    = $window.FindName('StatusNoticeScale')
+$statusNoticeShift    = $window.FindName('StatusNoticeShift')
 $script:FbSplashHandoffLayoutActive = $false
 $script:FbSplashPulseRunning = $false
 $script:FbSplashCompletedLatch = $false
@@ -1462,7 +1503,7 @@ $topmostIndicatorText = $window.FindName('TopmostIndicatorText')
 $devBuildIndicator    = $window.FindName('DevBuildIndicator')
 $devBuildIndicatorText = $window.FindName('DevBuildIndicatorText')
 try {
-    if ($updatesList) { $updatesList.ItemsSource = @() }
+    if ($updatesWrap) { $updatesWrap.Children.Clear() }
 } catch {}
 function Get-FbSplashBgKind {
     param(
@@ -1472,10 +1513,10 @@ function Get-FbSplashBgKind {
     )
     $blob = ('{0} {1} {2}' -f $Phase, $Message, $Text)
     if ($blob -match '(?i)escape valve|apply failed|dump-worthy|futile') { return 'error' }
-    if ($Phase -match '(?i)error|fail') { return 'error' }
-    if ($Text -match '(?i)^failed|error') { return 'error' }
+    if ($Phase -match '(?i)error|fail|HardwareFail|checks-fail') { return 'error' }
+    if ($Text -match '(?i)^failed|error|hardware failed') { return 'error' }
     if ($Message -match '(?i)failed|error') { return 'error' }
-    if ($Phase -match '(?i)^reboot|manualrestart') { return 'warn' }
+    if ($Phase -match '(?i)^reboot|manualrestart|Waiting|OperatorGate|close-wait') { return 'warn' }
     if ($Text -match '(?i)restart this pc|restarting to continue|hold the power') { return 'warn' }
     if ($blob -match '(?i)stalled|wedge') { return 'warn' }
     return 'normal'
@@ -1507,6 +1548,10 @@ function Get-FbSplashStatusAccent {
     $t = if ($null -eq $Text) { '' } else { $Text.Trim().ToLowerInvariant() }
     # Phase-coded colors (aligned with row StatusColor values where possible).
     if ($t -match 'failed|error') { return '#FFEF5350' }
+    if ($t -match 'hardware passed|checks passed') { return '#FF66BB6A' }
+    if ($t -match 'hardware failed|checks failed') { return '#FFEF5350' }
+    if ($t -match 'operator gate|waiting on you|close youtube') { return '#FFF0C14B' }
+    if ($t -match 'hardware|sealing') { return '#FF22D3EE' }
     if ($t -match 'handoff|oobe') { return '#FF22D3EE' }
     if ($t -match 'complete|finished|done') { return '#FF66BB6A' }
     if ($t -match 'finishing') { return '#FF81C784' }
@@ -1514,6 +1559,7 @@ function Get-FbSplashStatusAccent {
     if ($t -match 'retry next boot') { return '#FFFF8A65' }
     if ($t -match 'retry') { return '#FFFF8A65' }
     if ($t -match 'network|waiting for network') { return '#FFF0C14B' }
+    if ($t -match '^waiting$|waiting for windows') { return '#FFF0C14B' }
     # Screenshot STATUS pill is orange for the live update pass (download and/or install).
     if ($t -match 'download' -or $t -match 'install') { return '#FFFF9800' }
     if ($t -match 'checking|found|preparing') { return '#FF22D3EE' }
@@ -1524,7 +1570,7 @@ function Get-FbSplashStatusAccent {
 function Test-FbSplashStatusIsActive {
     param([string]$Text)
     $t = if ($null -eq $Text) { '' } else { $Text.Trim().ToLowerInvariant() }
-    return [bool]($t -match 'download|install|checking|retrying|getting ready|preparing|found|finishing|handoff|applying|restart')
+    return [bool]($t -match 'download|install|checking|retrying|getting ready|preparing|found|finishing|handoff|applying|restart|waiting|hardware|sealing|operator')
 }
 
 function Convert-FbSplashTextToAscii {
@@ -1617,9 +1663,12 @@ function Set-FbSplashElapsedDisplay {
 }
 
 function Get-FbSplashPipelineStartTime {
-    # Pipeline-wide start from wu-state.json StartTime (survives reboot).
-    # Seed a one-shot marker if the loop has not written state yet.
+    # Earliest of wu-state StartTime and wu-pipeline-started.utc.
+    # CBS settle used to rewrite StartTime to "now" (dump 4FVGN94-0657),
+    # which reset TOTAL ELAPSED at the hardware check. The marker only
+    # moves earlier, never forward.
     $marker = Join-Path $FbRoot 'wu-pipeline-started.utc'
+    $candidates = New-Object System.Collections.Generic.List[datetime]
     try {
         $statePath = Join-Path $FbRoot 'wu-state.json'
         if (Test-Path -LiteralPath $statePath) {
@@ -1627,12 +1676,7 @@ function Get-FbSplashPipelineStartTime {
             if ($diskState.PSObject.Properties.Name -contains 'StartTime' -and $diskState.StartTime) {
                 $parsed = [datetime]::MinValue
                 if ([datetime]::TryParse([string]$diskState.StartTime, [ref]$parsed)) {
-                    try {
-                        if (-not (Test-Path -LiteralPath $marker)) {
-                            Set-Content -LiteralPath $marker -Value $parsed.ToUniversalTime().ToString('o') -Encoding ASCII -ErrorAction SilentlyContinue
-                        }
-                    } catch {}
-                    return $parsed
+                    [void]$candidates.Add($parsed)
                 }
             }
         }
@@ -1641,18 +1685,33 @@ function Get-FbSplashPipelineStartTime {
         if (Test-Path -LiteralPath $marker) {
             $raw = (Get-Content -LiteralPath $marker -Raw -ErrorAction Stop).Trim()
             $parsed = [datetime]::MinValue
-            if ($raw -and [datetime]::TryParse($raw, [ref]$parsed)) { return $parsed }
+            if ($raw -and [datetime]::TryParse($raw, [ref]$parsed)) {
+                [void]$candidates.Add($parsed)
+            }
         }
     } catch {}
-    # First paint this cycle: seed marker from this splash session.
-    try {
+    if ($candidates.Count -eq 0) {
         $seed = if ($script:startTime) { $script:startTime } else { Get-Date }
-        if (-not (Test-Path -LiteralPath $marker)) {
-            Set-Content -LiteralPath $marker -Value $seed.ToUniversalTime().ToString('o') -Encoding ASCII -ErrorAction SilentlyContinue
+        [void]$candidates.Add($seed)
+    }
+    $earliest = $candidates[0]
+    foreach ($c in $candidates) {
+        if ($c -lt $earliest) { $earliest = $c }
+    }
+    try {
+        $writeMarker = -not (Test-Path -LiteralPath $marker)
+        if (-not $writeMarker) {
+            $rawNow = (Get-Content -LiteralPath $marker -Raw -ErrorAction Stop).Trim()
+            $parsedNow = [datetime]::MinValue
+            if ($rawNow -and [datetime]::TryParse($rawNow, [ref]$parsedNow) -and $parsedNow -gt $earliest) {
+                $writeMarker = $true
+            }
         }
-        return $seed
+        if ($writeMarker) {
+            Set-Content -LiteralPath $marker -Value $earliest.ToUniversalTime().ToString('o') -Encoding ASCII -ErrorAction SilentlyContinue
+        }
     } catch {}
-    return $(if ($script:startTime) { $script:startTime } else { Get-Date })
+    return $earliest
 }
 
 function Set-FbSplashTotalElapsedDisplay {
@@ -2776,27 +2835,41 @@ function Get-FbSplashShortStatusLine {
     if ($p -eq 'Scanning' -or $p -eq 'Checking') { return 'Checking for updates' }
     if ($p -eq 'Verifying' -or $p -eq 'FinalCheck') { return 'Verifying updates' }
     if ($p -eq 'ApplyingUpdates' -or $p -match '(?i)applying') { return 'Windows is applying updates - please wait' }
-    if ($p -eq 'ManualRestart') { return 'Restart this PC - hold the power button if it will not restart' }
+    if ($p -eq 'ManualRestart') { return 'Manual restart required' }
     if ($p -eq 'Stopped') { return 'Updates stopped by technician' }
-    if ($p -eq 'HardwareGate') { return 'Starting hardware check' }
-    if ($p -eq 'Rebooting' -or $p -match '(?i)^reboot') { return 'Restarting to continue updates' }
-    if ($p -match '(?i)handoff|sysprep|oobe|hardware.?gate') { return 'Starting hardware check' }
+    if ($p -eq 'Skipped') { return 'Updating skipped' }
+    if ($p -eq 'Waiting' -or $p -eq 'preparing-handoff') { return 'Waiting' }
+    if ($p -eq 'HardwareGate') { return 'Starting hardware checks' }
+    if ($p -eq 'HardwareChecks' -or $p -eq 'running-checks') { return 'Running hardware checks' }
+    if ($p -eq 'HardwarePass' -or $p -eq 'checks-pass') { return 'Hardware passed' }
+    if ($p -eq 'HardwareFail' -or $p -eq 'checks-fail') { return 'Hardware failed' }
+    if ($p -eq 'OperatorGate' -or $p -eq 'close-wait') { return 'Opening operator gate' }
+    if ($p -eq 'Sealing' -or $p -eq 'sealing' -or $p -eq 'gate-fail-restart') { return 'Sealing' }
+    if ($p -eq 'Rebooting' -or $p -eq 'restart-for-checks' -or $p -match '(?i)^reboot') { return 'Restarting to continue' }
+    if ($p -match '(?i)handoff|sysprep|oobe|hardware.?gate') { return 'Starting hardware checks' }
     return 'Downloading and installing updates'
 }
 
 function Resolve-FbSplashDisplayPhase {
     # STATUS pill must follow the latest wu-status.json phase. Completed is never a
     # terminal latch: a later Downloading/Installing phase (or in-flight row) wins.
+    # Waiting / hardware / operator phases own the pill. Stale Installing or
+    # Downloading rows from the previous pass must not flip it.
     param($State)
     if (-not $State) { return '' }
     $phase = [string]$State.Phase
     $updatedAt = [string]$State.UpdatedAt
+    if (Test-FbSplashAuditStatusPhase -Phase $phase) {
+        $script:FbSplashCompletedLatch = $false
+        $script:FbSplashLastStatusUpdatedAt = $updatedAt
+        return $phase
+    }
     $inflight = $null
     foreach ($u in @($State.Updates)) {
         if (-not $u) { continue }
         $s = [string]$u.RawStatus
         if ([string]::IsNullOrWhiteSpace($s)) { $s = [string]$u.Status }
-        if ($s -match '(?i)^install') { $inflight = 'Installing'; break }
+        if ($s -match '(?i)^install|^reapplying') { $inflight = 'Installing'; break }
         if ($s -match '(?i)pending\s+install|^queued') { if (-not $inflight) { $inflight = 'Downloading' } }
         if ($s -match '(?i)^download') { if (-not $inflight) { $inflight = 'Downloading' } }
         if ($s -match '(?i)^retrying') { if (-not $inflight) { $inflight = 'Installing' } }
@@ -2817,26 +2890,391 @@ function Resolve-FbSplashDisplayPhase {
     return $phase
 }
 
+function Test-FbSplashAuditStatusPhase {
+    param([string]$Phase = '')
+    $p = if ([string]::IsNullOrWhiteSpace($Phase)) { '' } else { $Phase.Trim() }
+    if ($p.Length -eq 0) { return $false }
+    return [bool]($p -match '(?i)^(Skipped|Waiting|HardwareGate|HardwareChecks|HardwarePass|HardwareFail|OperatorGate|Sealing|preparing-handoff|restart-for-checks|running-checks|checks-pass|checks-fail|sealing|gate-fail-restart|close-wait)$')
+}
+
+function Get-FbSplashHandoffCopyForPhase {
+    param(
+        [string]$Phase = '',
+        [string]$Message = ''
+    )
+    $p = if ([string]::IsNullOrWhiteSpace($Phase)) { '' } else { $Phase.Trim() }
+    $copy = @{
+        Eyebrow = 'STATUS'
+        Header  = 'Preparing hardware checks'
+        Detail  = 'Updates are complete. FirstBase will verify Wi-Fi, camera, and sound, then open YouTube or Settings.'
+        Status  = 'Preparing hardware checks'
+        Warning = 'Do not disconnect power. Hardware checks run in this session.'
+    }
+    switch -Regex ($p) {
+        '^(Skipped)$' {
+            $copy.Eyebrow = 'UPDATING SKIPPED'
+            $copy.Header  = 'Windows Update skipped'
+            $copy.Detail  = 'This destage did not run Windows Update. Hardware handoff is next (probes auto-pass unless you start real checks from fb-im).'
+            $copy.Status  = 'Updating skipped'
+            $copy.Warning = 'Use Start Hardware Checks in fb-im for real Wi-Fi, sound, and camera probes.'
+        }
+        '^(Waiting|preparing-handoff)$' {
+            $copy.Eyebrow = 'WAITING'
+            $copy.Header  = 'Restarting soon'
+            $copy.Detail  = 'The computer will restart on its own.'
+            $copy.Status  = 'Waiting'
+            $copy.Warning = ''
+        }
+        '^(restart-for-checks)$' {
+            $copy.Eyebrow = 'RESTARTING'
+            $copy.Header  = 'Restarting to continue preparation'
+            $copy.Detail  = 'Windows still needs a restart before hardware checks can finish in this session.'
+            $copy.Status  = 'Restarting to continue'
+            $copy.Warning = 'Leave the device powered on. Hardware checks continue after restart.'
+        }
+        '^(HardwareGate)$' {
+            $copy.Eyebrow = 'HARDWARE CHECKS'
+            $copy.Header  = 'Starting hardware checks'
+            $copy.Detail  = 'Updates are complete. FirstBase is starting Wi-Fi, camera, and sound probes.'
+            $copy.Status  = 'Starting hardware checks'
+            $copy.Warning = 'Do not disconnect power. Hardware checks run in this session.'
+        }
+        '^(HardwareChecks|running-checks)$' {
+            $copy.Eyebrow = 'HARDWARE'
+            $copy.Header  = 'Checking hardware'
+            $copy.Detail  = 'Wi-Fi, camera, and sound.'
+            $copy.Status  = 'Running hardware checks'
+            $copy.Warning = ''
+        }
+        '^(HardwarePass|checks-pass)$' {
+            $copy.Eyebrow = 'HARDWARE'
+            $copy.Header  = 'Hardware looks good'
+            $copy.Detail  = 'A video will open next. Close it when you are finished.'
+            $copy.Status  = 'Hardware passed'
+            $copy.Warning = ''
+        }
+        '^(HardwareFail|checks-fail)$' {
+            $copy.Eyebrow = 'HARDWARE'
+            $copy.Header  = 'Hardware needs a look'
+            $copy.Detail  = 'Settings will open next.'
+            $copy.Status  = 'Hardware failed'
+            $copy.Warning = ''
+        }
+        '^(OperatorGate|close-wait)$' {
+            $copy.Eyebrow = 'WAITING ON YOU'
+            $copy.Header  = 'Close the window to continue'
+            $copy.Detail  = 'Close the video or Settings when you are done.'
+            $copy.Status  = 'Opening operator gate'
+            $copy.Warning = ''
+        }
+        '^(Sealing|sealing)$' {
+            $copy.Eyebrow = 'SEALING'
+            $copy.Header  = 'Finishing up'
+            $copy.Detail  = 'The computer will restart into Windows setup.'
+            $copy.Status  = 'Sealing'
+            $copy.Warning = ''
+        }
+        '^(gate-fail-restart)$' {
+            $copy.Eyebrow = 'HARDWARE CHECK FAILED'
+            $copy.Header  = 'Restarting after a failed check'
+            $copy.Detail  = 'Scripts are being removed (logs and markers stay). The device will restart into Windows setup (OOBE).'
+            $copy.Status  = 'Sealing'
+            $copy.Warning = 'Leave the device powered on. Restart into customer OOBE is in progress.'
+        }
+    }
+    $msg = [string]$Message
+    if ($msg -match '(?i)(\d+)\s*s\s*/\s*(\d+)\s*s') {
+        $copy.Detail = ($copy.Detail.TrimEnd('.') + ('. Waited {0}s of {1}s.' -f $Matches[1], $Matches[2]))
+    } elseif ($msg -match '(?i)hardware checks:\s*(sound|camera|wi-?fi|pnp|microphone|speakers)') {
+        $probe = $Matches[1]
+        $copy.Header = ('Checking {0}' -f $probe)
+        $copy.Detail = 'Wi-Fi, camera, and sound.'
+        $copy.Status = ('Checking {0}' -f $probe)
+    } elseif ($msg -match '(?i)youtube' -and $msg -match '(?i)settings') {
+        # Keep the generic operator-gate copy (YouTube pass or Settings fail).
+    } elseif ($msg -match '(?i)youtube') {
+        $copy.Header = 'Opening a private YouTube window'
+        $copy.Detail = 'Hardware passed. Close the YouTube window when you are done to seal and restart into Windows setup.'
+        $copy.Status = 'Opening operator gate'
+    } elseif ($msg -match '(?i)settings') {
+        $copy.Header = 'Opening Windows Settings'
+        $copy.Detail = 'Close Settings when you are done. FirstBase continues after that window closes.'
+        $copy.Status = 'Opening operator gate'
+    } elseif ($msg -match '(?i)seal the device from fb-im') {
+        $copy.Header = 'Hardware passed'
+        $copy.Detail = 'Hardware checks passed. Seal the device from fb-im when you are ready. Walking away does not shut the device down.'
+        $copy.Status = 'Hardware passed'
+    }
+    return $copy
+}
+
+function Stop-FbSplashNoticeTimers {
+    try { if ($script:FbSplashSettleTimer) { $script:FbSplashSettleTimer.Stop() } } catch {}
+    try { if ($script:FbSplashHardwareTimer) { $script:FbSplashHardwareTimer.Stop() } } catch {}
+    $script:FbSplashSettleTimer = $null
+    $script:FbSplashHardwareTimer = $null
+}
+
+function Hide-FbSplashStatusNotice {
+    Stop-FbSplashNoticeTimers
+    $script:FbSplashNoticeOpen = $false
+    $script:FbSplashNoticeSig = ''
+    if ($updatesWrap) { try { $updatesWrap.Visibility = [System.Windows.Visibility]::Visible } catch {} }
+    try {
+        $spin = $window.TryFindResource('StatusNoticeSpinStory')
+        if ($spin) { $spin.Stop($window) }
+    } catch {}
+    if ($statusNoticeHost) {
+        try { $statusNoticeHost.Visibility = [System.Windows.Visibility]::Collapsed } catch {}
+    }
+}
+
+function Start-FbSplashNoticeMotion {
+    param([string]$Kind)
+    if (-not $statusNoticeHost) { return }
+    try { $statusNoticeHost.BeginAnimation([System.Windows.UIElement]::OpacityProperty, $null) } catch {}
+    if ($statusNoticeScale) {
+        try { $statusNoticeScale.BeginAnimation([System.Windows.Media.ScaleTransform]::ScaleXProperty, $null) } catch {}
+        try { $statusNoticeScale.BeginAnimation([System.Windows.Media.ScaleTransform]::ScaleYProperty, $null) } catch {}
+        $statusNoticeScale.ScaleX = 1
+        $statusNoticeScale.ScaleY = 1
+    }
+    if ($statusNoticeShift) {
+        try { $statusNoticeShift.BeginAnimation([System.Windows.Media.TranslateTransform]::XProperty, $null) } catch {}
+        try { $statusNoticeShift.BeginAnimation([System.Windows.Media.TranslateTransform]::YProperty, $null) } catch {}
+        $statusNoticeShift.X = 0
+        $statusNoticeShift.Y = 0
+    }
+    $ms = 320
+    $fromX = 0.0
+    $fromY = 0.0
+    $fromScale = 1.0
+    switch ($Kind) {
+        'Check'   { $ms = 420; $fromScale = 0.86 }
+        'Boot'    { $ms = 360; $fromX = 36 }
+        'Settle'  { $ms = 400; $fromY = 28 }
+        'Checks'  { $ms = 260; $fromScale = 0.94 }
+        'Passed'  { $ms = 480; $fromScale = 1.12 }
+        'Failed'  { $ms = 300; $fromX = -16 }
+        'Gate'    { $ms = 640 }
+        'Seal'    { $ms = 380; $fromY = -24 }
+        'Restart' { $ms = 200 }
+        default   { $ms = 320; $fromY = 12 }
+    }
+    $fade = New-Object System.Windows.Media.Animation.DoubleAnimation
+    $fade.From = 0
+    $fade.To = 1
+    $fade.Duration = [TimeSpan]::FromMilliseconds($ms)
+    $statusNoticeHost.Opacity = 0
+    $statusNoticeHost.BeginAnimation([System.Windows.UIElement]::OpacityProperty, $fade)
+    if ($fromScale -ne 1 -and $statusNoticeScale) {
+        $scale = New-Object System.Windows.Media.Animation.DoubleAnimation
+        $scale.From = $fromScale
+        $scale.To = 1
+        $scale.Duration = [TimeSpan]::FromMilliseconds($ms)
+        $statusNoticeScale.BeginAnimation([System.Windows.Media.ScaleTransform]::ScaleXProperty, $scale)
+        $statusNoticeScale.BeginAnimation([System.Windows.Media.ScaleTransform]::ScaleYProperty, $scale)
+    }
+    if ($fromX -ne 0 -and $statusNoticeShift) {
+        $slide = New-Object System.Windows.Media.Animation.DoubleAnimation
+        $slide.From = $fromX
+        $slide.To = 0
+        $slide.Duration = [TimeSpan]::FromMilliseconds($ms)
+        $statusNoticeShift.BeginAnimation([System.Windows.Media.TranslateTransform]::XProperty, $slide)
+    }
+    if ($fromY -ne 0 -and $statusNoticeShift) {
+        $slideY = New-Object System.Windows.Media.Animation.DoubleAnimation
+        $slideY.From = $fromY
+        $slideY.To = 0
+        $slideY.Duration = [TimeSpan]::FromMilliseconds($ms)
+        $statusNoticeShift.BeginAnimation([System.Windows.Media.TranslateTransform]::YProperty, $slideY)
+    }
+}
+
+function Start-FbSplashCardBar {
+    param($BarFill)
+    if (-not $BarFill) { return }
+    $slide = New-Object System.Windows.Media.Animation.DoubleAnimation
+    $slide.From = -0.45
+    $slide.To = 1.05
+    $slide.Duration = [TimeSpan]::FromSeconds(1.15)
+    $slide.RepeatBehavior = [System.Windows.Media.Animation.RepeatBehavior]::Forever
+    $BarFill.BeginAnimation([System.Windows.Media.TranslateTransform]::XProperty, $slide)
+}
+
+function Start-FbSplashSettleCountdown {
+    param([int]$Seconds = 180)
+    if ($script:FbSplashSettleTimer) { return }
+    $script:FbSplashSettleRemain = $Seconds
+    $tick = {
+        try {
+            if ($script:FbSplashNoticeKind -ne 'Settle') {
+                Stop-FbSplashNoticeTimers
+                return
+            }
+            $left = [int]$script:FbSplashSettleRemain
+            if ($left -le 0) {
+                Stop-FbSplashNoticeTimers
+                if ($statusNoticeTitle) { $statusNoticeTitle.Text = 'Restart is taking too long' }
+                if ($statusNoticeDetail) { $statusNoticeDetail.Text = 'It is past the expected time. The computer should have restarted.' }
+                if ($statusNoticeTimer) { $statusNoticeTimer.Text = '0:00' }
+                if ($statusNoticeHost) { $statusNoticeHost.BorderBrush = [System.Windows.Media.BrushConverter]::new().ConvertFromString('#FFEF5350') }
+                if ($statusNoticeTitle) { $statusNoticeTitle.Foreground = [System.Windows.Media.BrushConverter]::new().ConvertFromString('#FFEF5350') }
+                if ($statusNoticeTimer) { $statusNoticeTimer.Foreground = [System.Windows.Media.BrushConverter]::new().ConvertFromString('#FFEF5350') }
+                if ($statusNoticeSpinner) { $statusNoticeSpinner.Visibility = [System.Windows.Visibility]::Collapsed }
+                try { Set-FbSplashPassStatus -Text 'Restart is taking too long' -Phase 'Waiting' } catch {}
+                return
+            }
+            $m = [int][math]::Floor($left / 60)
+            $s = $left % 60
+            if ($statusNoticeTimer) { $statusNoticeTimer.Text = ('{0}:{1:D2}' -f $m, $s) }
+            $script:FbSplashSettleRemain = $left - 1
+        } catch {}
+    }
+    & $tick
+    $timer = New-Object System.Windows.Threading.DispatcherTimer
+    $timer.Interval = [TimeSpan]::FromSeconds(1)
+    $timer.Add_Tick($tick)
+    $script:FbSplashSettleTimer = $timer
+    $timer.Start()
+}
+
+function Start-FbSplashHardwareCycle {
+    if (-not $script:Preview) { return }
+    if ($script:FbSplashHardwareTimer) { return }
+    $script:FbSplashHardwareStep = 0
+    $names = @('Wi-Fi', 'camera', 'sound')
+    $timer = New-Object System.Windows.Threading.DispatcherTimer
+    $timer.Interval = [TimeSpan]::FromSeconds(2.2)
+    $timer.Add_Tick({
+        try {
+            if ($script:FbSplashNoticeKind -ne 'Checks') {
+                Stop-FbSplashNoticeTimers
+                return
+            }
+            $script:FbSplashHardwareStep = ([int]$script:FbSplashHardwareStep + 1) % 3
+            $label = @('Wi-Fi', 'camera', 'sound')[[int]$script:FbSplashHardwareStep]
+            Show-FbSplashStatusNotice -Kind 'Checks' -Title ('Checking {0}' -f $label) -Detail 'Wi-Fi, camera, and sound.' -Spinner -Accent '#FF22D3EE'
+        } catch {}
+    })
+    $script:FbSplashHardwareTimer = $timer
+    $timer.Start()
+}
+
+function Show-FbSplashStatusNotice {
+    param(
+        [string]$Kind = 'Check',
+        [string]$Title,
+        [string]$Detail = '',
+        [string]$Accent = '#FF22D3EE',
+        [switch]$Spinner,
+        [switch]$Countdown,
+        [int]$CountdownSeconds = 180
+    )
+    if (-not $statusNoticeHost) { return }
+    $sig = '{0}|{1}|{2}|{3}' -f $Kind, $Title, $Detail, [bool]$Spinner
+    $same = ($script:FbSplashNoticeSig -eq $sig)
+    $script:FbSplashNoticeKind = $Kind
+    $script:FbSplashNoticeOpen = $true
+    $script:FbSplashNoticeSig = $sig
+    if ($handoffCopyHost) { try { $handoffCopyHost.Visibility = [System.Windows.Visibility]::Collapsed } catch {} }
+    if ($updatesPlaceholder) { try { $updatesPlaceholder.Visibility = [System.Windows.Visibility]::Collapsed } catch {} }
+    if ($statusNoticeTitle) { $statusNoticeTitle.Text = [string]$Title }
+    if ($statusNoticeDetail) {
+        $statusNoticeDetail.Text = [string]$Detail
+        $statusNoticeDetail.Visibility = $(if ([string]::IsNullOrWhiteSpace($Detail)) { [System.Windows.Visibility]::Collapsed } else { [System.Windows.Visibility]::Visible })
+    }
+    $brush = $null
+    try { $brush = [System.Windows.Media.BrushConverter]::new().ConvertFromString($Accent) } catch {}
+    if ($brush) {
+        try { $statusNoticeHost.BorderBrush = $brush } catch {}
+        if ($statusNoticeSpinner) { try { $statusNoticeSpinner.Stroke = $brush } catch {} }
+        if ($statusNoticeTimer) { try { $statusNoticeTimer.Foreground = $brush } catch {} }
+    }
+    if ($statusNoticeTitle) {
+        try { $statusNoticeTitle.Foreground = $(if ($Kind -eq 'Restart') { $brush } else { [System.Windows.Media.Brushes]::White }) } catch {}
+    }
+    if ($statusNoticeSpinner) {
+        $statusNoticeSpinner.Visibility = $(if ($Spinner) { [System.Windows.Visibility]::Visible } else { [System.Windows.Visibility]::Collapsed })
+    }
+    if ($statusNoticeTimer) {
+        $statusNoticeTimer.Visibility = $(if ($Countdown) { [System.Windows.Visibility]::Visible } else { [System.Windows.Visibility]::Collapsed })
+    }
+    $statusNoticeHost.Visibility = [System.Windows.Visibility]::Visible
+    try {
+        $spin = $window.TryFindResource('StatusNoticeSpinStory')
+        if ($Spinner -and $spin) { $spin.Begin($window, $true) }
+        elseif ($spin) { $spin.Stop($window) }
+    } catch {}
+    if (-not $same) { Start-FbSplashNoticeMotion -Kind $Kind }
+    if ($Countdown) { Start-FbSplashSettleCountdown -Seconds $CountdownSeconds }
+    elseif ($Kind -ne 'Settle') {
+        try { if ($script:FbSplashSettleTimer) { $script:FbSplashSettleTimer.Stop() } } catch {}
+        $script:FbSplashSettleTimer = $null
+    }
+    if ($Kind -eq 'Checks' -and $script:Preview) { Start-FbSplashHardwareCycle }
+    if ($updatesWrap) { try { $updatesWrap.Visibility = [System.Windows.Visibility]::Collapsed } catch {} }
+}
+
+function Clear-FbSplashHandoffLayout {
+    # Real download/install/reboot work must drop the settle notice.
+    $script:FbSplashHandoffLayoutActive = $false
+    Hide-FbSplashStatusNotice
+    if ($handoffCopyHost) {
+        try { $handoffCopyHost.Visibility = [System.Windows.Visibility]::Collapsed } catch {}
+    }
+    if ($updatesList) {
+        try { $updatesList.Visibility = [System.Windows.Visibility]::Visible } catch {}
+    }
+    if ($null -ne $warningText) {
+        try { $warningText.Text = '' } catch {}
+    }
+}
+
 function Set-FbSplashHandoffLayout {
     param(
         [string]$StatusText = 'Preparing hardware checks',
         [string]$Header = 'Preparing hardware checks',
-        [string]$Detail = 'Updates are complete. FirstBase will verify Wi-Fi, camera, and sound, then open YouTube or Settings.'
+        [string]$Detail = 'Updates are complete. FirstBase will verify Wi-Fi, camera, and sound, then open YouTube or Settings.',
+        [string]$Eyebrow = 'OOBE HANDOFF',
+        [string]$Warning = 'Do not disconnect power. Hardware checks run in this session.',
+        [string]$Phase = '',
+        [string]$Message = ''
     )
+    if (-not [string]::IsNullOrWhiteSpace($Phase) -or -not [string]::IsNullOrWhiteSpace($Message)) {
+        $copy = Get-FbSplashHandoffCopyForPhase -Phase $Phase -Message $Message
+        if ([string]::IsNullOrWhiteSpace($StatusText) -or $StatusText -eq 'Preparing hardware checks') { $StatusText = [string]$copy.Status }
+        if ([string]::IsNullOrWhiteSpace($Header) -or $Header -eq 'Preparing hardware checks') { $Header = [string]$copy.Header }
+        if ($Detail -match '(?i)Updates are complete\. FirstBase will verify') { $Detail = [string]$copy.Detail }
+        $Eyebrow = [string]$copy.Eyebrow
+        $Warning = [string]$copy.Warning
+        if (-not [string]::IsNullOrWhiteSpace($copy.Status)) { $StatusText = [string]$copy.Status }
+        if (-not [string]::IsNullOrWhiteSpace($copy.Header)) { $Header = [string]$copy.Header }
+        if (-not [string]::IsNullOrWhiteSpace($copy.Detail)) { $Detail = [string]$copy.Detail }
+    }
     $script:FbSplashHandoffLayoutActive = $true
-    try { Set-FbSplashPassStatus -Text $StatusText } catch {}
+    try { Set-FbSplashPassStatus -Text $StatusText -Phase $Phase -Message $Message } catch {}
     if ($updatesList) {
-        try { $updatesList.Visibility = [System.Windows.Visibility]::Collapsed } catch {}
+        try { $updatesList.Visibility = [System.Windows.Visibility]::Visible } catch {}
     }
     if ($handoffCopyHost) {
-        try { $handoffCopyHost.Visibility = [System.Windows.Visibility]::Visible } catch {}
+        try { $handoffCopyHost.Visibility = [System.Windows.Visibility]::Collapsed } catch {}
     }
-    if ($handoffEyebrowText) { try { $handoffEyebrowText.Text = 'OOBE HANDOFF' } catch {} }
-    if ($handoffHeaderText) { try { $handoffHeaderText.Text = (Convert-FbSplashTextToAscii -Text $Header) } catch {} }
-    if ($handoffDetailText) { try { $handoffDetailText.Text = (Convert-FbSplashTextToAscii -Text $Detail) } catch {} }
     if ($null -ne $warningText) {
-        try { $warningText.Text = 'Do not disconnect power. Hardware checks run in this session.' } catch {}
+        try { $warningText.Text = '' } catch {}
     }
+    $noticeKind = 'Checks'
+    $spinner = $true
+    $countdown = $false
+    $accent = '#FF22D3EE'
+    $phaseKey = [string]$Phase
+    if ($phaseKey -match '^(?i)(Waiting|preparing-handoff)$') { $noticeKind = 'Settle'; $countdown = $true }
+    elseif ($phaseKey -match '^(?i)(HardwarePass|checks-pass)$') { $noticeKind = 'Passed'; $spinner = $false; $accent = '#FF66BB6A' }
+    elseif ($phaseKey -match '^(?i)(HardwareFail|checks-fail|gate-fail-restart)$') { $noticeKind = 'Failed'; $spinner = $false; $accent = '#FFEF5350' }
+    elseif ($phaseKey -match '^(?i)(OperatorGate|close-wait)$') { $noticeKind = 'Gate'; $spinner = $false }
+    elseif ($phaseKey -match '^(?i)(Sealing|sealing)$') { $noticeKind = 'Seal' }
+    elseif ($phaseKey -match '^(?i)(restart-for-checks)$') { $noticeKind = 'Boot' }
+    Show-FbSplashStatusNotice -Kind $noticeKind -Title $Header -Detail $Detail -Accent $accent -Spinner:$spinner -Countdown:$countdown
 }
 
 function Start-FbHandoffSplashProcess {
@@ -2844,23 +3282,9 @@ function Start-FbHandoffSplashProcess {
         [ValidateSet('preparing-handoff', 'restart-for-checks', 'running-checks', 'checks-pass', 'checks-fail', 'sealing', 'gate-fail-restart')]
         [string]$Phase = 'preparing-handoff'
     )
-    $ps1 = Join-Path $PSScriptRoot 'FirstBaseHandoffSplash.ps1'
-    if (-not (Test-Path -LiteralPath $ps1)) {
-        $ps1 = 'C:\Windows\Setup\FirstBase\FirstBaseHandoffSplash.ps1'
-    }
-    if (-not (Test-Path -LiteralPath $ps1)) { return $false }
-    try {
-        $args = @(
-            '-NoProfile', '-ExecutionPolicy', 'Bypass', '-STA',
-            '-File', $ps1, '-Phase', $Phase, '-AutoCloseSeconds', '90'
-        )
-        Start-Process -FilePath 'powershell.exe' -ArgumentList $args -WindowStyle Normal -ErrorAction Stop | Out-Null
-        Write-SplashLog ("Handoff splash started (phase={0})." -f $Phase) 'INFO'
-        return $true
-    } catch {
-        try { Write-SplashLog ("Handoff splash start failed: {0}" -f $_.Exception.Message) 'WARN' } catch {}
-        return $false
-    }
+    # 6.1.16: never spawn a second splash while Show-UpdateProgress is the Audit status surface.
+    try { Write-SplashLog ("Handoff splash spawn skipped; staying on update splash (phase={0})." -f $Phase) 'INFO' } catch {}
+    return $false
 }
 
 function Get-FbSplashStateVersionText {
@@ -2876,11 +3300,19 @@ function Get-FbSplashStateVersionText {
 
         $phaseLabel = switch -Regex ($phase) {
             '^Network$'   { 'Waiting for network'; break }
+            '^Waiting$|^preparing-handoff$' { 'Waiting'; break }
+            '^HardwareGate$' { 'Starting hardware checks'; break }
+            '^HardwareChecks$|^running-checks$' { 'Running hardware checks'; break }
+            '^HardwarePass$|^checks-pass$' { 'Hardware passed'; break }
+            '^HardwareFail$|^checks-fail$' { 'Hardware failed'; break }
+            '^OperatorGate$|^close-wait$' { 'Opening operator gate'; break }
+            '^Sealing$|^sealing$|^gate-fail-restart$' { 'Sealing'; break }
             '^Completed$' { 'Completed'; break }
             '^ApplyingUpdates$' { 'Applying updates'; break }
-            '^ManualRestart$' { 'Restart required'; break }
+            '^ManualRestart$' { 'Restart the device'; break }
             '^Stopped$'   { 'Updates stopped'; break }
-            '^Reboot'     { 'Preparing to restart'; break }
+            '^Skipped$'   { 'Updating skipped'; break }
+            '^Reboot|^restart-for-checks$' { 'Preparing to restart'; break }
             '^\d+$'       { "Update pass $phase"; break }
             '^Pass\s*(\d+)$' { "Update pass $($Matches[1])"; break }
             '^Preparing$' { 'Preparing your computer'; break }
@@ -2971,6 +3403,40 @@ function Get-FbSplashSafeActivityMessage {
     return (($t -replace '\s{2,}', ' ').Trim())
 }
 
+function Get-FbSplashRowStatusForPhase {
+    # Display (and only display) so a stale Installing/Downloading/Rebooting
+    # row cannot sit under a Waiting headline, and a Waiting row cannot sit
+    # under a live install or restart. Terminal rows stay terminal.
+    param(
+        [string]$Status,
+        [string]$Phase
+    )
+    $s = if ([string]::IsNullOrWhiteSpace($Status)) { '' } else { $Status.Trim() }
+    if ($s -match '(?i)^(Completed|Done|Failed|Skipped|Still offered)$') { return $s }
+    if ($s -match '(?i)failed - tech review') { return $s }
+    $p = if ([string]::IsNullOrWhiteSpace($Phase)) { '' } else { $Phase.Trim() }
+    $inflight = $s -match '(?i)^(Installing|Downloading|Reapplying|Rebooting|Retrying|Pending restart|Pending reboot)\b'
+    $queued = $s -match '(?i)^(Pending install|Queued)$'
+    $settle = $s -match '(?i)^Waiting$'
+    if ($p -eq 'Waiting' -or $p -eq 'preparing-handoff') {
+        if ($inflight -or $queued) { return 'Waiting' }
+        return $s
+    }
+    if ($p -eq 'Rebooting' -or $p -eq 'ManualRestart' -or $p -eq 'restart-for-checks') {
+        if ($inflight -or $settle -or $queued) { return 'Pending restart' }
+        return $s
+    }
+    if ($p -match '^(?i)(Downloading|Download|Installing|Install)$') {
+        if ($settle) { return 'Pending install' }
+        return $s
+    }
+    if ($p -match '(?i)^(Skipped|HardwareGate|HardwareChecks|HardwarePass|HardwareFail|OperatorGate|Sealing|running-checks|checks-pass|checks-fail|sealing|gate-fail-restart|close-wait)$') {
+        if ($inflight) { return 'Waiting' }
+        return $s
+    }
+    return $s
+}
+
 function Get-StatusVisual {
     param([string]$Status)
 
@@ -2989,10 +3455,23 @@ function Get-StatusVisual {
     if ($key -eq 'pending install' -or $key -eq 'queued') {
         return [pscustomobject]@{ Icon = '[ ]'; Color = '#FF9E9E9E'; Status = 'Queued'; IsActive = $false }
     }
-    if ($key -eq 'downloading') {
-        return [pscustomobject]@{ Icon = '[D]'; Color = '#FF4FC3F7'; Status = 'Downloading'; IsActive = $true }
+    if ($key -eq 'waiting' -or $key -match '^waiting\b') {
+        return [pscustomobject]@{ Icon = '[W]'; Color = '#FFF0C14B'; Status = 'Waiting'; IsActive = $false }
     }
-    if ($key -eq 'installing') {
+    if ($key -match '^reapplying\b') {
+        $label = 'Reapplying'
+        if ($normalized -match '(?i)^reapplying\s+(\d+MB\s*/\s*\d+MB)') { $label = ('Reapplying {0}' -f $Matches[1]) }
+        return [pscustomobject]@{ Icon = '[R]'; Color = '#FFFF8A65'; Status = $label; IsActive = $true }
+    }
+    if ($key -eq 'still offered' -or $key -match '^still offered\b') {
+        return [pscustomobject]@{ Icon = '[!]'; Color = '#FF90CAF9'; Status = 'Still offered'; IsActive = $false }
+    }
+    if ($key -match '^downloading\b') {
+        $label = 'Downloading'
+        if ($normalized -match '(?i)^downloading\s+(\d+MB\s*/\s*\d+MB)') { $label = ('Downloading {0}' -f $Matches[1]) }
+        return [pscustomobject]@{ Icon = '[D]'; Color = '#FF4FC3F7'; Status = $label; IsActive = $true }
+    }
+    if ($key -match '^installing\b') {
         return [pscustomobject]@{ Icon = '[I]'; Color = '#FFFFB74D'; Status = 'Installing'; IsActive = $true }
     }
     if ($key -eq 'retrying') {
@@ -3001,8 +3480,8 @@ function Get-StatusVisual {
     if ($key -eq 'completed' -or $key -eq 'done') {
         return [pscustomobject]@{ Icon = '[*]'; Color = '#FF66BB6A'; Status = 'Done'; IsActive = $false }
     }
-    if ($key -eq 'failed') {
-        return [pscustomobject]@{ Icon = '[X]'; Color = '#FFEF5350'; Status = 'Failed'; IsActive = $false }
+    if ($key -match '^failed\b' -or $key -match 'install error' -or $key -match 'apply error') {
+        return [pscustomobject]@{ Icon = '[X]'; Color = '#FFEF5350'; Status = 'Error'; IsActive = $false }
     }
     if ($key -match 'skipped|terminal') {
         return [pscustomobject]@{ Icon = '[X]'; Color = '#FF9E9E9E'; Status = 'Skipped'; IsActive = $false }
@@ -3015,6 +3494,52 @@ function Get-LatestLog {
     Get-ChildItem -Path $LogDir -Filter 'WU-*.log' -ErrorAction SilentlyContinue |
         Sort-Object LastWriteTime -Descending |
         Select-Object -First 1
+}
+
+function Test-FbSplashUpdateLoopRunning {
+    try {
+        return [bool]@(
+            Get-CimInstance -ClassName Win32_Process -Filter "Name='powershell.exe'" -ErrorAction SilentlyContinue |
+                Where-Object { $_.CommandLine -and ($_.CommandLine -match 'Invoke-WindowsUpdateLoop\.ps1') }
+        )
+    } catch { return $false }
+}
+
+function Start-FbSplashStalledUpdateLoop {
+    # 4FVGN94-1443: WMI Win32Shutdown returned success and killed the loop.
+    # schtasks /Run then left FirstBase\WindowsUpdateLoop Status=Queued
+    # (IgnoreNew still held the dead instance), so Tier 5 never started.
+    $sch = Join-Path $env:SystemRoot 'System32\schtasks.exe'
+    foreach ($tn in @(
+        'FirstBase\WindowsUpdateLoop',
+        'FirstBase\WindowsUpdateLoopOnLogon',
+        'FirstBase\WindowsUpdateLoopBoot2',
+        'FirstBase\WindowsUpdateLoopAnyLogon'
+    )) {
+        try {
+            $endOut = & $sch /End /TN $tn 2>&1
+            try { Write-SplashLog ("6.1.29: schtasks /End {0} exit={1} {2}" -f $tn, $LASTEXITCODE, (($endOut | ForEach-Object { "$_" }) -join ' ')) } catch {}
+        } catch {}
+    }
+    try {
+        $runOut = & $sch /Run /TN 'FirstBase\WindowsUpdateLoop' 2>&1
+        try { Write-SplashLog ("6.1.29: schtasks /Run WindowsUpdateLoop exit={0} {1}" -f $LASTEXITCODE, (($runOut | ForEach-Object { "$_" }) -join ' ')) } catch {}
+    } catch {
+        try { Write-SplashLog ("6.1.29: schtasks /Run WindowsUpdateLoop threw: {0}" -f $_.Exception.Message) 'WARN' } catch {}
+    }
+    if (Test-FbSplashUpdateLoopRunning) { return }
+    $psExe = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+    $loopPs1 = Join-Path $FbRoot 'Invoke-WindowsUpdateLoop.ps1'
+    if (-not (Test-Path -LiteralPath $loopPs1)) { return }
+    try {
+        Start-Process -FilePath $psExe -ArgumentList @(
+            '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-WindowStyle', 'Hidden',
+            '-File', $loopPs1, '-FinalizeToOobe'
+        ) -WindowStyle Hidden -ErrorAction Stop | Out-Null
+        try { Write-SplashLog '6.1.29: scheduler left the update task queued. Started Invoke-WindowsUpdateLoop directly.' 'WARN' } catch {}
+    } catch {
+        try { Write-SplashLog ("6.1.29: direct update-loop start threw: {0}" -f $_.Exception.Message) 'ERROR' } catch {}
+    }
 }
 
 function Invoke-FbSplashKickLoopIfStalled {
@@ -3035,8 +3560,85 @@ function Invoke-FbSplashKickLoopIfStalled {
 
     $statusFile = Join-Path $FbRoot 'wu-status.json'
     $heartbeat = Join-Path $FbRoot 'wu-loop-heartbeat.txt'
-    if ((Test-Path -LiteralPath $statusFile) -or (Test-Path -LiteralPath $heartbeat) -or (Test-Path -LiteralPath $FbSplashWuLoopPaintingMarker)) {
+    # 6.1.26 dump 4FVGN94-1256: WMI Win32Shutdown returned success, then killed
+    # the loop before the tier-4 watchdog could escalate. Heartbeat froze on
+    # Rebooting and this kick treated any heartbeat file as "loop is alive".
+    $hbAgeSec = $null
+    $hbPhase = ''
+    if (Test-Path -LiteralPath $heartbeat) {
+        try {
+            $hbRaw = Get-Content -LiteralPath $heartbeat -Raw -ErrorAction Stop
+            if ($hbRaw -match 'lastBeat=([^\r\n]+)') {
+                $hbAt = [datetime]::Parse($Matches[1])
+                $hbAgeSec = [int]((Get-Date) - $hbAt).TotalSeconds
+            }
+            if ($hbRaw -match 'phase=([^\r\n]+)') { $hbPhase = [string]$Matches[1] }
+        } catch { $hbAgeSec = $null }
+    }
+    $statusPhase = ''
+    $st = $null
+    if (Test-Path -LiteralPath $statusFile) {
+        try {
+            $st = Get-Content -LiteralPath $statusFile -Raw -ErrorAction Stop | ConvertFrom-Json
+            $statusPhase = [string]$st.phase
+        } catch {}
+    }
+    $rebootStale = ($hbAgeSec -ne $null -and $hbAgeSec -ge 45 -and (
+        $hbPhase -match '(?i)^(Rebooting|ManualRestart)$' -or $statusPhase -match '(?i)^(Rebooting|ManualRestart)$'
+    ))
+    if (-not $rebootStale -and (
+        (Test-Path -LiteralPath $statusFile) -or (Test-Path -LiteralPath $heartbeat) -or (Test-Path -LiteralPath $FbSplashWuLoopPaintingMarker)
+    )) {
         $script:FbSplashLoopKickAttempted = $true
+        return
+    }
+    if ($rebootStale) {
+        $loopRunning = $false
+        try {
+            $loopRunning = [bool]@(
+                Get-CimInstance -ClassName Win32_Process -Filter "Name='powershell.exe'" -ErrorAction SilentlyContinue |
+                    Where-Object { $_.CommandLine -and ($_.CommandLine -match 'Invoke-WindowsUpdateLoop\.ps1') }
+            )
+        } catch {}
+        if ($loopRunning) { return }
+        if ($null -eq $script:FbSplashRebootKickCount) { $script:FbSplashRebootKickCount = 0 }
+        if ($script:FbSplashRebootKickCount -ge 2) {
+            if (-not $script:FbSplashRebootKickGaveUp) {
+                $script:FbSplashRebootKickGaveUp = $true
+                try { Write-SplashLog '6.1.29: reboot heartbeat stale and the update loop did not restart Windows. Restart the device.' 'ERROR' } catch {}
+                try {
+                    $manual = [ordered]@{
+                        phase     = 'ManualRestart'
+                        message   = 'Restart the device'
+                        updatedAt = (Get-Date).ToString('o')
+                    }
+                    if ($st -and $st.updates) { $manual.updates = $st.updates }
+                    ($manual | ConvertTo-Json -Depth 6) | Set-Content -LiteralPath $statusFile -Encoding UTF8 -Force
+                } catch {}
+                if (-not $script:FbSplashManualRestartIssued) {
+                    $script:FbSplashManualRestartIssued = $true
+                    try {
+                        $sd = Join-Path $env:SystemRoot 'System32\shutdown.exe'
+                        Start-Process -FilePath $sd -ArgumentList @('/r', '/t', '5', '/f', '/c', 'FirstBase: Restart the device') -WindowStyle Hidden -ErrorAction Stop | Out-Null
+                        try { Write-SplashLog '6.1.29: issued shutdown /r /t 5 /f.' 'WARN' } catch {}
+                    } catch {
+                        try { Write-SplashLog ("6.1.29: shutdown /r threw: {0}" -f $_.Exception.Message) 'ERROR' } catch {}
+                    }
+                }
+            }
+            return
+        }
+        $sinceKick = 999
+        try {
+            if ($script:FbSplashRebootKickAt) {
+                $sinceKick = [int]((Get-Date) - $script:FbSplashRebootKickAt).TotalSeconds
+            }
+        } catch {}
+        if ($sinceKick -lt 90) { return }
+        $script:FbSplashRebootKickCount++
+        $script:FbSplashRebootKickAt = Get-Date
+        try { Write-SplashLog ("6.1.29: reboot heartbeat stale {0}s and the update loop is not running. Starting it ({1}/2)." -f $hbAgeSec, $script:FbSplashRebootKickCount) 'WARN' } catch {}
+        try { Start-FbSplashStalledUpdateLoop } catch {}
         return
     }
     $loopRunning = $false
@@ -3062,6 +3664,44 @@ function Invoke-FbSplashKickLoopIfStalled {
     }
 }
 
+function Get-FbSplashBootStamp {
+    if ($script:FbSplashBootStampReady) { return [string]$script:FbSplashBootStamp }
+    $script:FbSplashBootStampReady = $true
+    $script:FbSplashBootStamp = ''
+    try {
+        $os = Get-CimInstance -ClassName Win32_OperatingSystem -ErrorAction Stop
+        $script:FbSplashBootStamp = ([datetime]$os.LastBootUpTime).ToString('yyyy-MM-ddTHH:mm:ss')
+    } catch {}
+    return [string]$script:FbSplashBootStamp
+}
+
+function Test-FbSplashStatusIsPriorBoot {
+    param($StatusObject)
+    $current = Get-FbSplashBootStamp
+    if ([string]::IsNullOrWhiteSpace($current)) { return $false }
+    $stamp = ''
+    try {
+        if ($StatusObject -and ($StatusObject.PSObject.Properties.Name -contains 'lastBoot')) {
+            $stamp = [string]$StatusObject.lastBoot
+        }
+    } catch {}
+    if (-not [string]::IsNullOrWhiteSpace($stamp)) {
+        try {
+            $delta = [math]::Abs(([datetime]::Parse($stamp) - [datetime]::Parse($current)).TotalSeconds)
+            return ($delta -ge 10)
+        } catch {
+            return ($stamp -ne $current)
+        }
+    }
+    try {
+        $boot = [datetime]::Parse($current)
+        $write = (Get-Item -LiteralPath $StatusFile).LastWriteTime
+        return ($write -lt $boot.AddSeconds(-2))
+    } catch {
+        return $false
+    }
+}
+
 function Get-StatusFromStateFile {
     if (-not (Test-Path $StatusFile)) { return $null }
     $raw = $null
@@ -3080,6 +3720,15 @@ function Get-StatusFromStateFile {
     if ([string]::IsNullOrWhiteSpace($raw)) { return $null }
     try {
         $obj = $raw | ConvertFrom-Json -ErrorAction Stop
+        if (Test-FbSplashStatusIsPriorBoot -StatusObject $obj) {
+            return [pscustomobject]@{
+                Phase     = 'Checking'
+                Message   = ''
+                UpdatedAt = ''
+                Updates   = @()
+                PriorBoot = $true
+            }
+        }
         $updates = @()
         foreach ($u in @($obj.updates)) {
             if (-not $u) { continue }
@@ -3087,11 +3736,13 @@ function Get-StatusFromStateFile {
             if ($script:FbSplashOsAlready25H2 -and (Test-FbSplashIsRedundant25H2Title -Title $rowTitle)) {
                 continue
             }
-            $visual = Get-StatusVisual -Status ([string]$u.Status)
+            $rawStatus = [string]$u.Status
+            $displayStatus = Get-FbSplashRowStatusForPhase -Status $rawStatus -Phase ([string]$obj.phase)
+            $visual = Get-StatusVisual -Status $displayStatus
             $updates += [pscustomobject]@{
                 Title   = (Convert-FbSplashTextToAscii -Text ([string]$u.Title))
                 Status  = (Convert-FbSplashTextToAscii -Text ([string]$visual.Status))
-                RawStatus = [string]$u.Status
+                RawStatus = $rawStatus
                 StatusIcon = [string]$visual.Icon
                 StatusColor = [string]$visual.Color
                 IsActive = [bool]$visual.IsActive
@@ -3105,6 +3756,7 @@ function Get-StatusFromStateFile {
             Message   = [string]$obj.message
             UpdatedAt = $updatedAt
             Updates   = @($updates)
+            PriorBoot = $false
         }
     } catch {
         return $null
@@ -3113,10 +3765,31 @@ function Get-StatusFromStateFile {
 
 function Invoke-FbSplashHydrateFromDisk {
     $state = Get-StatusFromStateFile
-    if ($state -and @($state.Updates).Count -gt 0) {
+    if ($state) {
+        if ($state.PriorBoot) {
+            $script:FbSplashLastKnownUpdates = @()
+            $script:FbSplashCardSig = $null
+        }
         $displayPhase = Resolve-FbSplashDisplayPhase -State $state
-        Set-FbSplashPassStatus -Text (Get-FbSplashShortStatusLine -PhaseOrPass $displayPhase) -Phase $displayPhase -Message ([string]$state.Message)
-        Set-FbSplashUpdatesContent -Items $state.Updates
+        $stateMsg = [string]$state.Message
+        Set-FbSplashPassStatus -Text (Get-FbSplashShortStatusLine -PhaseOrPass $displayPhase) -Phase $displayPhase -Message $stateMsg
+        $fbHasRows = @($state.Updates).Count -gt 0
+        if ($displayPhase -eq 'ManualRestart') {
+            Show-FbSplashStatusNotice -Kind 'Restart' -Title 'Manual restart required' -Detail 'The computer is stopped. Restart it to continue.' -Accent '#FFEF5350'
+        } elseif ($state.PriorBoot -and -not $fbHasRows) {
+            Show-FbSplashStatusNotice -Kind 'Boot' -Title 'Checking Updates after reboot' -Detail 'This can take a few minutes.' -Spinner -Accent '#FF4FC3F7'
+        } elseif (Test-FbSplashAuditStatusPhase -Phase $displayPhase) {
+            try { Set-FbSplashHandoffLayout -Phase $displayPhase -Message $stateMsg } catch {}
+        } elseif (-not $fbHasRows -and $displayPhase -match '^(?i)(Checking|Scanning)$') {
+            Show-FbSplashStatusNotice -Kind 'Check' -Title 'Checking for updates' -Detail 'This process can take 2 - 5 minutes.' -Spinner -Accent '#FF22D3EE'
+        } else {
+            Clear-FbSplashHandoffLayout
+        }
+        if (@($state.Updates).Count -gt 0) {
+            Set-FbSplashUpdatesContent -Items $state.Updates
+        } else {
+            Set-FbSplashUpdatesContent -Items @($script:FbSplashLastKnownUpdates)
+        }
         return
     }
     if (@($script:FbSplashLastKnownUpdates).Count -gt 0) {
@@ -3133,6 +3806,192 @@ function Invoke-FbSplashHydrateFromDisk {
     }
 }
 
+function Convert-FbSplashMediaColor {
+    param([string]$Hex)
+    $fallback = [System.Windows.Media.Color]::FromRgb(144, 202, 249)
+    if ([string]::IsNullOrWhiteSpace($Hex)) { return $fallback }
+    $h = $Hex.Trim()
+    if ($h.StartsWith('#')) { $h = $h.Substring(1) }
+    try {
+        if ($h.Length -eq 8) {
+            $n = [Convert]::ToUInt32($h, 16)
+            return [System.Windows.Media.Color]::FromArgb(
+                [byte](($n -shr 24) -band 255),
+                [byte](($n -shr 16) -band 255),
+                [byte](($n -shr 8) -band 255),
+                [byte]($n -band 255))
+        }
+        if ($h.Length -eq 6) {
+            $n = [Convert]::ToUInt32($h, 16)
+            return [System.Windows.Media.Color]::FromRgb(
+                [byte](($n -shr 16) -band 255),
+                [byte](($n -shr 8) -band 255),
+                [byte]($n -band 255))
+        }
+    } catch {}
+    return $fallback
+}
+
+function Get-FbSplashUpdateCardMetrics {
+    param([int]$Count)
+    # Four columns must fit inside the updates row. A card that is even a few
+    # pixels too wide wraps, which leaves an empty column on the right.
+    $inner = 1052.0
+    try {
+        if ($updatesList -and $updatesList.ActualWidth -gt 400) {
+            $inner = [math]::Floor([double]$updatesList.ActualWidth) - 4
+        }
+    } catch {}
+    if ($Count -lt 1) { $Count = 1 }
+    $cols = 4
+    if ($Count -lt 4) { $cols = [math]::Max(1, $Count) }
+    $rows = [int][math]::Ceiling($Count / [double]$cols)
+    $hMargin = 6
+    $slot = [math]::Floor($inner / [double]$cols)
+    $cardW = [int]($slot - ($hMargin * 2))
+    if ($cardW -lt 80) { $cardW = 80 }
+    $availH = 360.0
+    try {
+        if ($updatesList -and $updatesList.ActualHeight -gt 80) { $availH = [double]$updatesList.ActualHeight - 8 }
+    } catch {}
+    $cardH = [math]::Floor(($availH - 48) / 4.0)
+    if ($cardH -lt 68) { $cardH = 68 }
+    if ($cardH -gt 84) { $cardH = 84 }
+    $font = 12
+    $statusFont = 11
+    if ($cardH -lt 74) { $font = 11; $statusFont = 10 }
+    return @{ W = [int]$cardW; H = [int]$cardH; Slot = [int]$slot; Font = $font; StatusFont = $statusFont; Cols = $cols; Rows = $rows; Bucket = $rows }
+}
+
+function Update-FbSplashUpdateCards {
+    param([object[]]$Items)
+    if (-not $updatesWrap) { return }
+    $list = @()
+    if ($null -ne $Items) { $list = @($Items | Where-Object { $_ }) }
+    if ($list.Count -eq 0) {
+        $script:FbSplashCardSig = ''
+        try { $updatesWrap.Children.Clear() } catch {}
+        if ($updatesPlaceholder -and -not $script:FbSplashNoticeOpen) {
+            $updatesPlaceholder.Text = "Waiting for this boot's updates"
+            $updatesPlaceholder.Visibility = [System.Windows.Visibility]::Visible
+        }
+        return
+    }
+    $metrics = Get-FbSplashUpdateCardMetrics -Count $list.Count
+    try {
+        $updatesWrap.ItemWidth = [double]$metrics.Slot
+        $updatesWrap.ItemHeight = [double]($metrics.H + 12)
+    } catch {}
+    $parts = New-Object System.Collections.Generic.List[string]
+    foreach ($item in $list) {
+        [void]$parts.Add(('{0}|{1}|{2}' -f [string]$item.Title, [string]$item.Status, [string]$item.StatusColor))
+    }
+    $sig = ('{0}|{1}|{2}|{3}' -f $list.Count, $metrics.Bucket, $metrics.W, ($parts -join "`n"))
+    if ($sig -eq $script:FbSplashCardSig -and $updatesWrap.Children.Count -eq $list.Count) { return }
+    $script:FbSplashCardSig = $sig
+    try { $updatesWrap.Children.Clear() } catch {}
+    $white = New-Object System.Windows.Media.SolidColorBrush ([System.Windows.Media.Color]::FromRgb(232, 244, 255))
+    try { $white.Freeze() } catch {}
+    foreach ($item in $list) {
+        $title = [string]$item.Title
+        if ([string]::IsNullOrWhiteSpace($title)) { $title = 'Update' }
+        $statusLabel = [string]$item.Status
+        if ($statusLabel -match '(?i)^failed\b' -or $statusLabel -match '(?i)install error' -or $statusLabel -match '(?i)apply error') {
+            $statusLabel = 'Error'
+        }
+        $hex = [string]$item.StatusColor
+        if ([string]::IsNullOrWhiteSpace($hex)) { $hex = '#FF90CAF9' }
+        $color = Convert-FbSplashMediaColor -Hex $hex
+        $fill = [System.Windows.Media.Color]::FromArgb(78, $color.R, $color.G, $color.B)
+        $fillBrush = New-Object System.Windows.Media.SolidColorBrush $fill
+        $edgeBrush = New-Object System.Windows.Media.SolidColorBrush $color
+        $statusBrush = New-Object System.Windows.Media.SolidColorBrush $color
+        $glow = New-Object System.Windows.Media.Effects.DropShadowEffect
+        $glow.Color = $color
+        $glow.BlurRadius = 26
+        $glow.ShadowDepth = 0
+        $glow.Opacity = 0.95
+        $card = New-Object System.Windows.Controls.Border
+        $card.Width = $metrics.W
+        $card.Height = $metrics.H
+        $card.Margin = New-Object System.Windows.Thickness 6
+        $card.CornerRadius = New-Object System.Windows.CornerRadius 8
+        $card.BorderThickness = New-Object System.Windows.Thickness 1.5
+        $card.Background = $fillBrush
+        $card.BorderBrush = $edgeBrush
+        $card.Padding = New-Object System.Windows.Thickness 10,6,10,6
+        $card.Effect = $glow
+        $card.ToolTip = $title
+        $card.SnapsToDevicePixels = $true
+        $card.Opacity = 0
+        $stack = New-Object System.Windows.Controls.StackPanel
+        $stack.VerticalAlignment = [System.Windows.VerticalAlignment]::Center
+        $titleBlock = New-Object System.Windows.Controls.TextBlock
+        $titleBlock.Text = $title
+        $titleBlock.Foreground = $white
+        $titleBlock.FontSize = $metrics.Font
+        $titleBlock.FontWeight = [System.Windows.FontWeights]::SemiBold
+        $titleBlock.TextTrimming = [System.Windows.TextTrimming]::CharacterEllipsis
+        $titleBlock.TextWrapping = [System.Windows.TextWrapping]::NoWrap
+        $titleBlock.Width = [math]::Max(40, ($metrics.W - 20))
+        [void]$stack.Children.Add($titleBlock)
+        $statusBlock = New-Object System.Windows.Controls.TextBlock
+        $statusBlock.Text = $statusLabel
+        $statusBlock.Foreground = $statusBrush
+        $statusBlock.FontSize = $metrics.StatusFont
+        $statusBlock.FontWeight = [System.Windows.FontWeights]::SemiBold
+        $statusBlock.Margin = New-Object System.Windows.Thickness 0,4,0,0
+        $statusBlock.TextTrimming = [System.Windows.TextTrimming]::CharacterEllipsis
+        $statusBlock.TextWrapping = [System.Windows.TextWrapping]::NoWrap
+        $statusBlock.Width = [math]::Max(40, ($metrics.W - 20))
+        [void]$stack.Children.Add($statusBlock)
+        $showBar = $statusLabel -match '(?i)^(Downloading|Installing|Reapplying)\b'
+        if ($showBar) {
+            $barTrack = New-Object System.Windows.Controls.Border
+            $barTrack.Height = 5
+            $barTrack.Margin = New-Object System.Windows.Thickness 0,8,0,0
+            $barTrack.CornerRadius = New-Object System.Windows.CornerRadius 2
+            $barTrack.Background = New-Object System.Windows.Media.SolidColorBrush ([System.Windows.Media.Color]::FromArgb(70, $color.R, $color.G, $color.B))
+            $barTrack.ClipToBounds = $true
+            $barFill = New-Object System.Windows.Controls.Border
+            $inner = [math]::Max(48, ($metrics.W - 28))
+            $barFill.Width = [math]::Max(28, [int]($inner * 0.38))
+            $barFill.Height = 5
+            $barFill.HorizontalAlignment = [System.Windows.HorizontalAlignment]::Left
+            $barFill.Background = $edgeBrush
+            $barFill.CornerRadius = New-Object System.Windows.CornerRadius 2
+            $barShift = New-Object System.Windows.Media.TranslateTransform
+            $barFill.RenderTransform = $barShift
+            $ratio = -1.0
+            if ($statusLabel -match '(?i)(\d+(?:\.\d+)?)\s*MB\s*/\s*(\d+(?:\.\d+)?)\s*MB') {
+                $den = [double]$Matches[2]
+                if ($den -gt 0) { $ratio = [double]$Matches[1] / $den }
+            }
+            if ($ratio -ge 0) {
+                $barFill.Width = [math]::Max(8, [int]($inner * [math]::Min(1, $ratio)))
+            } else {
+                Start-FbSplashCardBar -BarFill $barShift
+            }
+            $barTrack.Child = $barFill
+            [void]$stack.Children.Add($barTrack)
+        }
+        $card.Child = $stack
+        [void]$updatesWrap.Children.Add($card)
+        $fadeMs = 240
+        if ($statusLabel -match '(?i)^Installing') { $fadeMs = 340 }
+        elseif ($statusLabel -match '(?i)^Downloading') { $fadeMs = 200 }
+        elseif ($statusLabel -match '(?i)^Reapplying') { $fadeMs = 280 }
+        $fade = New-Object System.Windows.Media.Animation.DoubleAnimation
+        $fade.From = 0
+        $fade.To = 1
+        $fade.Duration = [TimeSpan]::FromMilliseconds($fadeMs)
+        $card.BeginAnimation([System.Windows.UIElement]::OpacityProperty, $fade)
+    }
+    if ($updatesPlaceholder) {
+        $updatesPlaceholder.Visibility = [System.Windows.Visibility]::Collapsed
+    }
+}
+
 function Set-FbSplashUpdatesContent {
     param([object[]]$Items)
     $list = @()
@@ -3145,22 +4004,10 @@ function Set-FbSplashUpdatesContent {
     } elseif (-not $script:FbSplashHandoffLayoutActive -and @($script:FbSplashLastKnownUpdates).Count -gt 0) {
         $list = @($script:FbSplashLastKnownUpdates)
     }
-    if ($script:FbSplashHandoffLayoutActive) {
-        if ($updatesList) {
-            try { $updatesList.Visibility = [System.Windows.Visibility]::Collapsed } catch {}
-        }
-        if ($handoffCopyHost) {
-            try { $handoffCopyHost.Visibility = [System.Windows.Visibility]::Visible } catch {}
-        }
-        return
-    }
     if ($updatesList) {
-        $updatesList.ItemsSource = $list
         $updatesList.Visibility = [System.Windows.Visibility]::Visible
     }
-    if ($updatesPlaceholder) {
-        $updatesPlaceholder.Visibility = [System.Windows.Visibility]::Collapsed
-    }
+    Update-FbSplashUpdateCards -Items $list
 }
 
 function Get-StatusFromLog {
@@ -3278,7 +4125,7 @@ function Invoke-FbSplashHonorOperatorSettingsGate {
         $script:FbSplashOperatorGateStoodDown = $true
         try {
             try { Invoke-FbSplashHonorOperatorForeground | Out-Null } catch {}
-            Write-SplashLog '2380: operator Settings gate active - splash stays fullscreen; Settings stays above splash; consoles stay behind (OOBE remains behind).' 'INFO'
+            Write-SplashLog '2380: operator gate active - splash sent to the back; YouTube or Settings covers the screen.' 'INFO'
         } catch {
             try { Write-SplashLog ("2380: operator Settings gate stand-down EXCEPTION {0}" -f $_.Exception.Message) 'WARN' } catch {}
         }
@@ -3311,57 +4158,65 @@ $timer.Add_Tick({
         return
     }
     if (Test-Path $Marker) {
-        # 2221: OOBE overlay handoff - keep splash visible with alternate copy until overlay marker drops
-        # (scrub removes it). Follow-up: optional max-wait timeout if fleet ever sees a stuck marker.
-        # 2256: Operator-done markers override stale overlay.mode (finalize must remove overlay; guard anyway).
+        # 6.1.16: Updates-Done.flag is written before CBS wait / HW. Do not close
+        # this splash (and do not spawn FirstBaseHandoffSplash) while the WU loop
+        # is still painting or overlay.mode is still the Audit status surface.
         $fbOperatorDoneForUi = $false
         try {
             $fbOperatorDoneForUi =
                 (Test-Path -LiteralPath $FbSplashPipelineCompletedMarker) -or
                 (Test-Path -LiteralPath $FbSealedMarker)
         } catch {}
-        if (-not $fbOperatorDoneForUi -and (Test-Path -LiteralPath $FbSplashOobeOverlayMode)) {
+        $keepSplashForAudit = $false
+        try {
+            if (Test-FbSplashWuLoopPaintingActive) { $keepSplashForAudit = $true }
+        } catch {}
+        try {
+            if (-not $fbOperatorDoneForUi -and (Test-Path -LiteralPath $FbSplashOobeOverlayMode)) {
+                $keepSplashForAudit = $true
+            }
+        } catch {}
+        if ($keepSplashForAudit) {
             if (-not $script:Splash2218DeferCloseForOobeOverlay) {
                 $script:Splash2218DeferCloseForOobeOverlay = $true
                 try {
-                    Set-FbSplashHandoffLayout
-                    Write-SplashLog '2221: marker + FirstBase-Splash-Oobe-Overlay.mode - handoff layout (KB list hidden); launching dedicated handoff splash.' 'INFO'
-                } catch {
-                    try { Write-SplashLog ("2221: handoff UI setup EXCEPTION {0}" -f $_.Exception.Message) 'WARN' } catch { }
-                }
+                    Write-SplashLog '6.1.16: Updates-Done + live loop/overlay - keep this splash; no extra handoff window.' 'INFO'
+                } catch {}
             }
-            if (-not $script:FbSplashHandoffHostStarted) {
-                $script:FbSplashHandoffHostStarted = $true
-                $handoffStarted = $false
-                try { $handoffStarted = [bool](Start-FbHandoffSplashProcess -Phase 'preparing-handoff') } catch { $handoffStarted = $false }
-                if ($handoffStarted) {
-                    $script:FbSplashClosingForHandoffSwitch = $true
-                    try { if ($null -ne $script:SplashTopmostRefreshTimer) { $script:SplashTopmostRefreshTimer.Stop() } } catch {}
-                    try { $script:timer.Stop() } catch {}
-                    try { $window.Close() } catch {}
-                    return
-                }
-                try { Write-SplashLog 'Handoff splash host failed to start; keeping updates splash in handoff layout (no KB list).' 'WARN' } catch {}
-            }
+            $script:FbSplashHandoffHostStarted = $true
             Invoke-FbSplash2224HandoffTopmostRefreshMaybe
-            Set-FbSplashElapsedDisplay -Elapsed ((Get-Date) - $script:startTime)
-            Update-FbSplashTotalElapsed -Freeze
-            Set-FbSplashRebootDisplay
+        } else {
+            try { Invoke-FbSplashMaybeStartOobeSoundAfterUpdates } catch {}
+            try { Invoke-FbSplashOobe2214cRestoreAll -Reason 'marker-main-timer' } catch {}
+            try { if ($null -ne $script:SplashTopmostRefreshTimer) { $script:SplashTopmostRefreshTimer.Stop() } } catch {}
+            $script:timer.Stop()
+            $window.Close()
             return
         }
-        try { Invoke-FbSplashMaybeStartOobeSoundAfterUpdates } catch {}
-        try { Invoke-FbSplashOobe2214cRestoreAll -Reason 'marker-main-timer' } catch {}
-        try { if ($null -ne $script:SplashTopmostRefreshTimer) { $script:SplashTopmostRefreshTimer.Stop() } } catch {}
-        $script:timer.Stop()
-        $window.Close()
-        return
     }
 
     $state = Get-StatusFromStateFile
     $status = $null
     if ($state) {
+        if ($state.PriorBoot) {
+            $script:FbSplashLastKnownUpdates = @()
+            $script:FbSplashCardSig = $null
+        }
         $displayPhase = Resolve-FbSplashDisplayPhase -State $state
-        Set-FbSplashPassStatus -Text (Get-FbSplashShortStatusLine -PhaseOrPass $displayPhase) -Phase $displayPhase -Message ([string]$state.Message)
+        $stateMsg = [string]$state.Message
+        Set-FbSplashPassStatus -Text (Get-FbSplashShortStatusLine -PhaseOrPass $displayPhase) -Phase $displayPhase -Message $stateMsg
+        $fbHasRows = @($state.Updates).Count -gt 0
+        if ($displayPhase -eq 'ManualRestart') {
+            Show-FbSplashStatusNotice -Kind 'Restart' -Title 'Manual restart required' -Detail 'The computer is stopped. Restart it to continue.' -Accent '#FFEF5350'
+        } elseif ($state.PriorBoot -and -not $fbHasRows) {
+            Show-FbSplashStatusNotice -Kind 'Boot' -Title 'Checking Updates after reboot' -Detail 'This can take a few minutes.' -Spinner -Accent '#FF4FC3F7'
+        } elseif (Test-FbSplashAuditStatusPhase -Phase $displayPhase) {
+            try { Set-FbSplashHandoffLayout -Phase $displayPhase -Message $stateMsg } catch {}
+        } elseif (-not $fbHasRows -and $displayPhase -match '^(?i)(Checking|Scanning)$') {
+            Show-FbSplashStatusNotice -Kind 'Check' -Title 'Checking for updates' -Detail 'This process can take 2 - 5 minutes.' -Spinner -Accent '#FF22D3EE'
+        } else {
+            Clear-FbSplashHandoffLayout
+        }
         if (@($state.Updates).Count -gt 0) {
             Set-FbSplashUpdatesContent -Items $state.Updates
         } else {
@@ -3372,9 +4227,14 @@ $timer.Add_Tick({
         $status = Get-StatusFromLog $log
         $fallbackPhase = $status.Pass
         if ([string]::IsNullOrWhiteSpace($fallbackPhase) -and @($script:FbSplashLastKnownUpdates).Count -gt 0) {
-            $fallbackPhase = 'Rebooting'
+            $fallbackPhase = if ($script:FbSplashActivityPhase) { [string]$script:FbSplashActivityPhase } else { 'Waiting' }
         }
         Set-FbSplashPassStatus -Text (Get-FbSplashShortStatusLine -PhaseOrPass $fallbackPhase) -Phase $fallbackPhase
+        if (Test-FbSplashAuditStatusPhase -Phase $fallbackPhase) {
+            try { Set-FbSplashHandoffLayout -Phase $fallbackPhase } catch {}
+        } else {
+            Clear-FbSplashHandoffLayout
+        }
         Set-FbSplashUpdatesContent -Items @($script:FbSplashLastKnownUpdates)
     }
 
@@ -3503,6 +4363,82 @@ $window.Add_KeyDown({
     } catch {}
 })
 
+function Invoke-FbSplashPreviewStatus {
+    param([string]$Page = 'Updates')
+    if (-not $script:Preview) { return }
+    $pageKey = if ([string]::IsNullOrWhiteSpace($Page)) { 'Updates' } else { [string]$Page }
+    try { Set-FbSplashRadialActiveCaption -Caption $pageKey } catch {}
+    $script:FbSplashLastKnownUpdates = @()
+    $script:FbSplashCardSig = $null
+    if ($null -ne $warningText) { try { $warningText.Text = '' } catch {} }
+    try { Clear-FbSplashHandoffLayout } catch {}
+    Set-FbSplashUpdatesContent -Items @()
+
+    $card = {
+        param($Title, $Status, $Color, $Retries)
+        [pscustomobject]@{ Title = $Title; Status = $Status; StatusColor = $Color; Retries = $Retries }
+    }
+
+    switch ($pageKey) {
+        'Check' {
+            Set-FbSplashPassStatus -Text 'Checking for updates' -Phase 'Checking'
+            Show-FbSplashStatusNotice -Kind 'Check' -Title 'Checking for updates' -Detail 'This process can take 2 - 5 minutes.' -Spinner -Accent '#FF22D3EE'
+        }
+        'Error' {
+            Set-FbSplashPassStatus -Text 'Installing updates' -Phase 'Installing'
+            Set-FbSplashUpdatesContent -Items @(
+                & $card 'Cirrus Logic, Inc. - Extension - 1.13.6.313' 'Failed' '#FFEF5350' 2
+                & $card 'Intel - System - Chipset Driver Update' 'Failed - tech review required' '#FFEF5350' 3
+                & $card '2025-06 Cumulative Update for Windows 11 (KB5039212)' 'Done' '#FF66BB6A' 0
+            )
+        }
+        'Boot' {
+            Set-FbSplashPassStatus -Text 'Checking Updates after reboot' -Phase 'Startup'
+            Show-FbSplashStatusNotice -Kind 'Boot' -Title 'Checking Updates after reboot' -Detail 'This can take a few minutes.' -Spinner -Accent '#FF4FC3F7'
+        }
+        'Settle' { Set-FbSplashHandoffLayout -Phase 'Waiting' }
+        'Checks' { Set-FbSplashHandoffLayout -Phase 'HardwareChecks' }
+        'Passed' { Set-FbSplashHandoffLayout -Phase 'HardwarePass' }
+        'Failed' { Set-FbSplashHandoffLayout -Phase 'HardwareFail' }
+        'Gate'   { Set-FbSplashHandoffLayout -Phase 'OperatorGate' }
+        'Restart' {
+            Set-FbSplashPassStatus -Text 'Manual restart required' -Phase 'ManualRestart'
+            Show-FbSplashStatusNotice -Kind 'Restart' -Title 'Manual restart required' -Detail 'The computer is stopped. Restart it to continue.' -Accent '#FFEF5350'
+        }
+        'Seal' { Set-FbSplashHandoffLayout -Phase 'Sealing' }
+        'Done' {
+            Set-FbSplashPassStatus -Text 'Completed' -Phase 'Completed'
+            Set-FbSplashUpdatesContent -Items @(
+                & $card '2025-06 Cumulative Update for Windows 11 Version 24H2 for x64-based Systems (KB5039212)' 'Done' '#FF66BB6A' 0
+                & $card 'Security Intelligence Update for Microsoft Defender Antivirus - KB2267602' 'Done' '#FF66BB6A' 0
+                & $card '.NET 8.0.x Update for x64 Client' 'Done' '#FF66BB6A' 0
+                & $card 'Cirrus Logic, Inc. - Extension - 1.13.6.313' 'Done' '#FF66BB6A' 0
+            )
+        }
+        default {
+            Set-FbSplashPassStatus -Text 'Downloading and installing updates' -Phase 'Downloading'
+            Set-FbSplashUpdatesContent -Items @(
+                & $card '2025-06 Cumulative Update for Windows 11 Version 24H2 for x64-based Systems (KB5039212)' 'Done' '#FF66BB6A' 0
+                & $card 'Security Intelligence Update for Microsoft Defender Antivirus - KB2267602 (Version 1.419.456.0)' 'Installing' '#FFFFB74D' 0
+                & $card '.NET 8.0.x Update for x64 Client' 'Pending restart' '#FFB388FF' 0
+                & $card 'Cirrus Logic, Inc. - Extension - 1.13.6.313' 'Reapplying' '#FFFF8A65' 0
+                & $card 'Intel - System - Chipset Driver Update' 'Retrying' '#FFFF8A65' 1
+                & $card 'Servicing Stack Update for Windows 11 (KB5039338)' 'Downloading 12MB / 40MB' '#FF4FC3F7' 0
+                & $card 'Microsoft Edge Stable Channel Update' 'Still offered' '#FF90CAF9' 0
+                & $card 'Windows Recovery Environment Update' 'Failed' '#FFEF5350' 2
+                & $card 'NVIDIA Graphics Driver Update' 'Queued' '#FF9E9E9E' 0
+                & $card 'Realtek Audio Driver Update' 'Waiting' '#FFF0C14B' 0
+                & $card 'Intel Management Engine Interface Driver' 'Queued' '#FF9E9E9E' 0
+                & $card 'Definition Update for Windows Defender Antivirus' 'Done' '#FF66BB6A' 0
+                & $card 'HP Inc. - Firmware - System Firmware Update' 'Queued' '#FF9E9E9E' 0
+                & $card 'Microsoft .NET Framework 4.8.1 Update' 'Queued' '#FF9E9E9E' 0
+                & $card 'Windows 11 Setup Updates (KB5043080)' 'Queued' '#FF9E9E9E' 0
+                & $card 'Dell Inc. - Firmware - BIOS Update' 'Queued' '#FF9E9E9E' 0
+            )
+        }
+    }
+}
+
 if ($script:Preview) {
     $window.WindowStyle = [System.Windows.WindowStyle]::SingleBorderWindow
     $window.WindowState = [System.Windows.WindowState]::Normal
@@ -3511,25 +4447,6 @@ if ($script:Preview) {
     $window.Width = 1180; $window.Height = 940
     $window.Title = ('FirstBase Updates - PREVIEW ({0})' -f $script:PreviewScenario)
     Set-FbSplashPassStatus -Text 'Downloading and installing updates'
-
-    $sampleStatic = @(
-        [pscustomobject]@{ Title='2025-06 Cumulative Update for Windows 11 (KB5039212)'; StatusColor='#FF66BB6A'; Status='Done';             Retries=0 }
-        [pscustomobject]@{ Title='Security Intelligence Update for Microsoft Defender'; StatusColor='#FFFFB74D'; Status='Installing';       Retries=0 }
-        [pscustomobject]@{ Title='.NET 8.0.x Update for x64 Client';                    StatusColor='#FFB388FF'; Status='Pending Restart'; Retries=0 }
-        [pscustomobject]@{ Title='Windows Malicious Software Removal Tool x64';         StatusColor='#FFFF8A65'; Status='Retry Next Boot'; Retries=1 }
-        [pscustomobject]@{ Title='Intel - System - Chipset Driver Update';             StatusColor='#FFFF8A65'; Status='Retrying';         Retries=1 }
-        [pscustomobject]@{ Title='Servicing Stack Update for Windows 11 (KB5039338)';  StatusColor='#FF4FC3F7'; Status='Downloading';     Retries=0 }
-        [pscustomobject]@{ Title='Microsoft Edge Stable Channel Update';              StatusColor='#FF9E9E9E'; Status='Queued';          Retries=0 }
-        [pscustomobject]@{ Title='Windows Recovery Environment Update';               StatusColor='#FF9E9E9E'; Status='Queued';          Retries=0 }
-        [pscustomobject]@{ Title='NVIDIA Graphics Driver Update';                     StatusColor='#FF9E9E9E'; Status='Queued';          Retries=0 }
-        [pscustomobject]@{ Title='Realtek Audio Driver Update';                       StatusColor='#FF9E9E9E'; Status='Queued';          Retries=0 }
-        [pscustomobject]@{ Title='Intel Management Engine Interface Driver';          StatusColor='#FF9E9E9E'; Status='Queued';          Retries=0 }
-        [pscustomobject]@{ Title='Definition Update for Windows Defender Antivirus';  StatusColor='#FF66BB6A'; Status='Done';            Retries=0 }
-        [pscustomobject]@{ Title='HP Inc. - Firmware - System Firmware Update';      StatusColor='#FF9E9E9E'; Status='Queued';          Retries=0 }
-        [pscustomobject]@{ Title='Microsoft .NET Framework 4.8.1 Update';            StatusColor='#FF9E9E9E'; Status='Queued';          Retries=0 }
-        [pscustomobject]@{ Title='Windows 11 Setup Updates (KB5043080)';             StatusColor='#FF9E9E9E'; Status='Queued';          Retries=0 }
-        [pscustomobject]@{ Title='Dell Inc. - Firmware - BIOS Update';               StatusColor='#FF9E9E9E'; Status='Queued';          Retries=0 }
-    )
 
     if ($script:PreviewScenario -eq 'Checking') {
         Set-FbSplashPassStatus -Text 'Checking for updates'
@@ -3632,17 +4549,35 @@ if ($script:Preview) {
         $window.Add_Closed({ try { $previewPullTimer.Stop() } catch {} })
     }
     else {
-        # Static sample list (historical default preview).
-        Set-FbSplashUpdatesContent -Items $sampleStatic
+        Invoke-FbSplashPreviewStatus -Page 'Updates'
         Set-FbSplashElapsedDisplay -Elapsed ([TimeSpan]::FromSeconds(444))
         Set-FbSplashTotalElapsedDisplay -Elapsed ([TimeSpan]::FromSeconds(7320))
         Set-FbSplashRebootDisplay -Count 1
     }
 
-    $previewTimer = New-Object System.Windows.Threading.DispatcherTimer
-    $previewTimer.Interval = [TimeSpan]::FromSeconds( $(if ($script:PreviewScenario -eq 'Pulling') { 120 } else { 90 }) )
-    $previewTimer.Add_Tick({ try { $previewTimer.Stop(); $window.Close() } catch {} })
-    $previewTimer.Start()
+    $window.Add_Loaded({
+        if (-not $script:Preview) { return }
+        try { Show-FbSplashRadialMenu } catch {}
+        try { Update-FbSplashRadialItemPositions } catch {}
+        $active = 'Updates'
+        if ($script:PreviewScenario -eq 'Checking') { $active = 'Check' }
+        try { Set-FbSplashRadialActiveCaption -Caption $active } catch {}
+        try {
+            $script:FbSplashCardSig = $null
+            if (-not $script:FbSplashNoticeOpen -and @($script:FbSplashLastKnownUpdates).Count -gt 0) {
+                Update-FbSplashUpdateCards -Items @($script:FbSplashLastKnownUpdates)
+            }
+        } catch {}
+    })
+
+    # Interactive Static preview stays open until the window is closed.
+    # Pulling still auto-closes after the demo finishes so scripted runs do not hang.
+    if ($script:PreviewScenario -eq 'Pulling') {
+        $previewTimer = New-Object System.Windows.Threading.DispatcherTimer
+        $previewTimer.Interval = [TimeSpan]::FromSeconds(120)
+        $previewTimer.Add_Tick({ try { $previewTimer.Stop(); $window.Close() } catch {} })
+        $previewTimer.Start()
+    }
 
     # 2300 Phase 0 test hook: with -SimulateOobeForeground, spawn a dummy topmost "OOBE" window and drive the
     # suppression tick (diagnostics + Layer 2 kill) on a preview-only timer, since the production refresh timer

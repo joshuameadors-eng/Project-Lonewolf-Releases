@@ -54,6 +54,17 @@ function Test-FbStampIsDestage {
     return $false
 }
 
+function Test-FbStampSkipWu {
+    # destageSkipWu is destage-only (npm start:updatesfinished). Never honor it
+    # on packaged Destage / production stamps.
+    param($Json)
+    if (-not (Test-FbStampIsDestage $Json)) { return $false }
+    try {
+        if ($Json.PSObject.Properties['destageSkipWu'] -and (Test-FbJsonTruthy $Json.destageSkipWu)) { return $true }
+    } catch {}
+    return $false
+}
+
 function Test-FbStampIsDev {
     param($Json)
     if (Test-FbStampIsDestage $Json) { return $true }
@@ -76,6 +87,7 @@ function Get-FbBuildIdentity {
     $info = [ordered]@{
         Dev           = $false
         Destage       = $false
+        DestageSkipWu = $false
         Channel       = ''
         Launcher      = ''
         Script        = ''
@@ -105,6 +117,7 @@ function Get-FbBuildIdentity {
         if ($isDestage) {
             $info.Destage = $true
             $info.Channel = 'destage'
+            if (Test-FbStampSkipWu $j) { $info.DestageSkipWu = $true }
         } elseif ($j.PSObject.Properties['channel'] -and $j.channel) {
             $info.Channel = [string]$j.channel
         }
@@ -112,12 +125,20 @@ function Get-FbBuildIdentity {
             $info.Dev = $true
             $info.Source = 'LW_VERSION.json'
         }
-        if ($j.launcherVersion)      { $info.Launcher      = [string]$j.launcherVersion }
-        if ($j.payloadVersion)       { $info.Script        = [string]$j.payloadVersion }
-        elseif ($j.scriptVersion)    { $info.Script        = [string]$j.scriptVersion }
-        elseif ($j.version)          { $info.Script        = [string]$j.version }
-        if ($j.shareLauncherVersion) { $info.ShareLauncher = [string]$j.shareLauncherVersion }
-        if ($j.shareScriptVersion)   { $info.ShareScript   = [string]$j.shareScriptVersion }
+        # StrictMode Latest (the WU loop) throws if a slim LW_VERSION.json
+        # omits launcherVersion. Read only properties that exist.
+        $lvProp = $j.PSObject.Properties['launcherVersion']
+        if ($lvProp -and $lvProp.Value) { $info.Launcher = [string]$lvProp.Value }
+        $pvProp = $j.PSObject.Properties['payloadVersion']
+        $svProp = $j.PSObject.Properties['scriptVersion']
+        $vProp = $j.PSObject.Properties['version']
+        if ($pvProp -and $pvProp.Value) { $info.Script = [string]$pvProp.Value }
+        elseif ($svProp -and $svProp.Value) { $info.Script = [string]$svProp.Value }
+        elseif ($vProp -and $vProp.Value) { $info.Script = [string]$vProp.Value }
+        $slProp = $j.PSObject.Properties['shareLauncherVersion']
+        $ssProp = $j.PSObject.Properties['shareScriptVersion']
+        if ($slProp -and $slProp.Value) { $info.ShareLauncher = [string]$slProp.Value }
+        if ($ssProp -and $ssProp.Value) { $info.ShareScript = [string]$ssProp.Value }
         break
     }
 
@@ -147,6 +168,11 @@ function Get-FbBuildIdentity {
                                 'shareLauncherVersion' { if (-not $info.ShareLauncher) { $info.ShareLauncher = $kv[1].Trim() } }
                                 'shareScriptVersion'   { if (-not $info.ShareScript)   { $info.ShareScript   = $kv[1].Trim() } }
                                 'channel'              { if (-not $info.Channel)       { $info.Channel       = $kv[1].Trim() } }
+                                'destageSkipWu'        {
+                                    if ((Test-FbJsonTruthy $kv[1].Trim()) -and $info.Destage) {
+                                        $info.DestageSkipWu = $true
+                                    }
+                                }
                             }
                         }
                     } catch {}

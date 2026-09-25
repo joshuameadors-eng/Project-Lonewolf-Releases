@@ -138,9 +138,11 @@ if ($LaunchHost -and -not $Library) {
     }
 }
 
-$ErrorActionPreference = 'SilentlyContinue'
+# Set-Variable: a direct assignment throws inside the splash module on
+# Windows PowerShell 5.1 (ErrorActionPreference is optimized).
+Set-Variable -Name ErrorActionPreference -Value SilentlyContinue -Scope Script
 
-$FbImVersion = '2.0.35'
+$FbImVersion = '2.0.36'
 
 function Initialize-FbImWpf {
     # Must run BEFORE Show-FbImWindow is invoked. Parameter binding resolves
@@ -168,6 +170,7 @@ $FbRoot           = 'C:\Windows\Setup\FirstBase'
 $FbStateDir       = Join-Path $FbRoot 'State'
 $FbLogDir         = Join-Path $FbRoot 'Logs'
 $FbPd             = 'C:\ProgramData\FirstBase'
+$FbProgramDataFirstBase = $FbPd
 $FbScriptsDir     = 'C:\Windows\Setup\Scripts'
 
 $SealedMarker     = Join-Path $FbPd '.firstbase-sealed'
@@ -176,8 +179,9 @@ $PipelineMarker   = Join-Path $FbPd '.pipeline-completed'
 $GateFailMarker   = Join-Path $FbPd '.hardware-gate-fail-restart'
 $HwDoneMarker     = Join-Path $FbPd '.hardware-gate-complete'
 $HwResultMarker   = Join-Path $FbPd '.hardware-gate-result.json'
-$HwRunningMarker  = Join-Path $FbPd '.hardware-gate-running'
-$ArmSuppressed    = Join-Path $FbPd '.firstbase-specialize-arm-suppressed'
+    $HwRunningMarker  = Join-Path $FbPd '.hardware-gate-running'
+    $HwForceProbesMarker = Join-Path $FbPd '.hardware-gate-force-probes'
+    $ArmSuppressed    = Join-Path $FbPd '.firstbase-specialize-arm-suppressed'
 
 $DoneFlag         = Join-Path $FbScriptsDir 'FirstBase-Updates-Done.flag'
 $CompleteFlag     = Join-Path $FbScriptsDir 'FirstBase-Updates-Complete.flag'
@@ -207,6 +211,7 @@ function Get-FbImBuildIdentity {
     $id = [ordered]@{
         StickRev = ''; DeviceRev = ''; Product = ''; Dev = $false
         Destage = $false
+        DestageSkipWu = $false
         Launcher = ''; ShareLauncher = ''
     }
     $stickPayload = $null
@@ -253,6 +258,7 @@ function Get-FbImBuildIdentity {
             if ($build) {
                 $id.Dev           = [bool]$build.Dev
                 try { if ($build.PSObject.Properties['Destage']) { $id.Destage = [bool]$build.Destage } } catch {}
+                try { if ($build.PSObject.Properties['DestageSkipWu']) { $id.DestageSkipWu = [bool]$build.DestageSkipWu } } catch {}
                 $id.Launcher      = [string]$build.Launcher
                 $id.ShareLauncher = [string]$build.ShareLauncher
             }
@@ -277,22 +283,28 @@ function Get-FbImBuildIdentity {
                     if (-not $id.Launcher -and $j.launcherVersion) { $id.Launcher = [string]$j.launcherVersion }
                     if ($j.destage -or [string]$j.channel -eq 'destage') { $id.Destage = $true; $id.Dev = $true }
                     elseif ($j.devBuild) { $id.Dev = $true }
+                    try {
+                        if ($id.Destage -and $j.PSObject.Properties['destageSkipWu'] -and $j.destageSkipWu) {
+                            $id.DestageSkipWu = $true
+                        }
+                    } catch {}
                 } catch {}
             }
             $devMarker = Join-Path $root '.dev-build'
             if (Test-Path -LiteralPath $devMarker) {
                 $id.Dev = $true
                 $id.Destage = $true
-                if (-not $id.Launcher) {
-                    try {
-                        foreach ($line in (Get-Content -LiteralPath $devMarker -ErrorAction Stop)) {
-                            if ($line -match '^\s*launcherVersion\s*=\s*(.+)$') {
-                                $id.Launcher = $Matches[1].Trim()
-                                break
-                            }
+                try {
+                    foreach ($line in (Get-Content -LiteralPath $devMarker -ErrorAction Stop)) {
+                        if ((-not $id.Launcher) -and $line -match '^\s*launcherVersion\s*=\s*(.+)$') {
+                            $id.Launcher = $Matches[1].Trim()
                         }
-                    } catch {}
-                }
+                        if ($line -match '^\s*destageSkipWu\s*=\s*(.+)$') {
+                            $v = $Matches[1].Trim()
+                            if ($v -match '^(1|true|yes)$') { $id.DestageSkipWu = $true }
+                        }
+                    }
+                } catch {}
             }
         }
     }
@@ -386,10 +398,42 @@ function Test-FbImHardwareProbesPassed {
     return $true
 }
 
+function Invoke-FbImTimedScript {
+    # Bounded helper for Defender/CIM probes. Status refresh and Start Hardware
+    # run on the WPF dispatcher; a hung Get-MpPreference must not freeze clicks.
+    param(
+        [Parameter(Mandatory)][scriptblock]$Script,
+        [int]$TimeoutMs = 4000
+    )
+    $ps = $null
+    try {
+        $ps = [System.Management.Automation.PowerShell]::Create()
+        [void]$ps.AddScript([string]$Script)
+        $iar = $ps.BeginInvoke()
+        $waitMs = 250
+        try { $waitMs = [Math]::Max(250, [int]$TimeoutMs) } catch { $waitMs = 4000 }
+        if (-not $iar.AsyncWaitHandle.WaitOne($waitMs)) {
+            try { $ps.Stop() } catch {}
+            return $null
+        }
+        return @($ps.EndInvoke($iar))
+    } catch {
+        return $null
+    } finally {
+        if ($ps) { try { $ps.Dispose() } catch {} }
+    }
+}
+
 function Test-FbImHardwareGateInProgress {
     Clear-FbImStaleHwRunningMarker
+    # InProgress is the actual HW runner / operator window — not "WU loop is
+    # alive with phase=HardwareGate". Dump 4FVGN94-1216: loop was in 5.4.19
+    # reboot-refuse with leftover HardwareGate phase; treating that as running
+    # made Start Hardware Checks a no-op.
     try {
-        $procs = Get-CimInstance -ClassName Win32_Process -Filter "Name='powershell.exe'" -ErrorAction SilentlyContinue
+        $procs = Invoke-FbImTimedScript -TimeoutMs 3000 -Script {
+            Get-CimInstance -ClassName Win32_Process -Filter "Name='powershell.exe'" -ErrorAction SilentlyContinue
+        }
         foreach ($p in @($procs)) {
             if (-not $p) { continue }
             $cmd = [string]$p.CommandLine
@@ -401,19 +445,10 @@ function Test-FbImHardwareGateInProgress {
     if (Test-Path -LiteralPath $HwRunningMarker) {
         return [pscustomobject]@{ InProgress = $true; Message = 'Hardware checks are running now.' }
     }
-    $loop = Get-FbLoopProcess
-    $hbFresh = [bool](Test-FbImHeartbeatFresh)
-    $phase = ''
-    try {
-        $wu = Get-FbImWuStatusObject
-        if ($wu) { $phase = [string]$wu.phase }
-    } catch {}
     $gateActive = $false
     try { $gateActive = [bool](Test-Path -LiteralPath $OperatorGateActive) } catch {}
-    if ($loop -and $hbFresh -and ($phase -match '(?i)hardwaregate|handoff' -or $gateActive)) {
-        $msg = 'Hardware checks are already running.'
-        if ($gateActive) { $msg = 'Hardware checks are waiting on the operator confirmation window.' }
-        return [pscustomobject]@{ InProgress = $true; Message = $msg }
+    if ($gateActive) {
+        return [pscustomobject]@{ InProgress = $true; Message = 'Hardware checks are waiting on the operator confirmation window.' }
     }
     return [pscustomobject]@{ InProgress = $false; Message = '' }
 }
@@ -463,18 +498,25 @@ function Get-FbAutostartValues {
 }
 
 function Get-FbExecutableResidue {
+    # KEEP IN SYNC: Invoke-FbImSealToOobe ProgramData cleanup + seal_command.txt
+    # executable-residue search. Leftover elevated scripts under Setup OR
+    # ProgramData must force NOT READY (green READY is not crypto-proof).
     $hits = @()
-    if (-not (Test-Path -LiteralPath $FbRoot)) { return $hits }
-    try {
-        $files = Get-ChildItem -LiteralPath $FbRoot -Recurse -File -ErrorAction SilentlyContinue |
-            Where-Object { $_.FullName -notlike ($FbLogDir + '\*') }
-        foreach ($f in $files) {
-            if ($f.FullName -like ($FbLogDir + '\*')) { continue }
-            if (@('.ps1', '.cmd', '.bat', '.vbs', '.exe') -contains $f.Extension.ToLower()) {
-                $hits += $f.FullName
+    $exts = @('.ps1', '.cmd', '.bat', '.vbs', '.exe')
+    $scanRoots = @()
+    if (Test-Path -LiteralPath $FbRoot) { $scanRoots += $FbRoot }
+    if (Test-Path -LiteralPath $FbPd) { $scanRoots += $FbPd }
+    foreach ($root in $scanRoots) {
+        try {
+            $files = Get-ChildItem -LiteralPath $root -Recurse -File -ErrorAction SilentlyContinue
+            foreach ($f in $files) {
+                if ($root -eq $FbRoot -and ($f.FullName -like ($FbLogDir + '\*'))) { continue }
+                if ($exts -contains $f.Extension.ToLower()) {
+                    $hits += $f.FullName
+                }
             }
-        }
-    } catch {}
+        } catch {}
+    }
     return $hits
 }
 
@@ -606,6 +648,119 @@ function Test-FbImStuckCompleteWithoutHandoff {
     return [bool]$complete
 }
 
+function Get-FbImDefenderStateFlagRaw {
+    $p = Join-Path $FbStateDir 'defender-state.flag'
+    try {
+        if (Test-Path -LiteralPath $p) {
+            return [string](Get-Content -LiteralPath $p -Raw -ErrorAction Stop)
+        }
+    } catch {}
+    return ''
+}
+
+function Get-FbImSecurityShipState {
+    # Live Defender / MDM / exclusion probes for READY math.
+    # During Audit, MDM suppress + Defender disable + exclusions are approved
+    # product behavior — do not treat them as ship leftovers until Audit is over.
+    # SkipLiveQuery: Audit status must stay clickable (Start Hardware). After
+    # Audit, live queries are timeout-wrapped; hang/fail is fail-closed for READY only.
+    param([switch]$SkipLiveQuery)
+    $result = [ordered]@{
+        DefenderOff        = $false
+        DefenderQueryFail  = $false
+        DefenderFlagBad    = $false
+        ExclusionsLeftover = $false
+        MdmKeysLeftover    = $false
+        DmEnrollmentBad    = $false
+        Reasons            = New-Object System.Collections.Generic.List[string]
+    }
+    $flagRaw = Get-FbImDefenderStateFlagRaw
+    if ($flagRaw) {
+        $flagState = ([string]$flagRaw).Split('|')[0].Trim().ToLowerInvariant()
+        if ($flagState -eq 'disabled' -or $flagState -eq 'failed') {
+            $result.DefenderFlagBad = $true
+        }
+    }
+
+    $prefOk = $false
+    $statusOk = $false
+    if (-not $SkipLiveQuery) {
+        $pref = $null
+        try {
+            $prefRows = Invoke-FbImTimedScript -TimeoutMs 4000 -Script {
+                Get-MpPreference -ErrorAction Stop
+            }
+            if ($null -ne $prefRows) { $pref = @($prefRows)[0] }
+        } catch { $pref = $null }
+        if ($pref) {
+            $prefOk = $true
+            try { if ([bool]$pref.DisableRealtimeMonitoring) { $result.DefenderOff = $true } } catch {}
+            $ex = @()
+            try { $ex = @($pref.ExclusionPath) } catch { $ex = @() }
+            foreach ($want in @('C:\Windows\Setup\FirstBase', 'C:\ProgramData\FirstBase', 'C:\ProgramData\Microsoft\Windows\Start Menu\Programs\Startup')) {
+                foreach ($have in $ex) {
+                    if ([string]$have -and ([string]$have).TrimEnd('\') -eq $want) {
+                        $result.ExclusionsLeftover = $true
+                        break
+                    }
+                }
+            }
+        }
+        $st = $null
+        try {
+            $stRows = Invoke-FbImTimedScript -TimeoutMs 4000 -Script {
+                Get-MpComputerStatus -ErrorAction Stop
+            }
+            if ($null -ne $stRows) { $st = @($stRows)[0] }
+        } catch { $st = $null }
+        if ($st) {
+            $statusOk = $true
+            try {
+                if ($null -ne $st.RealTimeProtectionEnabled -and -not [bool]$st.RealTimeProtectionEnabled) {
+                    $result.DefenderOff = $true
+                }
+            } catch {}
+        }
+        if (-not $prefOk -and -not $statusOk) {
+            $result.DefenderQueryFail = $true
+        }
+    }
+
+    try {
+        $mdm = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\CurrentVersion\MDM'
+        if (Test-Path -LiteralPath $mdm) {
+            $p = Get-ItemProperty -LiteralPath $mdm -ErrorAction SilentlyContinue
+            if ($p -and (($p.PSObject.Properties.Name -contains 'AutoEnrollMDM') -or ($p.PSObject.Properties.Name -contains 'UseAADCredentialType'))) {
+                $result.MdmKeysLeftover = $true
+            }
+        }
+    } catch {}
+    if (-not $SkipLiveQuery) {
+        try {
+            $sm = $null
+            $svcRows = Invoke-FbImTimedScript -TimeoutMs 3000 -Script {
+                Get-CimInstance -ClassName Win32_Service -Filter "Name='DmEnrollmentSvc'" -ErrorAction SilentlyContinue
+            }
+            $svcCim = $null
+            if ($null -ne $svcRows) { $svcCim = @($svcRows)[0] }
+            if ($svcCim) { $sm = [string]$svcCim.StartMode }
+            if ($sm -and ($sm -eq 'Disabled')) { $result.DmEnrollmentBad = $true }
+        } catch {}
+    }
+
+    if ($result.DefenderOff) { [void]$result.Reasons.Add('Defender real-time is off') }
+    if ($result.DefenderFlagBad) { [void]$result.Reasons.Add('Defender restore did not finish') }
+    if ($result.DefenderQueryFail) { [void]$result.Reasons.Add('Defender status could not be read') }
+    if ($result.ExclusionsLeftover) { [void]$result.Reasons.Add('Defender exclusions still present') }
+    if ($result.MdmKeysLeftover) { [void]$result.Reasons.Add('MDM enrollment suppress still applied') }
+    if ($result.DmEnrollmentBad) { [void]$result.Reasons.Add('MDM enrollment service is disabled') }
+    return [pscustomobject]$result
+}
+
+# KEEP IN SYNC: Get-FbImStatusKind / Get-FbImDeviceStatus / Invoke-FbImSealToOobe
+# GATE: green READY is not crypto-proof. It must include live AV + MDM/exclusion leftovers + ProgramData residue + HardwarePassed.
+# CLEANUP: leftover FirstBase audit exclusions / MDM keys / DmEnrollmentSvc Disabled / unrestored Defender are NOT READY.
+# SEAL: green READY + SEALED means shippable. Unrecorded hardware is CHECK, never green.
 function Get-FbImStatusKind {
     param(
         [bool]$ScriptsPresent,
@@ -613,29 +768,32 @@ function Get-FbImStatusKind {
         [bool]$Audit,
         [bool]$HardwareFailed,
         [bool]$UpdatesFailed,
-        [bool]$NeedsManualSeal
+        [bool]$NeedsManualSeal,
+        [bool]$HardwareNotPassed,
+        [bool]$SecurityLeftover
     )
     # Purple only after a completed technician seal (persisted .manual-seal).
     # CanSeal / "should seal manually" must not turn the lamp purple.
-    if ($NeedsManualSeal) {
-        return [pscustomobject]@{
-            ColorKind = 'Purple'
-            Headline  = 'MANUAL SEAL'
-            Ready     = $false
-        }
-    }
-    # Red wins over Orange when audit / scripts / incomplete also apply.
-    if ($ScriptsPresent -or $IncompleteUpdates -or $Audit) {
+    # Security leftovers and unrecorded hardware must never be green READY.
+    # Red wins over Orange when audit / scripts / incomplete / AV-MDM also apply.
+    if ($ScriptsPresent -or $IncompleteUpdates -or $Audit -or $SecurityLeftover) {
         return [pscustomobject]@{
             ColorKind = 'Red'
             Headline  = 'NOT READY'
             Ready     = $false
         }
     }
-    if ($HardwareFailed -or $UpdatesFailed) {
+    if ($HardwareFailed -or $UpdatesFailed -or $HardwareNotPassed) {
         return [pscustomobject]@{
             ColorKind = 'Orange'
             Headline  = 'CHECK'
+            Ready     = $false
+        }
+    }
+    if ($NeedsManualSeal) {
+        return [pscustomobject]@{
+            ColorKind = 'Purple'
+            Headline  = 'MANUAL SEAL'
             Ready     = $false
         }
     }
@@ -767,8 +925,26 @@ function Get-FbImDeviceStatus {
     # Purple is a completed technician seal, not CanSeal / "seal is available".
     $needsManualSeal = [bool]$manualSealed
 
+    $sec = $null
+    try { $sec = Get-FbImSecurityShipState -SkipLiveQuery:$audit } catch { $sec = $null }
+    $securityLeftover = $false
+    $secReasons = @()
+    if ($sec) {
+        try { $secReasons = @($sec.Reasons) } catch { $secReasons = @() }
+        # Audit-window Defender disable / MDM suppress / exclusions are approved.
+        # After Audit (or whenever READY would otherwise go green), leftovers block READY.
+        if (-not $audit) {
+            $securityLeftover = [bool](
+                $sec.DefenderOff -or $sec.DefenderFlagBad -or $sec.DefenderQueryFail -or
+                $sec.ExclusionsLeftover -or $sec.MdmKeysLeftover -or $sec.DmEnrollmentBad
+            )
+        }
+    }
+    $hardwareNotPassed = [bool]((-not $hwPassed) -and (-not $gateFail))
+
     $kind = Get-FbImStatusKind -ScriptsPresent $scriptsPresent -IncompleteUpdates $incompleteUpdates `
-        -Audit $audit -HardwareFailed $gateFail -UpdatesFailed $wuFailed -NeedsManualSeal $needsManualSeal
+        -Audit $audit -HardwareFailed $gateFail -UpdatesFailed $wuFailed -NeedsManualSeal $needsManualSeal `
+        -HardwareNotPassed $hardwareNotPassed -SecurityLeftover $securityLeftover
 
     $issues = New-Object System.Collections.ArrayList
     $addIssue = {
@@ -785,8 +961,13 @@ function Get-FbImDeviceStatus {
     }
     if ($gateFail) {
         & $addIssue 'Hardware check failed' 'fail'
-    } elseif ((-not $hwPassed) -and (-not $destage) -and (-not $sealed)) {
-        & $addIssue 'Hardware check not recorded' 'warn'
+    } elseif ((-not $hwPassed)) {
+        & $addIssue 'Hardware check not recorded' 'fail'
+    }
+    if ((-not $audit) -and $secReasons.Count -gt 0) {
+        foreach ($r in $secReasons) {
+            & $addIssue $r 'fail'
+        }
     }
     if ($actuallyInstalling) {
         & $addIssue 'Updates are still running' 'fail'
@@ -852,6 +1033,12 @@ function Get-FbImDeviceStatus {
     elseif ($audit) { [void]$facts.Add('Mode: Audit') }
     else { [void]$facts.Add('Mode: not Audit') }
     if ($destage) { [void]$facts.Add('Stick: destage') }
+    $destageSkipWu = $false
+    try { if ($FbBuild) { $destageSkipWu = [bool]$FbBuild.DestageSkipWu } } catch {}
+    if ($destageSkipWu) {
+        [void]$facts.Add('WU: skipped (destage skip-WU)')
+        [void]$facts.Add('HW probes: auto-pass unless Start Hardware Checks')
+    }
     if ($hwPassed) { [void]$facts.Add('Hardware: passed') }
     elseif ($gateFail) { [void]$facts.Add('Hardware: failed') }
     else { [void]$facts.Add('Hardware: not recorded') }
@@ -1705,10 +1892,18 @@ function Invoke-FbImStartHardwareGate {
         return [pscustomobject]$result
     }
     if (Test-FbImHardwareProbesPassed) {
+        $bypassOnly = $false
+        try {
+            $jr = Get-FbImHwResultObject
+            if ($jr) {
+                try { if ([bool]$jr.Bypassed) { $bypassOnly = $true } } catch {}
+                try { if ([string]$jr.Summary -eq 'destage-skip-wu-bypass') { $bypassOnly = $true } } catch {}
+            }
+        } catch {}
         $loopNow = Get-FbLoopProcess
         $hbNow = $false
         try { $hbNow = [bool](Test-FbImHeartbeatFresh) } catch {}
-        if ($loopNow -and $hbNow) {
+        if ($loopNow -and $hbNow -and -not $bypassOnly) {
             $result.Message = 'Hardware checks already passed'
             $result.Detail = 'Use Seal device. A live FirstBase process is still finishing; starting another check would interrupt it.'
             return [pscustomobject]$result
@@ -1800,6 +1995,13 @@ function Invoke-FbImStartHardwareGate {
         if (-not (Test-Path -LiteralPath $FbPd)) {
             New-Item -ItemType Directory -Path $FbPd -Force -ErrorAction SilentlyContinue | Out-Null
         }
+        Set-Content -LiteralPath $HwForceProbesMarker -Value ('force-probes at {0} pid={1} via=fb-im Start Hardware Checks' -f (Get-Date -Format 'o'), $PID) -Encoding ascii -Force
+        [void]$notes.Add('Requested real hardware probes')
+    } catch {}
+    try {
+        if (-not (Test-Path -LiteralPath $FbPd)) {
+            New-Item -ItemType Directory -Path $FbPd -Force -ErrorAction SilentlyContinue | Out-Null
+        }
         $line = ('handoff-pending at {0} pid={1} reason=fb-im start hardware gate' -f (Get-Date -Format 'o'), $PID)
         Set-Content -LiteralPath $HandoffPendingMarker -Value $line -Encoding ascii -Force
         [void]$notes.Add('Wrote hardware-gate pending marker')
@@ -1870,6 +2072,11 @@ function Invoke-FbImStartHardwareGate {
 }
 
 function Invoke-FbImPassHardwareCheck {
+    # KEEP IN SYNC: Get-FbImStatusKind READY math.
+    # GATE: this only stamps hardware-gate PASS markers.
+    # CLEANUP: does NOT restore Defender, does NOT scrub MDM/exclusions.
+    # SEAL: Pass hardware does not re-arm security. Seal device / automated
+    # STEP B / seal_command still must restore Defender + scrub MDM.
     $result = [ordered]@{ Ok = $false; Message = ''; Detail = '' }
     if (-not (Test-FbAdmin)) {
         $result.Message = 'Administrator access is required'
@@ -1907,7 +2114,72 @@ function Invoke-FbImPassHardwareCheck {
     return [pscustomobject]$result
 }
 
+function Import-FbImSealCleanupHelpers {
+    # Reuse Set-FbDefenderRealtime + Invoke-FbInlineMdmScrub from the WU loop
+    # (no third independent scrub). ParseFile extracts those functions only —
+    # never dotsource the loop script (it would relaunch the update pipeline).
+    if ((Get-Command -Name Set-FbDefenderRealtime -ErrorAction SilentlyContinue) -and
+        (Get-Command -Name Invoke-FbInlineMdmScrub -ErrorAction SilentlyContinue)) {
+        return $true
+    }
+    if (-not (Get-Command -Name Write-FbLog -ErrorAction SilentlyContinue)) {
+        function script:Write-FbLog {
+            param([string]$Message, [string]$Level = 'INFO')
+        }
+    }
+    if ([string]::IsNullOrWhiteSpace($script:DefenderStateFlag)) {
+        $script:DefenderStateFlag = Join-Path $FbStateDir 'defender-state.flag'
+    }
+    $candidates = New-Object System.Collections.Generic.List[string]
+    if ($LoopScript) { [void]$candidates.Add($LoopScript) }
+    try {
+        if ($FbImFileDir) {
+            [void]$candidates.Add((Join-Path (Split-Path -Parent $FbImFileDir) 'Invoke-WindowsUpdateLoop.ps1'))
+            [void]$candidates.Add((Join-Path $FbImFileDir '..\Invoke-WindowsUpdateLoop.ps1'))
+        }
+    } catch {}
+    $loopPath = $null
+    foreach ($c in $candidates) {
+        if ([string]::IsNullOrWhiteSpace($c)) { continue }
+        try {
+            $full = [IO.Path]::GetFullPath($c)
+            if (Test-Path -LiteralPath $full) { $loopPath = $full; break }
+        } catch {
+            if (Test-Path -LiteralPath $c) { $loopPath = $c; break }
+        }
+    }
+    if (-not $loopPath) { return $false }
+    $tokens = $null
+    $parseErrors = $null
+    $ast = $null
+    try {
+        $ast = [System.Management.Automation.Language.Parser]::ParseFile($loopPath, [ref]$tokens, [ref]$parseErrors)
+    } catch {
+        return $false
+    }
+    if (-not $ast) { return $false }
+    $wanted = @('Set-FbDefenderRealtime', 'Invoke-FbInlineMdmScrub')
+    $found = @{}
+    foreach ($fn in $ast.FindAll({ $args[0] -is [System.Management.Automation.Language.FunctionDefinitionAst] }, $true)) {
+        if ($wanted -contains $fn.Name -and -not $found.ContainsKey($fn.Name)) { $found[$fn.Name] = $fn.Extent.Text }
+    }
+    foreach ($name in $wanted) {
+        if (-not $found[$name]) { return $false }
+    }
+    foreach ($name in $wanted) {
+        try { Invoke-Expression $found[$name] } catch { return $false }
+    }
+    return ((Get-Command -Name Set-FbDefenderRealtime -ErrorAction SilentlyContinue) -and
+            (Get-Command -Name Invoke-FbInlineMdmScrub -ErrorAction SilentlyContinue))
+}
+
 function Invoke-FbImSealToOobe {
+    # KEEP IN SYNC: Set-FbDefenderRealtime + Invoke-FbInlineMdmScrub in Invoke-WindowsUpdateLoop.ps1
+    # and Tools\seal_command.txt. This path MUST restore Defender realtime AND scrub MDM/exclusions
+    # before writing .firstbase-sealed. Do not copy-paste a third independent scrub.
+    # GATE: technician Seal from fb-im (Audit or destage after HW pass).
+    # CLEANUP: reuse loop helpers via AST import; ProgramData residue includes .ps1/.cmd/.bat/.vbs/.exe.
+    # SEAL: restore or MDM scrub HARD-fail must not write .firstbase-sealed and must not sysprep.
     param(
         [ValidateSet('Restart', 'Shutdown')]
         [string]$PowerAction
@@ -1938,6 +2210,42 @@ function Invoke-FbImSealToOobe {
     } catch {}
     if (Test-Path -LiteralPath $LockFile) {
         try { Remove-Item -LiteralPath $LockFile -Force -ErrorAction SilentlyContinue } catch {}
+    }
+
+    if (-not (Import-FbImSealCleanupHelpers)) {
+        $result.Message = 'Seal blocked - could not load Defender/MDM cleanup helpers'
+        $result.Detail = 'Invoke-WindowsUpdateLoop.ps1 was not found on C: or the USB stick. Device stays in Audit. Do not stamp sealed.'
+        return [pscustomobject]$result
+    }
+
+    $alreadySealed = $false
+    try { $alreadySealed = [bool](Test-Path -LiteralPath $SealedMarker) } catch { $alreadySealed = $false }
+
+    Set-FbDefenderRealtime -Enabled $true -Reason 'fb-im-seal'
+    $restoreOk = $false
+    try { $restoreOk = [bool]$script:FbDefenderRealtimeLastOk } catch { $restoreOk = $false }
+    if (-not $restoreOk) {
+        if ($alreadySealed) {
+            # Sysprep retry after a prior stamp — do not brick Audit.
+        } else {
+            $result.Message = 'Seal blocked - Defender restore failed'
+            $result.Detail = 'Real-time monitoring is still off. Device stays in Audit. Defender was not restored; .firstbase-sealed was not written.'
+            return [pscustomobject]$result
+        }
+    }
+
+    $scrub = $null
+    try { $scrub = Invoke-FbInlineMdmScrub } catch { $scrub = $null }
+    $scrubPass = [bool]($scrub -and ($scrub.Overall -eq 'PASS'))
+    if (-not $scrubPass) {
+        if ($alreadySealed) {
+            # Already sealed — skip fail-closed so a sysprep retry can proceed.
+        } else {
+            $ov = $(if ($scrub) { [string]$scrub.Overall } else { 'UNKNOWN' })
+            $result.Message = 'Seal blocked - MDM scrub failed'
+            $result.Detail = ('MDM/exclusion teardown overall={0}. Device stays in Audit. Inspect C:\ProgramData\FirstBase\Logs\WU-mdm-scrub.log. .firstbase-sealed was not written.' -f $ov)
+            return [pscustomobject]$result
+        }
     }
 
     # Remove FirstBase scheduled tasks.
@@ -1973,7 +2281,7 @@ function Invoke-FbImSealToOobe {
     try {
         if (Test-Path -LiteralPath $FbPd) {
             Get-ChildItem -LiteralPath $FbPd -Recurse -File -ErrorAction SilentlyContinue |
-                Where-Object { @('.ps1', '.cmd', '.bat') -contains $_.Extension.ToLower() } |
+                Where-Object { @('.ps1', '.cmd', '.bat', '.vbs', '.exe') -contains $_.Extension.ToLower() } |
                 ForEach-Object {
                     try { Remove-Item -LiteralPath $_.FullName -Force -ErrorAction SilentlyContinue } catch {}
                 }
@@ -1992,10 +2300,15 @@ function Invoke-FbImSealToOobe {
             New-Item -ItemType Directory -Path $FbPd -Force -ErrorAction SilentlyContinue | Out-Null
         }
         $stamp = Get-Date -Format 'o'
-        Set-Content -LiteralPath $PipelineMarker -Value ("Pipeline completed at {0} (fb-im seal)." -f $stamp) -Encoding UTF8 -Force
-        Set-Content -LiteralPath $SealedMarker -Value ("Sealed at {0} (fb-im seal); device ready for customer OOBE after sysprep /oobe." -f $stamp) -Encoding UTF8 -Force
-        Set-Content -LiteralPath $ArmSuppressed -Value ("Specialize arm suppressed at {0} (fb-im seal)" -f $stamp) -Encoding UTF8 -Force
-    } catch {}
+        Set-Content -LiteralPath $PipelineMarker -Value ("Pipeline completed at {0} (fb-im seal)." -f $stamp) -Encoding UTF8 -Force -ErrorAction Stop
+        Set-Content -LiteralPath $SealedMarker -Value ("Sealed at {0} (fb-im seal); device ready for customer OOBE after sysprep /oobe." -f $stamp) -Encoding UTF8 -Force -ErrorAction Stop
+        Set-Content -LiteralPath $ArmSuppressed -Value ("Specialize arm suppressed at {0} (fb-im seal)" -f $stamp) -Encoding UTF8 -Force -ErrorAction Stop
+        if (-not (Test-Path -LiteralPath $SealedMarker)) { throw 'firstbase-sealed marker missing after write' }
+    } catch {
+        $result.Message = 'Seal blocked - could not write the sealed marker'
+        $result.Detail = $_.Exception.Message
+        return [pscustomobject]$result
+    }
 
     # Scrub BEFORE sysprep (loop STEP 3b). Leaving AutoAdminLogon=Administrator
     # (or a prior defaultuser0 stamp) makes OOBE autologon DefaultUser0's desktop.
@@ -2059,6 +2372,47 @@ function Get-FbImLogoB64 {
     return $null
 }
 
+function Get-FbImPipelineElapsedLabel {
+    # Same clock as the splash TOTAL ELAPSED pill. Frozen at the seal
+    # stamp once .firstbase-sealed exists, otherwise it keeps counting.
+    $start = $null
+    foreach ($candidate in @(
+            'C:\Windows\Setup\FirstBase\wu-pipeline-started.utc',
+            'C:\Windows\Setup\FirstBase\wu-state.json'
+        )) {
+        if ($start) { break }
+        try {
+            if (-not (Test-Path -LiteralPath $candidate)) { continue }
+            if ($candidate -like '*.json') {
+                $disk = Get-Content -LiteralPath $candidate -Raw -ErrorAction Stop | ConvertFrom-Json
+                $raw = ''
+                try { if ($disk.StartTime) { $raw = [string]$disk.StartTime } } catch {}
+            } else {
+                $raw = (Get-Content -LiteralPath $candidate -Raw -ErrorAction Stop).Trim()
+            }
+            $parsed = [datetime]::MinValue
+            if ($raw -and [datetime]::TryParse($raw, [ref]$parsed)) { $start = $parsed }
+        } catch {}
+    }
+    if (-not $start) { return 'ELAPSED --:--:--' }
+    $end = Get-Date
+    try {
+        if (Test-Path -LiteralPath $SealedMarker) {
+            $sealRaw = [string](Get-Content -LiteralPath $SealedMarker -Raw -ErrorAction Stop)
+            if ($sealRaw -match 'Sealed at\s+(\S+)') {
+                $sealAt = [datetime]::MinValue
+                if ([datetime]::TryParse($Matches[1], [ref]$sealAt) -and $sealAt -gt $start) { $end = $sealAt }
+            }
+        }
+    } catch {}
+    $totalSec = [math]::Max(0, [long][math]::Floor(($end - $start).TotalSeconds))
+    $h = [int][math]::Floor($totalSec / 3600)
+    $m = [int][math]::Floor(($totalSec % 3600) / 60)
+    $s = [int]($totalSec % 60)
+    if ($h -ge 100) { return ('ELAPSED {0}:{1:D2}:{2:D2}' -f $h, $m, $s) }
+    return ('ELAPSED {0:D2}:{1:D2}:{2:D2}' -f $h, $m, $s)
+}
+
 # =============================================================================
 # WPF SHELL
 # =============================================================================
@@ -2071,7 +2425,8 @@ function Show-FbImWindow {
 
     # Caller (fb-im.cmd entry) may have set Stop; wiring uses null-safe clicks.
     # Do not inherit Stop or a missing FindName kills the host splash ShowDialog.
-    $ErrorActionPreference = 'Continue'
+    # Set-Variable: assignment throws inside the splash module on Windows PowerShell 5.1.
+    Set-Variable -Name ErrorActionPreference -Value Continue -Scope Local
 
     try {
         Add-Type -AssemblyName PresentationFramework -ErrorAction Stop
@@ -2095,6 +2450,8 @@ function Show-FbImWindow {
 
     $devVisibility = if ($FbBuild.Dev) { 'Visible' } else { 'Collapsed' }
     $stopVisibility = if (Test-FbImDestageStopEnabled) { 'Visible' } else { 'Collapsed' }
+    $skipWuHintVisibility = 'Collapsed'
+    try { if ($FbBuild.DestageSkipWu) { $skipWuHintVisibility = 'Visible' } } catch {}
     $rawVer = ''
     if ($FbBuild.Launcher) { $rawVer = [string]$FbBuild.Launcher }
     $rawVer = ($rawVer -replace '[^0-9.]', '').Trim('.')
@@ -2226,11 +2583,18 @@ function Show-FbImWindow {
                      FontWeight="SemiBold" VerticalAlignment="Center"/>
         </DockPanel>
         <StackPanel Grid.Row="1">
-          <Border Name="StatusSealChipBorder" Padding="10,3" CornerRadius="4" HorizontalAlignment="Left"
-                  Background="#FF1A0A0A" BorderBrush="#FFC62828" BorderThickness="1" Margin="0,0,0,10">
-            <TextBlock Name="StatusSealChip" Text="..." FontSize="12" FontWeight="Bold"
-                       Foreground="#FFEF5350"/>
-          </Border>
+          <StackPanel Orientation="Horizontal" Margin="0,0,0,10">
+            <Border Name="StatusSealChipBorder" Padding="10,3" CornerRadius="4" HorizontalAlignment="Left"
+                    Background="#FF1A0A0A" BorderBrush="#FFC62828" BorderThickness="1" Margin="0,0,8,0">
+              <TextBlock Name="StatusSealChip" Text="..." FontSize="12" FontWeight="Bold"
+                         Foreground="#FFEF5350"/>
+            </Border>
+            <Border Name="StatusElapsedChipBorder" Padding="10,3" CornerRadius="4" HorizontalAlignment="Left"
+                    Background="#FF050A12" BorderBrush="#FF4FC3F7" BorderThickness="1" Margin="0,0,0,0">
+              <TextBlock Name="StatusElapsedChip" Text="ELAPSED --:--:--" FontSize="12" FontWeight="Bold"
+                         Foreground="#FF81D4FA"/>
+            </Border>
+          </StackPanel>
           <TextBlock Name="StatusHeadline" Text="..." FontSize="36" FontWeight="Bold"
                      Foreground="#FFB0C4DE" TextWrapping="Wrap"/>
           <TextBlock Name="StatusIdentity" Text="" FontSize="12" Foreground="#FF8FB4D9" Margin="0,6,0,8"
@@ -2249,8 +2613,14 @@ function Show-FbImWindow {
           <RowDefinition Height="Auto"/>
           <RowDefinition Height="Auto"/>
         </Grid.RowDefinitions>
-        <TextBlock Grid.Row="0" Text="Actions" FontSize="11" Foreground="#FF6B8CB0"
-                   FontWeight="SemiBold" Margin="0,0,0,6"/>
+        <StackPanel Grid.Row="0">
+          <TextBlock Text="Actions" FontSize="11" Foreground="#FF6B8CB0"
+                     FontWeight="SemiBold" Margin="0,0,0,6"/>
+          <TextBlock Name="DestageSkipWuHint"
+                     Text="This destage skipped Windows Update and auto-passed hardware probes. Start Hardware Checks runs the real Wi-Fi, sound, and camera probes. Pass hardware is marker-only and does not re-arm security."
+                     FontSize="11" Foreground="#FF22D3EE" TextWrapping="Wrap" Margin="0,0,0,8"
+                     Visibility="$skipWuHintVisibility"/>
+        </StackPanel>
         <UniformGrid Grid.Row="1" Name="ActionsGrid" Rows="2" Columns="2" Margin="0,0,0,0">
           <StackPanel Margin="0,0,6,6">
             <Button Name="BtnRestart" Content="Restart updates" Style="{StaticResource PrimaryBtn}"
@@ -2433,6 +2803,7 @@ function Show-FbImWindow {
     $statusHeadline = & $find 'StatusHeadline'
     $statusSealChip = & $find 'StatusSealChip'
     $statusSealChipBorder = & $find 'StatusSealChipBorder'
+    $statusElapsedChip = & $find 'StatusElapsedChip'
     $statusIdentity = & $find 'StatusIdentity'
     $statusIssues   = & $find 'StatusIssues'
     $btnRefresh     = & $find 'BtnRefresh'
@@ -2847,6 +3218,9 @@ function Show-FbImWindow {
                 $statusSealChipBorder.BorderBrush = $bc.ConvertFromString('#FFC62828')
             }
         }
+        if ($statusElapsedChip) {
+            try { $statusElapsedChip.Text = Get-FbImPipelineElapsedLabel } catch { $statusElapsedChip.Text = 'ELAPSED --:--:--' }
+        }
         $factBits = New-Object System.Collections.Generic.List[string]
         if ($subtitle) { [void]$factBits.Add([string]$subtitle) }
         try { if ($FbBuild.Dev) { [void]$factBits.Add('DEV') } } catch {}
@@ -2948,10 +3322,23 @@ function Show-FbImWindow {
         if ($btnStartHardwareGate) {
             $btnStartHardwareGate.Visibility = $(if ($showGateKick) { 'Visible' } else { 'Collapsed' })
             $btnStartHardwareGate.IsEnabled = [bool]$st.Admin -and $showGateKick -and (-not $st.Sealed -or [bool]$st.Audit)
+            $skipWuHint = $false
+            try { if ($FbBuild.DestageSkipWu) { $skipWuHint = $true } } catch {}
+            if ($skipWuHint) {
+                $btnStartHardwareGate.ToolTip = 'Runs the real Wi-Fi, sound, and camera probes. This destage skipped Windows Update and auto-passed probes. Pass hardware is marker-only and does not re-arm security.'
+            }
         }
     }
 
     $script:FbImApplyStatus = $applyStatus
+    $elapsedTimer = New-Object System.Windows.Threading.DispatcherTimer
+    $elapsedTimer.Interval = [TimeSpan]::FromSeconds(1)
+    $elapsedTimer.Add_Tick({
+        try {
+            if ($statusElapsedChip) { $statusElapsedChip.Text = Get-FbImPipelineElapsedLabel }
+        } catch {}
+    })
+    $elapsedTimer.Start()
     $statusTimer = New-Object System.Windows.Threading.DispatcherTimer
     $statusTimer.Interval = [TimeSpan]::FromMilliseconds(40)
     $script:FbImStatusTimer = $statusTimer

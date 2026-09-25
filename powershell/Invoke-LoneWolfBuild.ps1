@@ -96,8 +96,13 @@ param(
     [Parameter(Mandatory)] [string]   $WorkflowType,
     [Parameter(Mandatory)] [string]   $DiskNumbers,
     [string] $ShareRoot        = '\\WIN-HQ5JDEACV3S\Images\FB Image Creation',
-    [string] $ShareUser        = 'Reflect',
-    [string] $SharePassword    = 'mer*HWE0upt*rqe@dud',
+    # KEEP IN SYNC: LONEWOLF_SHARE_USER / LONEWOLF_SHARE_PASSWORD env-first in
+    # main.js, Get-StagingVersion.ps1, Stage-PreSplitImage.ps1, ProvisioningConstants.cs.
+    # GATE: destage HQ UNC still works with the well-known default if env is unset.
+    # CLEANUP: do not rotate the live share password from this repo.
+    # SEAL: not a FirstBase seal path — destage credential only.
+    [string] $ShareUser        = $(if (-not [string]::IsNullOrWhiteSpace($env:LONEWOLF_SHARE_USER)) { $env:LONEWOLF_SHARE_USER } else { 'Reflect' }),
+    [string] $SharePassword    = $(if (-not [string]::IsNullOrWhiteSpace($env:LONEWOLF_SHARE_PASSWORD)) { $env:LONEWOLF_SHARE_PASSWORD } else { 'mer*HWE0upt*rqe@dud' }),
     [string] $CacheRoot,
     [string] $DataVolumeLabel  = 'LoneWolf',
     [string] $AppResourcesPath = '',
@@ -155,7 +160,11 @@ param(
     # ISO from share first, else C:\Repos\Windows_Installation\UUP\25h2\ISO.
     # PreSplit read from C:\Repos\Windows_Installation\UUP\25h2\PreSplit (not share).
     # Packaged production/Dev must not pass this.
-    [switch] $DestageMedia
+    [switch] $DestageMedia,
+    # npm start:updatesfinished only (main.js passes -DestageSkipWu when !app.isPackaged
+    # AND --destage-updates-finished / LONEWOLF_DESTAGE_UPDATES_FINISHED). Packaged Destage
+    # must never pass this. Stamps destageSkipWu on slim LW_VERSION.json (destage only).
+    [switch] $DestageSkipWu
 )
 
 $ErrorActionPreference = 'Stop'
@@ -1006,6 +1015,7 @@ function Build-Cache {
                 if (-not (Test-Path -LiteralPath $wuDir)) { New-Item -ItemType Directory -Force -Path $wuDir | Out-Null }
                 $pv = if ($ScriptVersion) { [string]$ScriptVersion } else { [string]$StagingVersion }
                 $markerBody = "destage=1`r`nchannel=destage`r`npayloadVersion=$pv`r`nscriptVersion=$pv`r`nbuiltAt=$(Get-Date -Format 'o')`r`n"
+                if ($DestageSkipWu) { $markerBody += "destageSkipWu=1`r`n" }
                 [System.IO.File]::WriteAllText((Join-Path $wuDir '.dev-build'), $markerBody, [System.Text.UTF8Encoding]::new($false))
             } catch {}
         } else {
@@ -1228,6 +1238,7 @@ function Build-IsoCache {
                 if (-not (Test-Path -LiteralPath $wuDir)) { New-Item -ItemType Directory -Force -Path $wuDir | Out-Null }
                 $pv = if ($ScriptVersion) { [string]$ScriptVersion } else { [string]$StagingVersion }
                 $markerBody = "destage=1`r`nchannel=destage`r`npayloadVersion=$pv`r`nscriptVersion=$pv`r`nbuiltAt=$(Get-Date -Format 'o')`r`n"
+                if ($DestageSkipWu) { $markerBody += "destageSkipWu=1`r`n" }
                 [System.IO.File]::WriteAllText((Join-Path $wuDir '.dev-build'), $markerBody, [System.Text.UTF8Encoding]::new($false))
             } catch {}
         } else {
@@ -1609,7 +1620,9 @@ $workerDiskBlock = {
         [string] $WindowsEdition,
         # Job runspaces cannot see script-scope Copy-LwRepoEdgeInstaller / $PSScriptRoot.
         # Resolved on the main thread (repo tools\ for destage, app-adjacent tools\ packaged).
-        [string] $EdgeToolsDir
+        [string] $EdgeToolsDir,
+        # Destage skip-WU (npm start:updatesfinished). Only honored when $DevBuild is true.
+        [bool]   $DestageSkipWu
     )
 
     $ErrorActionPreference = 'Stop'
@@ -1917,6 +1930,33 @@ $workerDiskBlock = {
             JPhase 'partitioning'
 
             $disk = Get-Disk -Number $DiskNumber -ErrorAction Stop
+            # KEEP IN SYNC: Get-UsbDisks.ps1 Add-DiskToList already skips IsSystem.
+            # GATE: destage happy path is USB-enumerated disks (IsSystem/IsBoot false).
+            # CLEANUP: this refuse is in-function defense-in-depth so a mis-passed number
+            # cannot wipe the Windows disk even if USB listing is bypassed.
+            # SEAL: not a FirstBase seal path - USB imaging only.
+            $osDiskRefuse = $false
+            try {
+                if ($disk.PSObject.Properties['IsSystem'] -and $disk.IsSystem -eq $true) { $osDiskRefuse = $true }
+                if ($disk.PSObject.Properties['IsBoot'] -and $disk.IsBoot -eq $true) { $osDiskRefuse = $true }
+            } catch {}
+            try {
+                foreach ($p in @(Get-Partition -DiskNumber $DiskNumber -ErrorAction SilentlyContinue)) {
+                    if (-not $p) { continue }
+                    if ($p.PSObject.Properties['IsSystem'] -and $p.IsSystem) { $osDiskRefuse = $true }
+                    if ($p.PSObject.Properties['IsBoot'] -and $p.IsBoot) { $osDiskRefuse = $true }
+                }
+            } catch {}
+            try {
+                $sysLetter = ([string]$env:SystemDrive).TrimEnd(':', '\')
+                if ($sysLetter) {
+                    $sysPart = Get-Partition -DriveLetter $sysLetter -ErrorAction SilentlyContinue
+                    if ($sysPart -and ([int]$sysPart.DiskNumber -eq [int]$DiskNumber)) { $osDiskRefuse = $true }
+                }
+            } catch {}
+            if ($osDiskRefuse) {
+                throw ("Refusing Clear-Disk on disk {0} - it is a system/boot/Windows disk. Destage only wipes USB disks from Get-UsbDisks." -f $DiskNumber)
+            }
             $disk | Clear-Disk -RemoveData -Confirm:$false -ErrorAction Stop
             $disk | Set-Disk -PartitionStyle GPT -ErrorAction Stop
             $disk = Get-Disk -Number $DiskNumber -ErrorAction Stop
@@ -3036,6 +3076,7 @@ $workerDiskBlock = {
                 if ($DevBuild) {
                     $stamp.destage = $true
                     $stamp.channel = 'destage'
+                    if ($DestageSkipWu) { $stamp.destageSkipWu = $true }
                 }
                 $stamp.builtAt = (Get-Date -Format 'o')
                 if (Test-Path -LiteralPath $stampPath) {
@@ -3511,7 +3552,8 @@ try {
                 $ShareScriptVersion,
                 $imageBuildDate,
                 $winEdition,
-                $edgeToolsDir
+                $edgeToolsDir,
+                ([bool]($DevBuild -and $DestageSkipWu))
             )
 
         if ($Sequential) {

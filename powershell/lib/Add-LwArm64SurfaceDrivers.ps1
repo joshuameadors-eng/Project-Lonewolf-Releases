@@ -54,24 +54,117 @@ function Resolve-LwArm64SurfaceDriverDir {
     return [System.IO.Path]::GetFullPath($extract)
 }
 
+# Snapdragon Windows Updates and Snapdragon Quick Install only.
+# QUICK-INSTALL-AMD64 and AMD64 must not match.
+function Test-LwSnapdragonWorkflow {
+    param([string] $WorkflowType)
+    $a = ([string]$WorkflowType).ToUpperInvariant()
+    $a = [regex]::Replace($a, '^(QUICK-INSTALL-|WIN-INSTALL-|LONEWOLF-)', '')
+    return ($a -eq 'ARM64')
+}
+
+function Test-LwImageIndexIsArm64 {
+    param($Image)
+    $arch = ''
+    try { $arch = [string]$Image.Architecture } catch { }
+    return ($arch -match 'ARM64' -or $arch -eq '12')
+}
+
 # Recurse-inject the Surface set into an already-mounted image.
 # Includes qcpep. Does not change inbox USB service start types.
+function Invoke-LwDismHeartbeat {
+    param(
+        [Parameter(Mandatory)][string[]] $ArgumentList,
+        [scriptblock] $Progress,
+        [scriptblock] $Log,
+        [int] $Floor = 0,
+        [int] $Ceiling = 99
+    )
+    $g = [guid]::NewGuid().ToString('N')
+    $outFile = Join-Path $env:TEMP "LW-Dism-$g.out"
+    $errFile = Join-Path $env:TEMP "LW-Dism-$g.err"
+    $proc = Start-Process -FilePath dism.exe -ArgumentList $ArgumentList -NoNewWindow -PassThru -RedirectStandardOutput $outFile -RedirectStandardError $errFile
+    $null = $proc.Handle
+    $started = Get-Date
+    $lastEmit = -1
+    $lastLine = ''
+    try {
+        while (-not $proc.HasExited) {
+            Start-Sleep -Seconds 1
+            $pct = $null
+            $line = ''
+            if (Test-Path -LiteralPath $outFile) {
+                try {
+                    $text = [System.IO.File]::ReadAllText($outFile)
+                    $inst = [regex]::Matches($text, 'Installing\s+(\d+)\s+of\s+(\d+)')
+                    if ($inst.Count -gt 0) {
+                        $m = $inst[$inst.Count - 1]
+                        $n = [int]$m.Groups[1].Value
+                        $d = [math]::Max([int]$m.Groups[2].Value, 1)
+                        $pct = [int](100 * $n / $d)
+                        $line = "Injecting Snapdragon drivers $n of $d"
+                    } else {
+                        $pm = [regex]::Matches($text, '(?m)(\d{1,3}(?:\.\d+)?)\s*%')
+                        if ($pm.Count -gt 0) {
+                            $pct = [int][math]::Min(99, [double]$pm[$pm.Count - 1].Groups[1].Value)
+                        }
+                    }
+                } catch { }
+            }
+            if ($null -eq $pct) {
+                $elapsed = ((Get-Date) - $started).TotalSeconds
+                $pct = [int][math]::Min(90, 8 + (82 * (1 - [math]::Exp(-$elapsed / 120))))
+            }
+            $mapped = $Floor + [int](($Ceiling - $Floor) * ([math]::Min(100, $pct) / 100.0))
+            $mapped = [math]::Max($Floor, [math]::Min($Ceiling, $mapped))
+            if ($mapped -ne $lastEmit -and $Progress) {
+                & $Progress $mapped
+                $lastEmit = $mapped
+            }
+            if ($line -and $line -ne $lastLine -and $Log) {
+                & $Log $line
+                $lastLine = $line
+            }
+        }
+        $proc.WaitForExit()
+        $exit = $proc.ExitCode
+        $cap = ''
+        if (Test-Path -LiteralPath $outFile) { $cap += [System.IO.File]::ReadAllText($outFile) }
+        if (Test-Path -LiteralPath $errFile) { $cap += [System.IO.File]::ReadAllText($errFile) }
+        $successText = $cap -match 'The operation completed successfully'
+        if ($null -eq $exit) {
+            if (-not $successText) { throw "DISM failed (no exit code): $cap" }
+        } elseif ($exit -ne 0 -and $exit -ne 3010) {
+            throw "DISM failed (exit $exit): $cap"
+        }
+        if ($Progress) { & $Progress $Ceiling }
+    } finally {
+        Remove-Item -LiteralPath $outFile, $errFile -Force -ErrorAction SilentlyContinue
+    }
+}
+
 function Add-LwArm64WinPeUsbHost {
     param(
         [Parameter(Mandatory)][string] $MountDir,
-        [Parameter(Mandatory)][string] $DriverRoot
+        [Parameter(Mandatory)][string] $DriverRoot,
+        [scriptblock] $Progress,
+        [scriptblock] $Log
     )
     if ([string]::IsNullOrWhiteSpace($DriverRoot) -or -not (Test-Path -LiteralPath $DriverRoot -PathType Container)) {
         throw "FATAL: ARM64 Surface driver folder not found: '$DriverRoot'"
     }
-    $inf = @(Get-ChildItem -LiteralPath $DriverRoot -Recurse -Filter '*.inf' -File -ErrorAction SilentlyContinue | Select-Object -First 1)
+    $inf = @(Get-ChildItem -LiteralPath $DriverRoot -Recurse -Filter '*.inf' -File -ErrorAction SilentlyContinue)
     if ($inf.Count -eq 0) {
         throw "FATAL: ARM64 Surface driver folder has no .inf files: '$DriverRoot'"
     }
-    $out = & dism.exe /Image:"$MountDir" /Add-Driver /Driver:"$DriverRoot" /Recurse 2>&1
-    if ($LASTEXITCODE -ne 0) {
-        throw "FATAL: DISM /Add-Driver /Recurse failed (exit $LASTEXITCODE) on '$MountDir': $($out -join ' | ')"
-    }
+    if ($Log) { & $Log ("Injecting Snapdragon drivers ({0} packages) from $DriverRoot" -f $inf.Count) }
+    Invoke-LwDismHeartbeat -ArgumentList @(
+        '/Image:' + $MountDir,
+        '/Add-Driver',
+        '/Driver:' + $DriverRoot,
+        '/Recurse',
+        '/English'
+    ) -Progress $Progress -Log $Log -Floor 5 -Ceiling 99
 }
 
 function Test-LwArm64SurfaceDriversStamped {
@@ -106,33 +199,64 @@ function Add-LwArm64DriversToWritableWim {
     param(
         [Parameter(Mandatory)][string] $WimPath,
         [Parameter(Mandatory)][string] $DriverRoot,
-        [scriptblock] $Log
+        [scriptblock] $Log,
+        [scriptblock] $Progress
     )
     $write = {
         param([string] $Message)
         if ($Log) { & $Log $Message }
+    }
+    $tick = {
+        param([int] $Pct)
+        if ($Progress) { & $Progress $Pct }
     }
     try { Set-ItemProperty -LiteralPath $WimPath -Name IsReadOnly -Value $false -ErrorAction Stop } catch { }
     Import-Module Dism -ErrorAction SilentlyContinue
     $images = @(Get-WindowsImage -ImagePath $WimPath -ErrorAction Stop)
     if ($images.Count -eq 0) { throw "FATAL: no indexes in '$WimPath'" }
     foreach ($img in $images) {
+        if (-not (Test-LwImageIndexIsArm64 $img)) {
+            throw ("FATAL: refusing to inject Snapdragon drivers into '{0}' index {1} architecture {2}. Driver injection is Snapdragon only." -f $WimPath, $img.ImageIndex, $img.Architecture)
+        }
+    }
+    $n = [math]::Max($images.Count, 1)
+    $i = 0
+    foreach ($img in $images) {
         $idx = [int]$img.ImageIndex
+        $spanStart = [int](100 * $i / $n)
+        $spanEnd = [int](100 * ($i + 1) / $n)
         $mountDir = Join-Path $env:TEMP ('LWArmDrv_' + [guid]::NewGuid().ToString('N').Substring(0, 8))
         $mounted = $false
         try {
             New-Item -ItemType Directory -Force -Path $mountDir | Out-Null
-            & $write "ARM64 install image: mounting '$WimPath' index $idx"
-            $mountOut = & dism.exe /Mount-Image /ImageFile:"$WimPath" /Index:$idx /MountDir:"$mountDir" 2>&1
-            if ($LASTEXITCODE -ne 0) {
-                throw "FATAL: DISM /Mount-Image failed (exit $LASTEXITCODE) on '$WimPath' index ${idx}: $($mountOut -join ' | ')"
+            & $write "Snapdragon drivers: mounting '$WimPath' index $idx"
+            & $tick $spanStart
+            try {
+                Invoke-LwDismHeartbeat -ArgumentList @(
+                    '/Mount-Image',
+                    '/ImageFile:' + $WimPath,
+                    '/Index:' + $idx,
+                    '/MountDir:' + $mountDir
+                ) -Progress $tick -Log $write -Floor $spanStart -Ceiling ($spanStart + [int](($spanEnd - $spanStart) * 0.25))
+            } catch {
+                throw "FATAL: DISM /Mount-Image failed on '$WimPath' index ${idx}: $($_.Exception.Message)"
             }
             $mounted = $true
-            & $write "ARM64 install image: /Add-Driver /Recurse index $idx from $DriverRoot"
-            Add-LwArm64WinPeUsbHost -MountDir $mountDir -DriverRoot $DriverRoot
-            $unmountOut = & dism.exe /Unmount-Image /MountDir:"$mountDir" /Commit 2>&1
-            if ($LASTEXITCODE -ne 0) {
-                throw "FATAL: DISM /Unmount-Image /Commit failed (exit $LASTEXITCODE) on '$WimPath' index ${idx}: $($unmountOut -join ' | ')"
+            & $write "Snapdragon drivers: /Add-Driver /Recurse index $idx from $DriverRoot"
+            Add-LwArm64WinPeUsbHost -MountDir $mountDir -DriverRoot $DriverRoot -Log $write -Progress {
+                param($p)
+                $lo = $spanStart + [int](($spanEnd - $spanStart) * 0.25)
+                $hi = $spanStart + [int](($spanEnd - $spanStart) * 0.9)
+                & $tick ($lo + [int](($hi - $lo) * ($p / 100.0)))
+            }
+            try {
+                Invoke-LwDismHeartbeat -ArgumentList @(
+                    '/Unmount-Image',
+                    '/MountDir:' + $mountDir,
+                    '/Commit'
+                ) -Progress $tick -Log $write -Floor ($spanStart + [int](($spanEnd - $spanStart) * 0.9)) -Ceiling $spanEnd
+            } catch {
+                throw "FATAL: DISM /Unmount-Image /Commit failed on '$WimPath' index ${idx}: $($_.Exception.Message)"
             }
             $mounted = $false
             Start-Sleep -Seconds 2
@@ -142,6 +266,7 @@ function Add-LwArm64DriversToWritableWim {
             }
             Remove-Item -LiteralPath $mountDir -Recurse -Force -ErrorAction SilentlyContinue
         }
+        $i++
     }
 }
 
@@ -155,7 +280,8 @@ function New-LwArm64InjectedInstallSources {
         [switch] $SplitForFat32,
         [int] $FileSizeMb = 3800,
         [string] $SplitLibPath = '',
-        [scriptblock] $Log
+        [scriptblock] $Log,
+        [scriptblock] $Progress
     )
     $write = {
         param([string] $Message)
@@ -188,7 +314,7 @@ function New-LwArm64InjectedInstallSources {
         if (-not (Test-Path -LiteralPath $workWim)) {
             throw "FATAL: writable install image was not created at '$workWim'"
         }
-        Add-LwArm64DriversToWritableWim -WimPath $workWim -DriverRoot $DriverRoot -Log $Log
+        Add-LwArm64DriversToWritableWim -WimPath $workWim -DriverRoot $DriverRoot -Log $Log -Progress $Progress
         if ($SplitForFat32) {
             if (-not (Get-Command -Name Split-LWImageForFat32 -ErrorAction SilentlyContinue)) {
                 if ([string]::IsNullOrWhiteSpace($SplitLibPath) -or -not (Test-Path -LiteralPath $SplitLibPath)) {

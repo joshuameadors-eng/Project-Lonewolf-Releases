@@ -741,6 +741,26 @@ function Get-LWPreSplitSet {
                 EmitLog -Disk 0 -Msg "presplit: set '$setDir' rejected ($($chk.Reason))"
                 continue
             }
+            $wantArch = if (Get-Command -Name Get-LWBareArch -ErrorAction SilentlyContinue) { Get-LWBareArch $Arch } else { $Arch }
+            $chunkNames = @()
+            try {
+                if ($chk.Manifest.install -and $chk.Manifest.install.chunks) {
+                    $chunkNames = @($chk.Manifest.install.chunks | ForEach-Object { [string]$_.name })
+                }
+            } catch { }
+            $hasSwm = @($chunkNames | Where-Object { $_ -match '\.swm$' }).Count -gt 0
+            if (-not $hasSwm) {
+                EmitLog -Disk 0 -Msg "presplit: set '$setDir' is a single install image, not an SWM set - on-the-fly split will be used"
+                continue
+            }
+            $surfaceStamped = $false
+            try {
+                if ($chk.Manifest.PSObject.Properties['surfaceDrivers'] -and $chk.Manifest.surfaceDrivers) { $surfaceStamped = $true }
+            } catch { }
+            if ($surfaceStamped -and $wantArch -ne 'ARM64') {
+                EmitLog -Disk 0 -Msg "presplit: set '$setDir' includes Snapdragon drivers and is not used for $wantArch"
+                continue
+            }
             $m   = $chk.Manifest
             $manEd = $null
             try {
@@ -1567,7 +1587,15 @@ function Invoke-StartnetInjection {
 
             if (-not [string]::IsNullOrWhiteSpace($Arm64UsbDriverDir)) {
                 EmitLog -Disk 0 -Msg "startnet inject: adding Surface drivers to boot.wim index $wimIndex from $Arm64UsbDriverDir"
-                Add-LwArm64WinPeUsbHost -MountDir $mountDir -DriverRoot $Arm64UsbDriverDir
+                Add-LwArm64WinPeUsbHost -MountDir $mountDir -DriverRoot $Arm64UsbDriverDir -Log {
+                    param($m)
+                    EmitLog -Disk 0 -Msg $m
+                } -Progress {
+                    param($p)
+                    $lo = $_winjBase + 40
+                    $hi = [math]::Max($lo, $_winjCommitPct - 1)
+                    EmitProgress -Disk 0 -Phase 'winpe-inject' -Pct ($lo + [int](($hi - $lo) * ([math]::Min(100, $p) / 100.0)))
+                }
             }
 
             EmitLog -Disk 0 -Msg "startnet inject: committing boot.wim index $wimIndex ..."
@@ -1687,6 +1715,16 @@ $workerDiskBlock = {
     }
     if (-not [string]::IsNullOrWhiteSpace($UsbOverlayLibPath) -and (Test-Path -LiteralPath $UsbOverlayLibPath)) {
         . $UsbOverlayLibPath
+    }
+    # Snapdragon Windows Updates and Snapdragon Quick Install only.
+    # A driver path passed into an Intel/AMD job is ignored.
+    $snapdragonWorkflow = $false
+    if (Get-Command -Name Test-LwSnapdragonWorkflow -ErrorAction SilentlyContinue) {
+        $snapdragonWorkflow = [bool](Test-LwSnapdragonWorkflow -WorkflowType $WorkflowType)
+    }
+    if (-not $snapdragonWorkflow) {
+        $Arm64UsbDriverDir = ''
+        $Arm64InstallImageDir = ''
     }
 
     function Set-LwFat32BpbLabel {
@@ -2382,7 +2420,7 @@ $workerDiskBlock = {
                         # matching set - the authoritative reason is the disk 0 'presplit:' line. A
                         # NON-empty-but-unreadable dir means detection matched but this worker's
                         # runspace could not reach the share path (creds / SMB session).
-                        if ($WorkflowType -match 'ARM64') {
+                        if ($snapdragonWorkflow) {
                             throw "FATAL: ARM64 install image with Surface drivers was not staged (disk $DiskNumber)"
                         }
                         $psMiss = if ([string]::IsNullOrWhiteSpace($PreSplitSetDir)) {
@@ -2394,7 +2432,7 @@ $workerDiskBlock = {
                         JPhase 'wim-split'
                         Invoke-LWSplitForFat32 -SourceSourcesDir (Join-Path $IsoDrive 'sources') -DestSourcesDir $dataSources -Disk $DiskNumber
                     }
-                } elseif ($WorkflowType -match 'ARM64') {
+                } elseif ($snapdragonWorkflow) {
                     if ([string]::IsNullOrWhiteSpace($Arm64InstallImageDir) -or -not (Test-Path -LiteralPath $Arm64InstallImageDir)) {
                         throw "FATAL: ARM64 install image with Surface drivers was not staged (disk $DiskNumber)"
                     }
@@ -2455,7 +2493,7 @@ $workerDiskBlock = {
                         J @{ event='log'; disk=$DiskNumber; message="ARM64 install image: copying Surface-driver set from '$Arm64InstallImageDir'" }
                         & robocopy.exe $Arm64InstallImageDir $armDst 'install*.swm' 'install.wim' 'install.esd' /R:2 /W:5 /NP /NJH /NJS | Out-Null
                         if ($LASTEXITCODE -gt 7) { throw "ARM64 install image copy failed (exit $LASTEXITCODE)" }
-                    } elseif ($WorkflowType -match 'ARM64') {
+                    } elseif ($snapdragonWorkflow) {
                         throw "FATAL: ARM64 install image with Surface drivers was not staged (disk $DiskNumber)"
                     } else {
                         Invoke-LWSplitForFat32 -SourceSourcesDir (Join-Path $SharedWimMount 'sources') -DestSourcesDir (Join-Path $dataRoot 'sources') -Disk $DiskNumber -ProgressPhase 'dism'
@@ -2558,7 +2596,7 @@ $workerDiskBlock = {
                             J @{ event='log'; disk=$DiskNumber; message="ARM64 install image: copying Surface-driver set from '$Arm64InstallImageDir'" }
                             & robocopy.exe $Arm64InstallImageDir $armDst 'install*.swm' 'install.wim' 'install.esd' /R:2 /W:5 /NP /NJH /NJS | Out-Null
                             if ($LASTEXITCODE -gt 7) { throw "ARM64 install image copy failed (exit $LASTEXITCODE)" }
-                        } elseif ($WorkflowType -match 'ARM64') {
+                        } elseif ($snapdragonWorkflow) {
                             throw "FATAL: ARM64 install image with Surface drivers was not staged (disk $DiskNumber)"
                         } else {
                             # Split from the mounted WIM before the finally block unmounts it.
@@ -2850,12 +2888,20 @@ $workerDiskBlock = {
                             }
                             J @{ event='log'; disk=$DiskNumber; message="startnet-inject: PowerShell verified present in WinPE (index $peIdx, disk $DiskNumber)" }
 
-                            if ($WorkflowType -match 'ARM64') {
+                            if ($snapdragonWorkflow) {
                                 if ([string]::IsNullOrWhiteSpace($Arm64UsbDriverDir)) {
                                     throw "FATAL: ARM64 boot.wim index $peIdx has no Surface driver folder (disk $DiskNumber)"
                                 }
                                 J @{ event='log'; disk=$DiskNumber; message="startnet-inject: adding Surface drivers to boot.wim index $peIdx from $Arm64UsbDriverDir" }
-                                Add-LwArm64WinPeUsbHost -MountDir $peMountDir -DriverRoot $Arm64UsbDriverDir
+                                Add-LwArm64WinPeUsbHost -MountDir $peMountDir -DriverRoot $Arm64UsbDriverDir -Log {
+                                    param($m)
+                                    J @{ event='log'; disk=$DiskNumber; message=$m }
+                                } -Progress {
+                                    param($p)
+                                    $lo = $_peWinjBase + 40
+                                    $hi = [math]::Max($lo, $_peWinjCommitPct - 1)
+                                    JProgress 'winpe-inject' ($lo + [int](($hi - $lo) * ([math]::Min(100, $p) / 100.0)))
+                                }
                             }
 
                             J @{ event='log'; disk=$DiskNumber; message="startnet-inject: committing boot.wim index $peIdx (disk $DiskNumber) ..." }
@@ -3432,7 +3478,11 @@ try {
 
     $arm64UsbDriverDir = ''
     $arm64InstallImageDir = ''
-    if ($wfUpper -eq 'ARM64' -and -not $OverlayOnly) {
+    $snapdragonBuild = $false
+    if (Get-Command -Name Test-LwSnapdragonWorkflow -ErrorAction SilentlyContinue) {
+        $snapdragonBuild = [bool](Test-LwSnapdragonWorkflow -WorkflowType $WorkflowType)
+    }
+    if ($snapdragonBuild -and -not $OverlayOnly) {
         if (-not (Get-Command -Name Resolve-LwArm64SurfaceDriverDir -ErrorAction SilentlyContinue)) {
             throw 'FATAL: ARM64 Surface driver helper is not loaded (lib\Add-LwArm64SurfaceDrivers.ps1).'
         }
@@ -3442,6 +3492,8 @@ try {
             throw 'FATAL: ARM64 build requires the Snapdragon/Surface driver set. Expected C:\SurfaceDrivers\SurfaceUpdate, C:\Repos\Windows_Installation\UUP\25h2\WinPE-Drivers\SurfaceLaptop7\SurfaceUpdate, or drivers\SurfaceLaptop7_ARM_Win11_26100_26.053.36539.0.msi.'
         }
         EmitLog -Disk 0 -Msg "ARM64 Surface drivers: $arm64UsbDriverDir (injected into boot.wim and the install image)"
+    } elseif (-not $OverlayOnly) {
+        EmitLog -Disk 0 -Msg "Snapdragon driver inject skipped for $wfUpper (Intel/AMD and Quick Install Intel/AMD do not get Surface drivers)"
     }
 
     # Measure ESP size for dynamic partition sizing
@@ -3703,7 +3755,7 @@ try {
     }
 
     $edgeToolsDir = Join-Path ([IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..'))) 'tools'
-    if ($wfUpper -eq 'ARM64' -and -not $OverlayOnly -and -not $PreCacheOnly) {
+    if ($snapdragonBuild -and -not $OverlayOnly -and -not $PreCacheOnly) {
         $stampedSet = $false
         if (-not [string]::IsNullOrWhiteSpace($PreSplitSetDir) -and (Get-Command -Name Test-LwArm64SurfaceDriversStamped -ErrorAction SilentlyContinue)) {
             $stampedSet = Test-LwArm64SurfaceDriversStamped -SetDir $PreSplitSetDir
@@ -3729,8 +3781,11 @@ try {
                 throw 'FATAL: ARM64 build could not find install.wim, install.esd, or an install.swm set to inject Surface drivers into.'
             }
             $arm64InstallWorkDir = Join-Path $env:TEMP ('LW-Arm64Install-' + [guid]::NewGuid().ToString('N').Substring(0, 8))
-            EmitLog -Disk 0 -Msg "ARM64 install image: injecting Surface drivers before the image is staged ($arm64InstallWorkDir)"
-            New-LwArm64InjectedInstallSources -DriverRoot $arm64UsbDriverDir -DestDir $arm64InstallWorkDir -SourceWim $srcWim -SourceEsd $srcEsd -SourceSwmDir $srcSwm -SplitForFat32:($Layout -eq 'Single') -FileSizeMb 3800 -SplitLibPath $SplitLibPath -Log { param($m) EmitLog -Disk 0 -Msg $m }
+            EmitPhase -Disk 0 -Phase 'driver-inject'
+            EmitLog -Disk 0 -Msg "Injecting Snapdragon drivers into the install image ($arm64InstallWorkDir)"
+            EmitProgress -Disk 0 -Phase 'driver-inject' -Pct 1
+            New-LwArm64InjectedInstallSources -DriverRoot $arm64UsbDriverDir -DestDir $arm64InstallWorkDir -SourceWim $srcWim -SourceEsd $srcEsd -SourceSwmDir $srcSwm -SplitForFat32:($Layout -eq 'Single') -FileSizeMb 3800 -SplitLibPath $SplitLibPath -Log { param($m) EmitLog -Disk 0 -Msg $m } -Progress { param($p) EmitProgress -Disk 0 -Phase 'driver-inject' -Pct $p }
+            EmitProgress -Disk 0 -Phase 'driver-inject' -Pct 100
             $arm64InstallImageDir = $arm64InstallWorkDir
         }
     }

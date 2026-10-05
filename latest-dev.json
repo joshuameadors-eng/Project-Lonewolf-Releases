@@ -1,6 +1,6 @@
 {
-    "launcherVersion":  "6.2.0",
-    "payloadVersion":  "6.2.1",
+    "launcherVersion":  "6.2.1",
+    "payloadVersion":  "6.2.2",
     "channel":  "dev",
     "source":  "github-public-source",
     "latestReleaseUrl":  "https://github.com/joshuameadors-eng/Project-Lonewolf-Releases/releases/latest",
@@ -30,9 +30,17 @@
                  "payload":  "https://raw.githubusercontent.com/joshuameadors-eng/Project-Lonewolf-Releases/dev/FirstBase-payload.zip",
                  "manifest":  "https://raw.githubusercontent.com/joshuameadors-eng/Project-Lonewolf-Releases/dev/latest-dev.json"
              },
-    "portableSha256":  "7135bfa4e0c0ae95cd97e0dc58a20a604617951cd0fb769e62f00236038e4a6c",
-    "portableSize":  71547950,
+    "portableSha256":  "87b5af3cf7b95b44a760bc8bd12b019d15795f0f71c1e9e95f8a21d2654adb8a",
+    "portableSize":  71551834,
     "changelog":  [
+                      {
+                          "version":  "6.2.2",
+                          "date":  "2026-10-05",
+                          "changes":  [
+                                          "Snapdragon driver injection stays on Snapdragon and Snapdragon Quick Install, with a live progress bar while DISM is working.",
+                                          "Pre-split always writes an install.swm set. A single install.wim is no longer treated as a finished split."
+                                      ]
+                      },
                       {
                           "version":  "6.2.1",
                           "date":  "2026-10-05",

@@ -71,8 +71,12 @@ function Split-LWImageForFat32 {
 
     if (Test-Path -LiteralPath $srcWim) {
         $len = (Get-Item -LiteralPath $srcWim).Length
-        if ($len -gt $fat32Max) {
-            & $log ("wim-split: install.wim {0:N2} GB exceeds FAT32 4 GB file limit - splitting into install.swm (/FileSize:$FileSizeMb)" -f ($len / 1GB))
+        if ($true) {
+            if ($len -gt $fat32Max) {
+                & $log ("wim-split: install.wim {0:N2} GB exceeds FAT32 4 GB file limit - splitting into install.swm (/FileSize:$FileSizeMb)" -f ($len / 1GB))
+            } else {
+                & $log ("wim-split: install.wim {0:N2} GB is under 4 GB - still writing an install.swm set (/FileSize:$FileSizeMb), not a single install.wim" -f ($len / 1GB))
+            }
             Get-ChildItem -LiteralPath $DestSourcesDir -Filter 'install*.swm' -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue
             $swm = Join-Path $DestSourcesDir 'install.swm'
             # /CheckIntegrity (5.1.55): validates the source WIM's resource hashes while
@@ -106,10 +110,11 @@ function Split-LWImageForFat32 {
                     }
                     $proc.WaitForExit()
                     $exit = $proc.ExitCode
-                    if ($null -ne $exit -and $exit -ne 0) {
-                        $cap = ''
-                        if (Test-Path -LiteralPath $outFile) { $cap += (Get-Content -Raw -LiteralPath $outFile -ErrorAction SilentlyContinue) }
-                        if (Test-Path -LiteralPath $errFile) { $cap += (Get-Content -Raw -LiteralPath $errFile -ErrorAction SilentlyContinue) }
+                    $cap = ''
+                    if (Test-Path -LiteralPath $outFile) { $cap += (Get-Content -Raw -LiteralPath $outFile -ErrorAction SilentlyContinue) }
+                    if (Test-Path -LiteralPath $errFile) { $cap += (Get-Content -Raw -LiteralPath $errFile -ErrorAction SilentlyContinue) }
+                    $splitOk = ($exit -eq 0) -or (($null -eq $exit) -and ($cap -match 'The operation completed successfully'))
+                    if (-not $splitOk) {
                         throw "DISM /Split-Image (install.wim) failed (exit $exit): $cap"
                     }
                 } finally {
@@ -124,15 +129,21 @@ function Split-LWImageForFat32 {
             Remove-Item -LiteralPath (Join-Path $DestSourcesDir 'install.wim') -Force -ErrorAction SilentlyContinue
             if (-not (Test-Path -LiteralPath $swm)) { throw "wim-split: install.swm was not produced on the FAT32 volume" }
             $chunks = @(Get-ChildItem -LiteralPath $DestSourcesDir -Filter 'install*.swm' -ErrorAction SilentlyContinue)
+            $splitBytes = [long]$FileSizeMb * 1MB
+            if ($len -gt $splitBytes -and $chunks.Count -lt 2) {
+                throw ("wim-split: install.wim is {0:N2} GB, larger than /FileSize:{1} MB, but only {2} .swm file was produced" -f ($len / 1GB), $FileSizeMb, $chunks.Count)
+            }
             & $log ("wim-split: produced {0} .swm chunk(s); monolithic install.wim omitted from FAT32 volume" -f $chunks.Count)
-        } else {
-            Copy-Item -LiteralPath $srcWim -Destination (Join-Path $DestSourcesDir 'install.wim') -Force
-            & $log 'wim-split: install.wim <= 4 GB - copied as-is (no split needed)'
         }
     } elseif (Test-Path -LiteralPath $srcEsd) {
         $len = (Get-Item -LiteralPath $srcEsd).Length
-        if ($len -gt $fat32Max) {
-            & $log ("wim-split: install.esd {0:N2} GB exceeds FAT32 limit - exporting to WIM then splitting" -f ($len / 1GB))
+        if ($true) {
+            if ($len -gt $fat32Max) {
+                & $log ("wim-split: install.esd {0:N2} GB exceeds FAT32 limit - exporting to WIM then splitting" -f ($len / 1GB))
+            } else {
+                & $log ("wim-split: install.esd {0:N2} GB is under 4 GB - still writing an install.swm set (/FileSize:$FileSizeMb), not a single install.esd" -f ($len / 1GB))
+            }
+            $exportedLen = 0
             $work = Join-Path $env:TEMP ('LW-EsdSplit-' + [guid]::NewGuid().ToString('N').Substring(0, 8))
             New-Item -ItemType Directory -Force -Path $work | Out-Null
             try {
@@ -142,6 +153,7 @@ function Split-LWImageForFat32 {
                 # below verifies and propagates into the .swm chunks.
                 $o = & dism.exe /Export-Image /SourceImageFile:"$srcEsd" /SourceIndex:1 /DestinationImageFile:"$tmpWim" /Compress:recovery /CheckIntegrity 2>&1
                 if ($LASTEXITCODE -ne 0) { throw "DISM /Export-Image (esd->wim) failed (exit $LASTEXITCODE): $($o -join ' | ')" }
+                $exportedLen = (Get-Item -LiteralPath $tmpWim).Length
                 Get-ChildItem -LiteralPath $DestSourcesDir -Filter 'install*.swm' -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue
                 $swm = Join-Path $DestSourcesDir 'install.swm'
                 if ($Progress) {
@@ -167,10 +179,11 @@ function Split-LWImageForFat32 {
                         }
                         $proc.WaitForExit()
                         $exit = $proc.ExitCode
-                        if ($null -ne $exit -and $exit -ne 0) {
-                            $cap = ''
-                            if (Test-Path -LiteralPath $outFile) { $cap += (Get-Content -Raw -LiteralPath $outFile -ErrorAction SilentlyContinue) }
-                            if (Test-Path -LiteralPath $errFile) { $cap += (Get-Content -Raw -LiteralPath $errFile -ErrorAction SilentlyContinue) }
+                        $cap = ''
+                        if (Test-Path -LiteralPath $outFile) { $cap += (Get-Content -Raw -LiteralPath $outFile -ErrorAction SilentlyContinue) }
+                        if (Test-Path -LiteralPath $errFile) { $cap += (Get-Content -Raw -LiteralPath $errFile -ErrorAction SilentlyContinue) }
+                        $splitOk = ($exit -eq 0) -or (($null -eq $exit) -and ($cap -match 'The operation completed successfully'))
+                        if (-not $splitOk) {
                             throw "DISM /Split-Image (esd) failed (exit $exit): $cap"
                         }
                     } finally {
@@ -188,10 +201,12 @@ function Split-LWImageForFat32 {
             Remove-Item -LiteralPath (Join-Path $DestSourcesDir 'install.esd') -Force -ErrorAction SilentlyContinue
             if (-not (Test-Path -LiteralPath (Join-Path $DestSourcesDir 'install.swm'))) { throw "wim-split: install.swm was not produced from install.esd" }
             $chunks = @(Get-ChildItem -LiteralPath $DestSourcesDir -Filter 'install*.swm' -ErrorAction SilentlyContinue)
+            $splitBytes = [long]$FileSizeMb * 1MB
+            $over = ($len -gt $splitBytes) -or ($exportedLen -gt $splitBytes)
+            if ($over -and $chunks.Count -lt 2) {
+                throw ("wim-split: install.esd is {0:N2} GB, larger than /FileSize:{1} MB, but only {2} .swm file was produced" -f ($len / 1GB), $FileSizeMb, $chunks.Count)
+            }
             & $log ("wim-split: produced {0} .swm chunk(s) from install.esd; monolithic install.esd omitted from FAT32 volume" -f $chunks.Count)
-        } else {
-            Copy-Item -LiteralPath $srcEsd -Destination (Join-Path $DestSourcesDir 'install.esd') -Force
-            & $log 'wim-split: install.esd <= 4 GB - copied as-is (no split needed)'
         }
     } else {
         throw "Single layout: no install.wim or install.esd found under '$SourceSourcesDir' to place on the FAT32 volume"

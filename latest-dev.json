@@ -1,6 +1,6 @@
 {
     "launcherVersion":  "6.2.0",
-    "payloadVersion":  "6.2.0",
+    "payloadVersion":  "6.2.1",
     "channel":  "dev",
     "source":  "github-public-source",
     "latestReleaseUrl":  "https://github.com/joshuameadors-eng/Project-Lonewolf-Releases/releases/latest",
@@ -33,6 +33,13 @@
     "portableSha256":  "7135bfa4e0c0ae95cd97e0dc58a20a604617951cd0fb769e62f00236038e4a6c",
     "portableSize":  71547950,
     "changelog":  [
+                      {
+                          "version":  "6.2.1",
+                          "date":  "2026-10-05",
+                          "changes":  [
+                                          "USB builds load the overlay profile after WinPE injection, so Get-LwUsbOverlayProfile is available in the disk job."
+                                      ]
+                      },
                       {
                           "version":  "6.2.0",
                           "date":  "2026-10-05",

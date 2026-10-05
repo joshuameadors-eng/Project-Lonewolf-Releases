@@ -449,6 +449,8 @@ $SplitLibPath = Join-Path $PSScriptRoot 'lib\Split-LWImage.ps1'
 if (Test-Path -LiteralPath $SplitLibPath) { . $SplitLibPath }
 $Arm64DriverLibPath = Join-Path $PSScriptRoot 'lib\Add-LwArm64SurfaceDrivers.ps1'
 if (Test-Path -LiteralPath $Arm64DriverLibPath) { . $Arm64DriverLibPath }
+$UsbOverlayLibPath = Join-Path $PSScriptRoot 'lib\LwUsbOverlay.ps1'
+if (Test-Path -LiteralPath $UsbOverlayLibPath) { . $UsbOverlayLibPath }
 
 # WinPE OC source: Images\FB Image Creation\WinPE-OCs (arch via Resolve-WpeOcArchRoot).
 # LocalProjectRoot prefers Staging\WinPE-OCs when present. Explicit -WpeOcRoot wins.
@@ -1667,7 +1669,9 @@ $workerDiskBlock = {
         [string] $Arm64UsbDriverDir,
         [string] $Arm64DriverLibPath,
         # Folder of Surface-driver install.wim or install*.swm. Empty on AMD64.
-        [string] $Arm64InstallImageDir
+        [string] $Arm64InstallImageDir,
+        # lib\LwUsbOverlay.ps1. Start-Job cannot see parent functions.
+        [string] $UsbOverlayLibPath
     )
 
     $ErrorActionPreference = 'Stop'
@@ -1680,6 +1684,9 @@ $workerDiskBlock = {
     }
     if (-not [string]::IsNullOrWhiteSpace($Arm64DriverLibPath) -and (Test-Path -LiteralPath $Arm64DriverLibPath)) {
         . $Arm64DriverLibPath
+    }
+    if (-not [string]::IsNullOrWhiteSpace($UsbOverlayLibPath) -and (Test-Path -LiteralPath $UsbOverlayLibPath)) {
+        . $UsbOverlayLibPath
     }
 
     function Set-LwFat32BpbLabel {
@@ -3765,7 +3772,8 @@ try {
                 ([bool]($DevBuild -and $DestageSkipWu)),
                 $arm64UsbDriverDir,
                 $Arm64DriverLibPath,
-                $arm64InstallImageDir
+                $arm64InstallImageDir,
+                $UsbOverlayLibPath
             )
 
         if ($Sequential) {

@@ -1,7 +1,7 @@
 {
     "_comment":  "Product/payload version (version and payloadVersion) is independent of launcherVersion. npm start destage staging product version (chips, image dates, changelog, arch enablement) always comes from this file. Packaged Dev and production changelog/update feeds use public GitHub latest.json (main) or latest-dev.json (packaged Dev). The ISO share and Drive VERSION.json must not host launcher exe, payload zip, or live version overlay.",
-    "version":  "6.2.0",
-    "payloadVersion":  "6.2.0",
+    "version":  "6.2.1",
+    "payloadVersion":  "6.2.1",
     "launcherVersion":  "6.2.0",
     "launcherExeName":  "LoneWolf-Launcher.exe",
     "dev":  {
@@ -25,6 +25,13 @@
                                     }
                       },
     "changelog":  [
+                      {
+                          "version":  "6.2.1",
+                          "date":  "2026-10-05",
+                          "changes":  [
+                                          "USB builds load the overlay profile after WinPE injection, so Get-LwUsbOverlayProfile is available in the disk job."
+                                      ]
+                      },
                       {
                           "version":  "6.2.0",
                           "date":  "2026-10-05",

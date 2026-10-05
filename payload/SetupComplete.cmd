@@ -354,9 +354,10 @@ if "%FB_SELFTEST_MODE%"=="1" (
 )
 call :LOG "============================================================"
 
-:: 6.1.25: auditSystem only. Do not arm tasks and do not delete Reseal during
+:: 6.1.75: auditUser only. Do not arm tasks and do not delete Reseal during
 :: specialize — oobeSystem still has to read Mode=Audit and reboot into Audit.
-:: Stripping here runs before audit.exe /user so Bug B1 cannot open sysprep.
+:: auditSystem does not run RunSynchronous. auditUser runs this strip, then
+:: audit.exe launches sysprep, so the Reseal node is already gone.
 if /I "%~1"=="STRIP_RESEAL_ONLY" goto :STRIP_RESEAL_ONLY
 
 :: ?? 2279-fence1-oobe-fix: arm-suppress pre-cleanup guard ??????????????????

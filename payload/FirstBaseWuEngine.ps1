@@ -1320,7 +1320,6 @@ function Invoke-FbWuDownloadBucketWithTimeout {
     )
     $logTitle = $FirstTitle
     if ([string]::IsNullOrWhiteSpace($logTitle)) { $logTitle = 'bucket' }
-    $timeoutMs = [Math]::Max(1000, [int]($TimeoutSec * 1000))
     $rs = $null
     $ps = $null
     try {
@@ -1354,10 +1353,32 @@ function Invoke-FbWuDownloadBucketWithTimeout {
             return @{ Rc = [int]$dr.ResultCode; Hr = 0; Err = '' }
         }).AddArgument(@($UpdateIds))
         $async = $ps.BeginInvoke()
-        $finished = $async.AsyncWaitHandle.WaitOne($timeoutMs)
+        # WaitOne on this pipeline handle does not return at the requested
+        # millisecond cap while the STA runspace is inside COM Download().
+        # Dump 4FVGN94-0829 logged a 720s cap and then waited 38 minutes.
+        # Poll IsCompleted against a wall-clock deadline instead.
+        $deadlineUtc = [datetime]::UtcNow.AddSeconds([Math]::Max(1, $TimeoutSec))
+        $finished = $false
+        while ([datetime]::UtcNow -lt $deadlineUtc) {
+            try {
+                if ($async.IsCompleted) { $finished = $true; break }
+            } catch {}
+            Start-Sleep -Milliseconds 500
+        }
+        if (-not $finished) {
+            try { if ($async.IsCompleted) { $finished = $true } } catch {}
+        }
         if (-not $finished) {
             try { $ps.Stop() } catch {}
             try { Write-FbLog ("Per-bucket Download TIMED OUT after {0}s: first='{1}' count={2}. Soft-skip undownloaded this boot; continue to Install for anything already staged. TrustedInstaller not stopped." -f $TimeoutSec, $logTitle, @($UpdateIds).Count) 'WARN' } catch {}
+            # Dispose can wait for Download() to return. Leave the runspace
+            # referenced and do not Dispose it on the caller thread.
+            if ($null -eq $script:FbWuAbandonedDownloads) {
+                $script:FbWuAbandonedDownloads = New-Object System.Collections.Generic.List[object]
+            }
+            try { [void]$script:FbWuAbandonedDownloads.Add(@{ Ps = $ps; Rs = $rs }) } catch {}
+            $ps = $null
+            $rs = $null
             return [pscustomobject]@{ TimedOut = $true; ResultCode = 5; HResult = [int]0x80070102 }
         }
         $out = $ps.EndInvoke($async)
@@ -1874,8 +1895,8 @@ function Invoke-FbWuApply {
         }
 
         # IUpdateDownloader.Download() is SYNCHRONOUS and has no native
-        # timeout. 5.4.21 wraps it with WaitOne (default 720s) so a
-        # wedged BITS slot cannot pin the splash forever. On timeout we
+        # timeout. The wrapper polls a wall-clock deadline (default 720s)
+        # so a wedged BITS slot cannot pin the pass. On timeout we
         # proceed to Install() for packages already staged.
         $dlIds = @($targetSnap | ForEach-Object { [string]$_.UpdateId })
         $timedDl = Invoke-FbWuDownloadBucketWithTimeout -UpdateIds $dlIds -FirstTitle $dlPollerTitle -TimeoutSec $dlTimeoutSec

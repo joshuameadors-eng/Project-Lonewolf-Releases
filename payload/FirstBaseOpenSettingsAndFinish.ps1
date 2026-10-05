@@ -713,14 +713,14 @@ function Invoke-FbYoutubePassAndWait {
 
     $url = $YouTubeUrl
     if ([string]::IsNullOrWhiteSpace($url)) { $url = $script:FbHardwareGateYoutubeUrl }
-    # The watch page is the YouTube website. The embed player is the video.
-    $videoUrl = $url
-    if ($url -match '[?&]v=([A-Za-z0-9_-]{6,})') {
-        $videoUrl = ('https://www.youtube.com/embed/{0}?autoplay=1&rel=0' -f $Matches[1])
+    # A youtube.com/embed URL opened with --app is a bare player. YouTube
+    # rejects that window (playback error). Open the watch page in Edge.
+    if ($url -match 'youtube\.com/embed/([A-Za-z0-9_-]{6,})') {
+        $url = ('https://www.youtube.com/watch?v={0}&autoplay=1' -f $Matches[1])
     } elseif ($url -match 'youtu\.be/([A-Za-z0-9_-]{6,})') {
-        $videoUrl = ('https://www.youtube.com/embed/{0}?autoplay=1&rel=0' -f $Matches[1])
-    } elseif ($url -notmatch 'youtube\.com/embed/') {
-        $videoUrl = $url
+        $url = ('https://www.youtube.com/watch?v={0}&autoplay=1' -f $Matches[1])
+    } elseif ($url -match '[?&]v=' -and $url -notmatch 'autoplay=') {
+        $url = ($url + '&autoplay=1')
     }
     $browser = Get-FbHardwareGateBrowser
     $profileDir = $script:FbHardwareGateBrowserProfile
@@ -742,7 +742,7 @@ function Invoke-FbYoutubePassAndWait {
 
         $launched = $false
         if ($browser) {
-            Write-FbManualSettingsFinishLog ("hardware-gate PASS: launching {0} video fullscreen {1} url={2} profile={3}" -f $browser.Name, $browser.PrivateArg, $videoUrl, $profileDir) 'INFO'
+            Write-FbManualSettingsFinishLog ("hardware-gate PASS: launching {0} fullscreen {1} url={2} profile={3}" -f $browser.Name, $browser.PrivateArg, $url, $profileDir) 'INFO'
             try {
                 $argList = @(
                     $browser.PrivateArg
@@ -751,7 +751,8 @@ function Invoke-FbYoutubePassAndWait {
                     '--no-default-browser-check'
                     '--autoplay-policy=no-user-gesture-required'
                     '--start-fullscreen'
-                    ('--app={0}' -f $videoUrl)
+                    '--new-window'
+                    $url
                 )
                 Start-Process -FilePath $browser.Path -ArgumentList $argList -ErrorAction Stop | Out-Null
                 $launched = $true
@@ -762,13 +763,13 @@ function Invoke-FbYoutubePassAndWait {
         if (-not $launched) {
             Write-FbManualSettingsFinishLog 'hardware-gate PASS: classic Edge/Chrome exe missing or launch failed; trying microsoft-edge protocol.' 'WARN'
             try {
-                Start-Process -FilePath ('microsoft-edge:{0}' -f $videoUrl) -ErrorAction Stop | Out-Null
+                Start-Process -FilePath ('microsoft-edge:{0}' -f $url) -ErrorAction Stop | Out-Null
                 $launched = $true
                 $useAnyInstance = $true
             } catch {
                 try {
                     $cmdExe = Join-Path $env:SystemRoot 'System32\cmd.exe'
-                    Start-Process -FilePath $cmdExe -ArgumentList @('/c', 'start', '', ('microsoft-edge:{0}' -f $videoUrl)) -WindowStyle Hidden -ErrorAction Stop | Out-Null
+                    Start-Process -FilePath $cmdExe -ArgumentList @('/c', 'start', '', ('microsoft-edge:{0}' -f $url)) -WindowStyle Hidden -ErrorAction Stop | Out-Null
                     $launched = $true
                     $useAnyInstance = $true
                 } catch {

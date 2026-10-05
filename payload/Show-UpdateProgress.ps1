@@ -3092,14 +3092,28 @@ function Start-FbSplashNoticeMotion {
 }
 
 function Start-FbSplashCardBar {
-    param($BarFill)
-    if (-not $BarFill) { return }
-    $slide = New-Object System.Windows.Media.Animation.DoubleAnimation
-    $slide.From = -0.45
-    $slide.To = 1.05
-    $slide.Duration = [TimeSpan]::FromSeconds(1.15)
-    $slide.RepeatBehavior = [System.Windows.Media.Animation.RepeatBehavior]::Forever
-    $BarFill.BeginAnimation([System.Windows.Media.TranslateTransform]::XProperty, $slide)
+    param(
+        $Shift,
+        [double]$Travel,
+        [double]$Segment
+    )
+    if (-not $Shift) { return }
+    if ($Travel -lt 24) { $Travel = 80 }
+    if ($Segment -lt 12) { $Segment = $Travel * 0.28 }
+    # Discrete hops, held in place. No interpolation, so the block jumps
+    # the way an older marquee bar does, and the card only repaints on each hop.
+    $steps = 6
+    $span = $Travel + $Segment
+    $hop = New-Object System.Windows.Media.Animation.DoubleAnimationUsingKeyFrames
+    $hop.Duration = [TimeSpan]::FromSeconds(3.6)
+    $hop.RepeatBehavior = [System.Windows.Media.Animation.RepeatBehavior]::Forever
+    for ($i = 0; $i -lt $steps; $i++) {
+        $frame = New-Object System.Windows.Media.Animation.DiscreteDoubleKeyFrame
+        $frame.Value = (-1 * $Segment) + (($span / ($steps - 1)) * $i)
+        $frame.KeyTime = [System.Windows.Media.Animation.KeyTime]::FromPercent($i / $steps)
+        [void]$hop.KeyFrames.Add($frame)
+    }
+    $Shift.BeginAnimation([System.Windows.Media.TranslateTransform]::XProperty, $hop)
 }
 
 function Start-FbSplashSettleCountdown {
@@ -3834,14 +3848,10 @@ function Convert-FbSplashMediaColor {
 
 function Get-FbSplashUpdateCardMetrics {
     param([int]$Count)
-    # Four columns must fit inside the updates row. A card that is even a few
-    # pixels too wide wraps, which leaves an empty column on the right.
-    $inner = 1052.0
-    try {
-        if ($updatesList -and $updatesList.ActualWidth -gt 400) {
-            $inner = [math]::Floor([double]$updatesList.ActualWidth) - 4
-        }
-    } catch {}
+    # Design canvas panel is 1060px. Do not use ActualWidth: on the device the
+    # fullscreen window reports a wider viewport, the fourth card wraps, and a
+    # blank column is left on the right. Preview happened to measure 1060.
+    $inner = 1060.0
     if ($Count -lt 1) { $Count = 1 }
     $cols = 4
     if ($Count -lt 4) { $cols = [math]::Max(1, $Count) }
@@ -3860,7 +3870,7 @@ function Get-FbSplashUpdateCardMetrics {
     $font = 12
     $statusFont = 11
     if ($cardH -lt 74) { $font = 11; $statusFont = 10 }
-    return @{ W = [int]$cardW; H = [int]$cardH; Slot = [int]$slot; Font = $font; StatusFont = $statusFont; Cols = $cols; Rows = $rows; Bucket = $rows }
+    return @{ W = [int]$cardW; H = [int]$cardH; Slot = [int]$slot; Inner = [int]$inner; Font = $font; StatusFont = $statusFont; Cols = $cols; Rows = $rows; Bucket = $rows }
 }
 
 function Update-FbSplashUpdateCards {
@@ -3879,6 +3889,7 @@ function Update-FbSplashUpdateCards {
     }
     $metrics = Get-FbSplashUpdateCardMetrics -Count $list.Count
     try {
+        $updatesWrap.Width = [double]$metrics.Inner
         $updatesWrap.ItemWidth = [double]$metrics.Slot
         $updatesWrap.ItemHeight = [double]($metrics.H + 12)
     } catch {}
@@ -3906,11 +3917,13 @@ function Update-FbSplashUpdateCards {
         $fillBrush = New-Object System.Windows.Media.SolidColorBrush $fill
         $edgeBrush = New-Object System.Windows.Media.SolidColorBrush $color
         $statusBrush = New-Object System.Windows.Media.SolidColorBrush $color
+        try { $fillBrush.Freeze(); $edgeBrush.Freeze(); $statusBrush.Freeze() } catch {}
         $glow = New-Object System.Windows.Media.Effects.DropShadowEffect
         $glow.Color = $color
         $glow.BlurRadius = 26
         $glow.ShadowDepth = 0
         $glow.Opacity = 0.95
+        $glow.RenderingBias = [System.Windows.Media.Effects.RenderingBias]::Performance
         $card = New-Object System.Windows.Controls.Border
         $card.Width = $metrics.W
         $card.Height = $metrics.H
@@ -3951,27 +3964,24 @@ function Update-FbSplashUpdateCards {
             $barTrack.Height = 5
             $barTrack.Margin = New-Object System.Windows.Thickness 0,8,0,0
             $barTrack.CornerRadius = New-Object System.Windows.CornerRadius 2
-            $barTrack.Background = New-Object System.Windows.Media.SolidColorBrush ([System.Windows.Media.Color]::FromArgb(70, $color.R, $color.G, $color.B))
+            $trackBrush = New-Object System.Windows.Media.SolidColorBrush ([System.Windows.Media.Color]::FromArgb(70, $color.R, $color.G, $color.B))
+            try { $trackBrush.Freeze() } catch {}
+            $barTrack.Background = $trackBrush
             $barTrack.ClipToBounds = $true
+            $barTrack.UseLayoutRounding = $true
             $barFill = New-Object System.Windows.Controls.Border
             $inner = [math]::Max(48, ($metrics.W - 28))
-            $barFill.Width = [math]::Max(28, [int]($inner * 0.38))
+            $segment = [math]::Max(22, [int]($inner * 0.28))
+            $barFill.Width = $segment
             $barFill.Height = 5
             $barFill.HorizontalAlignment = [System.Windows.HorizontalAlignment]::Left
             $barFill.Background = $edgeBrush
             $barFill.CornerRadius = New-Object System.Windows.CornerRadius 2
+            $barFill.UseLayoutRounding = $true
             $barShift = New-Object System.Windows.Media.TranslateTransform
             $barFill.RenderTransform = $barShift
-            $ratio = -1.0
-            if ($statusLabel -match '(?i)(\d+(?:\.\d+)?)\s*MB\s*/\s*(\d+(?:\.\d+)?)\s*MB') {
-                $den = [double]$Matches[2]
-                if ($den -gt 0) { $ratio = [double]$Matches[1] / $den }
-            }
-            if ($ratio -ge 0) {
-                $barFill.Width = [math]::Max(8, [int]($inner * [math]::Min(1, $ratio)))
-            } else {
-                Start-FbSplashCardBar -BarFill $barShift
-            }
+            # Windows Update does not report download progress. The bar loops.
+            Start-FbSplashCardBar -Shift $barShift -Travel $inner -Segment $segment
             $barTrack.Child = $barFill
             [void]$stack.Children.Add($barTrack)
         }

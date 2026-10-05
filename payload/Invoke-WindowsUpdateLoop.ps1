@@ -1817,12 +1817,12 @@ function Clear-FbStaleUpdateRunningMarkers {
         }
     } catch {}
     try {
-        Set-UiPhase -Phase 'HardwareGate' -Message 'Updates complete; starting hardware check.'
+        Set-UiPhase -Phase 'Verifying' -Message 'Checking for remaining updates.'
     } catch {
         try {
             $payload = @{
-                phase     = 'HardwareGate'
-                message   = 'Updates complete; starting hardware check.'
+                phase     = 'Verifying'
+                message   = 'Checking for remaining updates.'
                 updatedAt = (Get-Date).ToString('o')
                 updates   = @()
             }
@@ -2889,6 +2889,10 @@ try {
     $buildMarkerLines += '6.1.31: Dumps 4FVGN94-0639 and 4FVGN94-0657. CBS settle rewrote wu-state StartTime, so total elapsed reset at the hardware check. Preserve the pipeline start. RunOnce launched Show-UpdateProgress directly beside the single-instance splash. Repeat-log init no longer throws on an unset sightings flag. A new driver UpdateId is still installed; the same UpdateId stays on the success-ledger skip. Loop 1.0.47->1.0.48. Show-UpdateProgress 3.0.24->3.0.25. OpenSettingsAndFinish 1.1.11->1.1.12. SetupComplete 1.0.13->1.0.14.'
     $buildMarkerLines += '6.1.32: Dump 4FVGN94-0657. The same exact driver title was installed three times under three UpdateIds. Keep the first id of an exact title in a bucket. A later pass does not download a new id when that exact title already succeeded. A different version still installs. The same UpdateId stays on the success-ledger skip (Still offered). Loop 1.0.48->1.0.49.'
     $buildMarkerLines += '6.1.33: Audit autologon account is Project Lonewolf. A new boot clears splash update rows and does not reload them. Success ledger and exact-title skip stay. Update rows are status cards. Loop 1.0.49->1.0.50. Show-UpdateProgress 3.0.25->3.0.26. SetupComplete 1.0.14->1.0.15.'
+    $buildMarkerLines += '6.1.38: Dump 4FVGN94-1406. Thirteen updates were still offered when the updates-complete path ran. Exact-title skip had written those new ids into the success ledger without Install(), then STAGE 1 GivenUp them and residual went to 0. Dedupe a title only inside the current install batch. A later scan that still offers it is downloaded. Title-skip ids are removed from the success ledger and GivenUp set. Loop 1.0.50->1.0.51.'
+    $buildMarkerLines += '6.1.39: Dump 4FVGN94-0829. Download timeout logged 720s but WaitOne returned after 38 minutes. The cap is now a wall-clock poll, and a timed-out Download() is not disposed on the caller thread. A failed shutdown restarted Explorer and killed the splash with the loop left Queued. SplashWatcher stays up and relaunches the interactive splash until the pipeline is sealed. Loop 1.0.51->1.0.52. WuEngine 1.0.8->1.0.9. SplashWatcher 1.0.1->1.0.2.'
+    $buildMarkerLines += '6.1.40: Dump 4FVGN94-1041. The splash said the hardware check was starting, then the loop scanned for updates and restarted because Windows Update still wanted a reboot. FirstBaseHardwareCheck never ran. fb-im Start Hardware Checks queued that same loop and the task stayed Queued. Probes run before that restart. The fb-im button skips the scan and starts the loop directly when the scheduled task does not spawn it. Loop 1.0.52->1.0.53.'
+    $buildMarkerLines += '6.1.49: Dump 4FVGN94-1407. Hardware pass opened a bare YouTube embed player that errors. Open the watch page in Edge instead. After the window closed, a Windows Update reboot flag with no CBS key restarted into Audit. That case continues to sysprep /oobe. Scrub renames Project Lonewolf back to Administrator before disabling it. Loop 1.0.53->1.0.54. OpenSettingsAndFinish 1.1.12->1.1.13. OobeOperatorFinalize 1.0.11->1.0.12.'
     [System.IO.File]::WriteAllLines($buildMarkerPath, $buildMarkerLines, [System.Text.Encoding]::UTF8)
     Write-FbLog ("Build marker written: {0} (LoopVersion={1})" -f $buildMarkerPath, $loopVer) 'INFO'
 } catch {
@@ -10897,10 +10901,23 @@ function Invoke-FbPreSysprepScrub {
         }
     }
 
-    # Re-disable the temporary audit admin. After rename it is Project Lonewolf
-    # and still the built-in RID-500 account. Also disable Administrator so a
-    # rename that did not happen cannot leave the account enabled.
+    # Re-disable the temporary audit admin. Rename Project Lonewolf back to
+    # Administrator first (it is the built-in RID-500 account), then disable it.
     # OOBE-created user accounts are separate and unaffected.
+    try {
+        $fbWolf = $null
+        $fbAdmin = $null
+        try { $fbWolf = Get-LocalUser -Name 'Project Lonewolf' -ErrorAction SilentlyContinue } catch {}
+        try { $fbAdmin = Get-LocalUser -Name 'Administrator' -ErrorAction SilentlyContinue } catch {}
+        if ($fbWolf -and -not $fbAdmin) {
+            Rename-LocalUser -Name 'Project Lonewolf' -NewName 'Administrator' -ErrorAction Stop
+            & $writeScrubLog 'INFO' 'STEP 3b: renamed Project Lonewolf back to Administrator.'
+        } elseif ($fbWolf -and $fbAdmin) {
+            & $writeScrubLog 'WARN' 'STEP 3b: both Project Lonewolf and Administrator exist; left the names unchanged.'
+        }
+    } catch {
+        & $writeScrubLog 'WARN' ("STEP 3b: rename Project Lonewolf to Administrator threw: {0}" -f $_.Exception.Message)
+    }
     $disableNames = New-Object System.Collections.Generic.List[string]
     try {
         $rid500 = Get-CimInstance -ClassName Win32_UserAccount -Filter "LocalAccount=True" -ErrorAction Stop |
@@ -12965,6 +12982,10 @@ function Invoke-FbSoftGivenUpEvaluate {
             try { $scanUid = [string]$scanRow.UpdateId } catch {}
             if ([string]::IsNullOrWhiteSpace($scanUid)) { continue }
             if (-not $script:FbSuccessLedgerSet.Contains($scanUid)) { continue }
+            # A title-skip id was never Install()'d. Do not count it as ResultCode=2.
+            try {
+                if ($script:FbExactTitleSkipIds -and $script:FbExactTitleSkipIds.Contains($scanUid)) { continue }
+            } catch {}
             if ($GivenUpSet.Contains($scanUid)) { continue }
             $priorCount = 0
             if ($script:FbSoftGivenUpCountersLoop.ContainsKey($scanUid)) {
@@ -14412,6 +14433,29 @@ function Invoke-FbHardwareGateOperatorStep {
     return $false
 }
 
+function Invoke-FbStopForHardwareGate {
+    # $true: probes are still open. Caller must not scan, restart, or seal.
+    # $false: hardware is recorded. Servicing may continue.
+    if (Test-FbHardwareGateComplete) { return $false }
+    Write-FbLog 'Hardware gate: running Wi-Fi, sound, and camera probes before any servicing restart. A pending Windows Update reboot does not skip the check.' 'WARN'
+    try { Set-UiPhase -Phase 'HardwareChecks' -Message 'Starting hardware check.' } catch {}
+    $script:FbHardwareGateFailed = $false
+    $script:FbHardwareGateAwaitingOperator = $false
+    $confirmed = $false
+    try {
+        $confirmed = [bool](Invoke-FbHardwareGateOperatorStep)
+    } catch {
+        Write-FbLog ("Hardware gate: probe step threw: {0}" -f $_.Exception.Message) 'ERROR'
+        $script:FbHardwareGateFailed = $true
+        $script:FbHardwareGateAwaitingOperator = $true
+    }
+    $awaiting = $false
+    try { $awaiting = [bool]$script:FbHardwareGateAwaitingOperator } catch { $awaiting = $false }
+    if ($awaiting) { return $true }
+    if (-not $confirmed -and -not $script:FbHardwareGateFailed) { return $true }
+    return $false
+}
+
 function Invoke-FbOobeHandoff {
     <#
     .SYNOPSIS
@@ -14585,6 +14629,14 @@ function Invoke-FbOobeHandoff {
     }
     # 6.1.20: "updates complete" is allowed only after this gate verifies an
     # empty offer, or after an intentional skip (destageSkipWu / escape / debug).
+    if (-not $skipConvergenceGate) {
+        $fbForceHwNow = $false
+        try { $fbForceHwNow = [bool](Test-FbHardwareForceProbes) } catch { $fbForceHwNow = $false }
+        if ($fbForceHwNow -and -not (Test-FbHardwareGateComplete)) {
+            $skipConvergenceGate = $true
+            Write-FbLog 'OOBE handoff (STAGE 1 gate): fb-im Start Hardware Checks. Skipping the update scan and running probes before any restart.' 'WARN'
+        }
+    }
     $script:FbStage1VerifiedEmpty = [bool]$skipConvergenceGate
 
     if (-not $skipConvergenceGate) {
@@ -15266,16 +15318,6 @@ function Invoke-FbOobeHandoff {
                                     $gaveTitle = ''
                                     try { $gaveTitle = [string]$gaveRow.Title } catch {}
                                     if ([string]::IsNullOrWhiteSpace($gaveTitle)) { $gaveTitle = $gaveId }
-                                    $exactTitleDuplicate = $false
-                                    try {
-                                        if ($script:FbExactTitleSkipIds -and $script:FbExactTitleSkipIds.Contains($gaveId)) { $exactTitleDuplicate = $true }
-                                    } catch {}
-                                    if ($exactTitleDuplicate) {
-                                        try { [void]$givenUpIds.Add($gaveId) } catch {}
-                                        try { [void]$inlineRetryGivenUpSet.Add($gaveId) } catch {}
-                                        Write-FbLog ("exact title already succeeded, new id not downloaded. title='{0}' id={1}" -f $gaveTitle, $gaveId) 'WARN'
-                                        continue
-                                    }
                                     $wasAttempted = $false
                                     try { $wasAttempted = [bool](Test-FbResidualInstallAttempted -UpdateId $gaveId) } catch { $wasAttempted = $false }
                                     if (-not $wasAttempted) {
@@ -15471,6 +15513,11 @@ function Invoke-FbOobeHandoff {
     if (-not $sysprepAtCap) {
         Write-FbLog 'OOBE handoff (STAGE 2): starting pre-sysprep CBS-settle wait before invoking Sysprep.exe.' 'WARN'
         $cbsSettled = $false
+        if (Invoke-FbStopForHardwareGate) {
+            Write-FbLog 'Hardware gate is still open. Not restarting for the Windows Update reboot flag and not sealing.' 'WARN'
+            try { Stop-Transcript | Out-Null } catch {}
+            return
+        }
         try {
             # 2026.05.13.2213-tier-watchdog-and-diag-parsefix Fix 6:
             # opt into adaptive budget (180s/360s/600s by attempt).
@@ -15479,6 +15526,25 @@ function Invoke-FbOobeHandoff {
         } catch {
             Write-FbLog ("OOBE handoff (STAGE 2): Wait-FbPendingRebootCleared threw: {0}; treating as 'did not settle' and routing to plain shutdown for another reboot attempt." -f $_.Exception.Message) 'WARN'
             $cbsSettled = $false
+        }
+
+        if (-not $cbsSettled -and (Test-FbHardwareGateComplete)) {
+            $fbCbsServicing = $false
+            foreach ($fbCbsLeaf in @('RebootPending', 'RebootInProgress', 'PackagesPending', 'PendingRequired')) {
+                $fbCbsPath = "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Component Based Servicing\$fbCbsLeaf"
+                try { if (Test-Path -LiteralPath $fbCbsPath) { $fbCbsServicing = $true } } catch {}
+            }
+            if (-not $fbCbsServicing) {
+                Write-FbLog 'Hardware gate is complete and CBS has no servicing reboot key. The leftover signal is Windows Update RebootRequired. Sysprep /oobe /reboot instead of restarting into Audit.' 'WARN'
+                try {
+                    $fbWuRebootKey = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\WindowsUpdate\Auto Update\RebootRequired'
+                    if (Test-Path -LiteralPath $fbWuRebootKey) {
+                        Remove-Item -LiteralPath $fbWuRebootKey -Recurse -Force -ErrorAction SilentlyContinue
+                        Write-FbLog 'Removed the Windows Update RebootRequired key before sysprep.' 'INFO'
+                    }
+                } catch {}
+                $cbsSettled = $true
+            }
         }
 
         if (-not $cbsSettled) {
@@ -16991,6 +17057,29 @@ if ($script:FbSoftGivenUpCountersLoop.Count -gt 0 -or $script:FbSuccessLedgerSet
 if ($script:FbExactTitleSuccessSet.Count -gt 0 -or $script:FbExactTitleSkipIds.Count -gt 0) {
     Write-FbLog ("Exact-title success: loaded {0} title(s), {1} skipped duplicate id(s)." -f $script:FbExactTitleSuccessSet.Count, $script:FbExactTitleSkipIds.Count) 'INFO'
 }
+# Dump 4FVGN94-1406: a title skip wrote the new UpdateId into the success
+# ledger without Install(). The next scan then SoftGivenUp'd those ids and
+# STAGE 1 saw residual=0, so the updates-complete path ran while 13 updates
+# were still offered. Put those ids back on the offer.
+$exactTitleUnpoisoned = 0
+foreach ($skipId in @($script:FbExactTitleSkipIds)) {
+    if ([string]::IsNullOrWhiteSpace($skipId)) { continue }
+    $touched = $false
+    try { if ($script:FbSuccessLedgerSet.Remove($skipId)) { $touched = $true } } catch {}
+    try { if ($givenUpSet.Remove($skipId)) { $touched = $true } } catch {}
+    try { if ($givenUpSet.Remove(('UID:' + $skipId))) { $touched = $true } } catch {}
+    try {
+        if ($script:FbSoftGivenUpCountersLoop.ContainsKey($skipId)) {
+            [void]$script:FbSoftGivenUpCountersLoop.Remove($skipId)
+            $touched = $true
+        }
+    } catch {}
+    if ($touched) { $exactTitleUnpoisoned++ }
+}
+if ($exactTitleUnpoisoned -gt 0) {
+    Write-FbLog ("Exact-title skip had marked {0} UpdateId(s) succeeded without Install(). They are back on the offer and will be downloaded." -f $exactTitleUnpoisoned) 'WARN'
+}
+try { $script:FbExactTitleSkipIds.Clear() } catch {}
 $bootCountByKey = @{}
 if ($state.BootCountByKey) { $bootCountByKey = $state.BootCountByKey }
 $bootCount = 0
@@ -17506,20 +17595,11 @@ function Register-FbSkippedExactTitleDuplicate {
     try {
         Initialize-FbExactTitleSets
         [void]$script:FbExactTitleSkipIds.Add($UpdateId)
-        if ($null -eq $script:FbSuccessLedgerSet) {
-            $script:FbSuccessLedgerSet = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::OrdinalIgnoreCase)
-        }
-        [void]$script:FbSuccessLedgerSet.Add($UpdateId)
-        if ($Reason -eq 'succeeded' -and -not [string]::IsNullOrWhiteSpace($Title)) {
-            [void]$script:FbExactTitleSuccessSet.Add($Title)
-        }
+        # Do not add this id to the success ledger. It was not Install()'d.
+        # Ledger membership is what let STAGE 1 treat it as already succeeded.
     } catch {}
     try {
-        if ($Reason -eq 'bucket') {
-            Write-FbLog ("exact title already succeeded, new id not downloaded. title='{0}' id={1} kept once in this bucket" -f $Title, $UpdateId) 'WARN'
-        } else {
-            Write-FbLog ("exact title already succeeded, new id not downloaded. title='{0}' id={1}" -f $Title, $UpdateId) 'WARN'
-        }
+        Write-FbLog ("exact title already in this install batch, second id not downloaded. title='{0}' id={1}" -f $Title, $UpdateId) 'WARN'
     } catch {}
 }
 
@@ -17689,34 +17769,17 @@ function Invoke-FbBucketApply {
     # updates return ResultCode=2 but stay applicable; retrying within
     # the same boot is wasted work and feeds the sticky-residual loop.
     #
-    # Exact-title success: driver updates have no KB, so a new UpdateId
-    # of the same title is not the same ledger key. Keep the first exact
-    # title in this bucket. Do not download a later id when that title
-    # already succeeded, or when this bucket already kept that title.
-    # The installed UpdateId still uses the success-ledger Still offered
-    # path. Duplicate ids are not added to the splash.
+    # Exact-title dedupe is only inside this bucket. Two GUIDs of the same
+    # title in one Install() call keep the first id. A later scan that still
+    # offers that title downloads it. A persisted title match must not hide
+    # it (dump 4FVGN94-1406: 13 updates were still offered when updates
+    # complete ran). The same UpdateId still uses the success-ledger skip.
     $skippedFromPrior   = @()
     $skippedFromDefender = @()
     $bucketUpdatesActive = @()
     $exactTitleDupesSkipped = 0
     $keptExactTitles = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::Ordinal)
     try { Initialize-FbExactTitleSets } catch {}
-    foreach ($pre in @($BucketUpdates)) {
-        $preUid = ''
-        try { $preUid = [string]$pre.UpdateId } catch { $preUid = '' }
-        if ([string]::IsNullOrWhiteSpace($preUid)) { continue }
-        $preInLedger = $false
-        $preInSkip = $false
-        try { if ($script:FbSuccessLedgerSet -and $script:FbSuccessLedgerSet.Contains($preUid)) { $preInLedger = $true } } catch {}
-        try { if ($script:FbExactTitleSkipIds -and $script:FbExactTitleSkipIds.Contains($preUid)) { $preInSkip = $true } } catch {}
-        if ($preInLedger -and -not $preInSkip) {
-            $preTitle = ''
-            try { $preTitle = [string]$pre.Title } catch { $preTitle = '' }
-            if (-not [string]::IsNullOrWhiteSpace($preTitle)) {
-                Add-FbExactTitleSuccess -Title $preTitle
-            }
-        }
-    }
     $osBkt = $null
     try { $osBkt = Get-FbOsVersionIdentity } catch { $osBkt = $null }
     foreach ($u in $BucketUpdates) {
@@ -17739,27 +17802,9 @@ function Invoke-FbBucketApply {
         } catch {}
         $exactTitle = ''
         try { $exactTitle = [string]$u.Title } catch { $exactTitle = '' }
-        $uidInTitleSkipSet = $false
-        try {
-            if ($script:FbExactTitleSkipIds -and $script:FbExactTitleSkipIds.Contains($uid)) {
-                $uidInTitleSkipSet = $true
-            }
-        } catch {}
         $titleDupeSkip = $false
-        $titleDupeReason = ''
-        if ($uidInTitleSkipSet) {
+        if (-not $skippedFromLedger -and -not [string]::IsNullOrWhiteSpace($exactTitle) -and $keptExactTitles.Contains($exactTitle)) {
             $titleDupeSkip = $true
-            $titleDupeReason = 'recorded'
-        } elseif (-not $skippedFromLedger -and -not [string]::IsNullOrWhiteSpace($exactTitle)) {
-            $titleAlreadySucceeded = $false
-            try { $titleAlreadySucceeded = [bool](Test-FbExactTitleSucceeded -Title $exactTitle) } catch { $titleAlreadySucceeded = $false }
-            if ($titleAlreadySucceeded) {
-                $titleDupeSkip = $true
-                $titleDupeReason = 'succeeded'
-            } elseif ($keptExactTitles.Contains($exactTitle)) {
-                $titleDupeSkip = $true
-                $titleDupeReason = 'bucket'
-            }
         }
         $skipRedundant25H2 = $false
         try {
@@ -17781,23 +17826,7 @@ function Invoke-FbBucketApply {
         if ($skipRedundant25H2) {
             continue
         } elseif ($titleDupeSkip) {
-            if ($titleDupeReason -eq 'recorded') {
-                $recordedSucceeded = $false
-                try {
-                    if (-not [string]::IsNullOrWhiteSpace($exactTitle)) {
-                        $recordedSucceeded = [bool](Test-FbExactTitleSucceeded -Title $exactTitle)
-                    }
-                } catch { $recordedSucceeded = $false }
-                try {
-                    if ($recordedSucceeded) {
-                        Write-FbLog ("exact title already succeeded, new id not downloaded. title='{0}' id={1}" -f $exactTitle, $uid) 'WARN'
-                    } else {
-                        Write-FbLog ("exact title duplicate already recorded, new id not downloaded. title='{0}' id={1}" -f $exactTitle, $uid) 'WARN'
-                    }
-                } catch {}
-            } else {
-                Register-FbSkippedExactTitleDuplicate -UpdateId $uid -Title $exactTitle -Reason $titleDupeReason
-            }
+            Register-FbSkippedExactTitleDuplicate -UpdateId $uid -Title $exactTitle -Reason 'bucket'
             $exactTitleDupesSkipped++
             $outcome.Skipped++
         } elseif ($GivenUpSet.Contains($uid) -or $GivenUpSet.Contains($key) -or $ForceHiddenSet.Contains($uid) -or $ForceHiddenSet.Contains($key)) {
@@ -17841,7 +17870,7 @@ function Invoke-FbBucketApply {
         Write-FbLog ("[{0}] {1} Defender platform update(s) skipped via Bug FF Mechanism 2 fast-path (already installed this boot)." -f $BucketName, $skippedFromDefender.Count) 'INFO'
     }
     if ($exactTitleDupesSkipped -gt 0) {
-        Write-FbLog ("[{0}] {1} update(s) skipped for an exact title already succeeded or already kept in this bucket; not downloaded and not added to the splash." -f $BucketName, $exactTitleDupesSkipped) 'INFO'
+        Write-FbLog ("[{0}] {1} update(s) skipped as a second copy of a title already in this install batch. A later scan that still offers that title is downloaded." -f $BucketName, $exactTitleDupesSkipped) 'INFO'
     }
 
     $ids = @()

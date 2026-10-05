@@ -388,7 +388,11 @@ function Import-FbSplashFbImLibrary {
                 if ($nl -gt 0) { $text = $text.Substring($nl + 1) }
             }
             $sb = [scriptblock]::Create($text)
-            . $sb -Library
+            # The rewritten script has no file path, so $PSScriptRoot is empty and
+            # Get-FbImLogoB64 throws on Split-Path. The splash then shows
+            # "Could not open fb-im in the splash." Pass the real Tools folder.
+            $toolsDir = Split-Path -Parent $FbImPath
+            . $sb -Library -UsbToolsDir $toolsDir
             Export-ModuleMember -Function * -Variable * -Alias *
         } -ArgumentList $path | Import-Module -Global -Force -PassThru
         if (-not (Get-Command -Name Show-FbImWindow -ErrorAction SilentlyContinue)) {

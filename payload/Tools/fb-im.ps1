@@ -142,7 +142,7 @@ if ($LaunchHost -and -not $Library) {
 # Windows PowerShell 5.1 (ErrorActionPreference is optimized).
 Set-Variable -Name ErrorActionPreference -Value SilentlyContinue -Scope Script
 
-$FbImVersion = '2.0.36'
+$FbImVersion = '2.0.38'
 
 function Initialize-FbImWpf {
     # Must run BEFORE Show-FbImWindow is invoked. Parameter binding resolves
@@ -2028,7 +2028,22 @@ function Invoke-FbImStartHardwareGate {
         if ($started) { break }
         if ($tasks -notcontains $task) { continue }
         & schtasks.exe /Run /TN $task 2>&1 | Out-Null
-        if ($LASTEXITCODE -eq 0) { $started = $true; $via = 'scheduled task' }
+        if ($LASTEXITCODE -eq 0) {
+            # schtasks /Run returns 0 when the task is only Queued.
+            # Dump 4FVGN94-1041: WindowsUpdateLoop stayed Queued, Last Result 0,
+            # and FirstBaseHardwareCheck never started.
+            $appeared = $false
+            for ($w = 0; $w -lt 4; $w++) {
+                Start-Sleep -Seconds 2
+                if (Get-FbLoopProcess) { $appeared = $true; break }
+            }
+            if ($appeared) {
+                $started = $true
+                $via = 'scheduled task'
+            } else {
+                [void]$notes.Add(('{0} was queued and did not start the update loop' -f $task))
+            }
+        }
     }
     if (-not $started -and (Test-Path -LiteralPath $LoopLauncher)) {
         try {
@@ -2356,11 +2371,14 @@ function Invoke-FbImSealToOobe {
 function Get-FbImLogoB64 {
     $toolsDir = $FbImFileDir
     if (-not $toolsDir) { $toolsDir = $PSScriptRoot }
-    $candidates = @(
-        (Join-Path (Split-Path -Path $toolsDir -Parent) 'Show-UpdateProgress.ps1'),
-        (Join-Path $FbRoot 'Show-UpdateProgress.ps1'),
-        (Join-Path $toolsDir '..\Show-UpdateProgress.ps1')
-    )
+    $candidates = New-Object System.Collections.Generic.List[string]
+    if ($toolsDir) {
+        try { [void]$candidates.Add((Join-Path (Split-Path -Path $toolsDir -Parent) 'Show-UpdateProgress.ps1')) } catch {}
+        try { [void]$candidates.Add((Join-Path $toolsDir '..\Show-UpdateProgress.ps1')) } catch {}
+    }
+    if ($FbRoot) {
+        try { [void]$candidates.Add((Join-Path $FbRoot 'Show-UpdateProgress.ps1')) } catch {}
+    }
     foreach ($path in $candidates) {
         if (-not (Test-Path -LiteralPath $path)) { continue }
         try {

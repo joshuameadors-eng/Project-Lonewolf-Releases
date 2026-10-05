@@ -241,6 +241,8 @@ if (-not (Test-Path -LiteralPath $SplitLibPath)) {
     EmitError "shared split lib not found: $SplitLibPath"; exit 1
 }
 . $SplitLibPath
+$Arm64DriverLibPath = Join-Path $PSScriptRoot 'lib\Add-LwArm64SurfaceDrivers.ps1'
+if (Test-Path -LiteralPath $Arm64DriverLibPath) { . $Arm64DriverLibPath }
 
 # --- Select source ISO --------------------------------------------------------
 EmitPhase 'stage-mount'
@@ -323,8 +325,12 @@ if ($Force) {
             }
         }
         if ($chk.Valid -and $isoMatch) {
-            EmitLog ('destage skip: local UUP {0} already has a valid matching set at {1} (share PreSplit not used; other arches ignored). Shift-click / -Force to re-stage.' -f $bareArch, $Target)
-            $skipStaged = $true
+            if ($bareArch -eq 'ARM64' -and -not (Test-LwArm64SurfaceDriversStamped -SetDir $Target)) {
+                EmitLog ('destage split: ARM64 set at {0} has no Surface driver stamp - re-staging' -f $Target)
+            } else {
+                EmitLog ('destage skip: local UUP {0} already has a valid matching set at {1} (share PreSplit not used; other arches ignored). Shift-click / -Force to re-stage.' -f $bareArch, $Target)
+                $skipStaged = $true
+            }
         } elseif ($chk.Valid) {
             EmitLog ('destage split: local UUP set at {0} does not match this ISO (manifest {1} vs {2}) - writing' -f $Target, $manIso, $isoItem.Name)
         } else {
@@ -334,8 +340,12 @@ if ($Force) {
 } elseif ((Test-Path -LiteralPath $Target)) {
     $chk = Test-LWPreSplitSet -SetDir $Target
     if ($chk.Valid) {
-        EmitLog ('already-staged: a valid pre-split set for {0} exists at {1} - nothing to do (pass -Force to re-stage)' -f $isoItem.Name, $Target)
-        $skipStaged = $true
+        if ($bareArch -eq 'ARM64' -and -not (Test-LwArm64SurfaceDriversStamped -SetDir $Target)) {
+            EmitLog ('already-staged set at {0} has no Surface driver stamp - re-staging' -f $Target)
+        } else {
+            EmitLog ('already-staged: a valid pre-split set for {0} exists at {1} - nothing to do (pass -Force to re-stage)' -f $isoItem.Name, $Target)
+            $skipStaged = $true
+        }
     } else {
         EmitLog ('existing set at {0} is invalid ({1}) - re-staging over it' -f $Target, $chk.Reason)
     }
@@ -394,7 +404,32 @@ try {
     $scratch        = Join-Path $env:TEMP ('LW-Stage-' + [guid]::NewGuid().ToString('N').Substring(0, 8))
     $scratchSources = Join-Path $scratch 'sources'
     New-Item -ItemType Directory -Force -Path $scratchSources | Out-Null
-    Split-LWImageForFat32 -SourceSourcesDir $isoSources -DestSourcesDir $scratchSources -FileSizeMb $FileSizeMb -Emit { param($m) EmitLog $m } -Progress { param($p) EmitProgress 'stage-split' $p }
+    $splitSources = $isoSources
+    if ($bareArch -eq 'ARM64') {
+        if (-not (Get-Command -Name Resolve-LwArm64SurfaceDriverDir -ErrorAction SilentlyContinue)) {
+            throw 'FATAL: ARM64 Surface driver helper is not loaded (lib\Add-LwArm64SurfaceDrivers.ps1).'
+        }
+        $lwRepoRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..'))
+        $driverRoot = [string](Resolve-LwArm64SurfaceDriverDir -RepoRoot $lwRepoRoot)
+        if ([string]::IsNullOrWhiteSpace($driverRoot)) {
+            throw 'FATAL: ARM64 stage requires the Snapdragon/Surface driver set. Expected C:\SurfaceDrivers\SurfaceUpdate, the UUP WinPE-Drivers folder, or drivers\SurfaceLaptop7_ARM_Win11_26100_26.053.36539.0.msi.'
+        }
+        EmitLog "stage-drivers: injecting Surface drivers from $driverRoot"
+        $driverSources = Join-Path $scratch 'driver-sources'
+        New-Item -ItemType Directory -Force -Path $driverSources | Out-Null
+        $writableWim = Join-Path $driverSources 'install.wim'
+        if ($sourceKind -eq 'esd') {
+            EmitLog 'stage-drivers: exporting install.esd to a writable WIM'
+            $exported = Export-LwInstallIndexesToWim -SourceFile $installImg -DestWim $writableWim -Log { param($m) EmitLog $m }
+            if (-not $exported) { throw "FATAL: install.esd export produced no WIM: $installImg" }
+        } else {
+            EmitLog 'stage-drivers: copying install.wim to a writable copy'
+            Copy-Item -LiteralPath $installImg -Destination $writableWim -Force
+        }
+        Add-LwArm64DriversToWritableWim -WimPath $writableWim -DriverRoot $driverRoot -Log { param($m) EmitLog $m }
+        $splitSources = $driverSources
+    }
+    Split-LWImageForFat32 -SourceSourcesDir $splitSources -DestSourcesDir $scratchSources -FileSizeMb $FileSizeMb -Emit { param($m) EmitLog $m } -Progress { param($p) EmitProgress 'stage-split' $p }
     EmitProgress 'stage-split' 100
 
     # Chunk set: install*.swm normally; install.wim/.esd when the image was <= 4 GB.
@@ -459,6 +494,7 @@ try {
             chunks               = $chunkObjs
         }
         producedByLauncherVersion = $launcherVersion
+        surfaceDrivers            = ($bareArch -eq 'ARM64')
         createdUtc                = $nowUtc
         updatedUtc                = $nowUtc
     }

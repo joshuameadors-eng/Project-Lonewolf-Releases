@@ -119,6 +119,18 @@ function Clear-FbPostOperatorWinlogonAutologon {
         }
     }
     try {
+        try {
+            $fbWolf = $null
+            $fbAdmin = $null
+            try { $fbWolf = Get-LocalUser -Name 'Project Lonewolf' -ErrorAction SilentlyContinue } catch {}
+            try { $fbAdmin = Get-LocalUser -Name 'Administrator' -ErrorAction SilentlyContinue } catch {}
+            if ($fbWolf -and -not $fbAdmin) {
+                Rename-LocalUser -Name 'Project Lonewolf' -NewName 'Administrator' -ErrorAction Stop
+                Write-FbOperatorFinalizeMirror '2231: renamed Project Lonewolf back to Administrator.' 'INFO'
+            }
+        } catch {
+            Write-FbOperatorFinalizeMirror ("2231: rename Project Lonewolf to Administrator WARN: {0}" -f $_.Exception.Message) 'WARN'
+        }
         $disableNames = New-Object System.Collections.Generic.List[string]
         try {
             $rid500 = Get-CimInstance -ClassName Win32_UserAccount -Filter "LocalAccount=True" -ErrorAction Stop |

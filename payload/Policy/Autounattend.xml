@@ -30,6 +30,15 @@
         </RunSynchronousCommand>
       </RunSynchronous>
     </component>
+    <component name="Microsoft-Windows-Deployment" processorArchitecture="arm64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State">
+      <RunSynchronous>
+        <RunSynchronousCommand wcm:action="add">
+          <Order>1</Order>
+          <Description>FirstBase pre-OOBE update gate</Description>
+          <Path>cmd /c if exist C:\Windows\Setup\Scripts\SetupComplete.cmd C:\Windows\Setup\Scripts\SetupComplete.cmd</Path>
+        </RunSynchronousCommand>
+      </RunSynchronous>
+    </component>
   </settings>
   <!--
     2213d Bug B1: removed <Microsoft-Windows-Deployment><Reseal>Audit</Reseal>
@@ -56,10 +65,15 @@
     It is NOT valid in specialize. 6.1.23 put Mode=Audit on the specialize
     pass, Windows skipped it, and a fresh apply still painted Just a Moment
     then the defaultuser0 login. Mode=Audit belongs on oobeSystem, which is
-    the pass SetupComplete.cmd already requires. auditSystem runs
-    SetupComplete.cmd STRIP_RESEAL_ONLY before audit.exe /user so the cached
-    answer file cannot replay Reseal as sysprep.exe /reboot with no mode
-    (2213d Bug B1, the System Preparation Tool GUI on every Audit logon).
+    the pass SetupComplete.cmd already requires.
+
+    6.1.75: RunSynchronous is not applied in auditSystem. The Surface
+    2026-10-05 dump (audit.exe /system, SETUPUGC auditSystem) processed
+    the arm64 Deployment component and never launched STRIP_RESEAL_ONLY,
+    then audit.exe /user opened sysprep.exe /reboot with no mode.
+    The strip runs in auditUser, which completes before that launch.
+    Specialize must exist for both amd64 and arm64; an amd64-only
+    command is skipped on Snapdragon and splash/updates never arm.
   -->
   <settings pass="oobeSystem">
     <component name="Microsoft-Windows-Deployment" processorArchitecture="amd64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State">
@@ -82,13 +96,23 @@
         <ProtectYourPC>3</ProtectYourPC>
       </OOBE>
     </component>
+    <component name="Microsoft-Windows-Shell-Setup" processorArchitecture="arm64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State">
+      <OOBE>
+        <HideEULAPage>true</HideEULAPage>
+        <HideLocalAccountScreen>false</HideLocalAccountScreen>
+        <HideOEMRegistrationScreen>true</HideOEMRegistrationScreen>
+        <HideOnlineAccountScreens>false</HideOnlineAccountScreens>
+        <HideWirelessSetupInOOBE>true</HideWirelessSetupInOOBE>
+        <ProtectYourPC>3</ProtectYourPC>
+      </OOBE>
+    </component>
   </settings>
-  <settings pass="auditSystem">
+  <settings pass="auditUser">
     <component name="Microsoft-Windows-Deployment" processorArchitecture="amd64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State">
       <RunSynchronous>
         <RunSynchronousCommand wcm:action="add">
           <Order>1</Order>
-          <Description>Strip oobeSystem Reseal before audit.exe user logon</Description>
+          <Description>Strip oobeSystem Reseal before sysprep GUI</Description>
           <Path>cmd /c if exist C:\Windows\Setup\Scripts\SetupComplete.cmd C:\Windows\Setup\Scripts\SetupComplete.cmd STRIP_RESEAL_ONLY</Path>
         </RunSynchronousCommand>
       </RunSynchronous>
@@ -97,7 +121,7 @@
       <RunSynchronous>
         <RunSynchronousCommand wcm:action="add">
           <Order>1</Order>
-          <Description>Strip oobeSystem Reseal before audit.exe user logon</Description>
+          <Description>Strip oobeSystem Reseal before sysprep GUI</Description>
           <Path>cmd /c if exist C:\Windows\Setup\Scripts\SetupComplete.cmd C:\Windows\Setup\Scripts\SetupComplete.cmd STRIP_RESEAL_ONLY</Path>
         </RunSynchronousCommand>
       </RunSynchronous>

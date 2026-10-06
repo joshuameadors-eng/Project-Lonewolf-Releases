@@ -6,9 +6,12 @@
 .DESCRIPTION
   One-shot producer for the "staged pre-split install.wim" feature. Mounts a
   source Windows ISO, splits sources\install.wim (or exports+splits install.esd)
-  into an install*.swm set (< 4 GB each, DISM /Split-Image /FileSize:3800
-  /CheckIntegrity via the SHARED helper lib\Split-LWImage.ps1), and stages the
-  result as a versioned set:
+  into an install*.swm set (< 4 GB each, DISM /Split-Image /CheckIntegrity via
+  the SHARED helper lib\Split-LWImage.ps1). Images above 3800 MB keep
+  /FileSize:3800. Images from 512 MiB through 3800 MB use a span just over
+  half the image so DISM writes at least two SWM chunks. A one-file set for
+  an image that large is not treated as finished, so the next Stage ISO
+  re-stages that folder only. Result:
 
     Packaged: <share>\PreSplit\<imageVersion>\  (Drive Desktop or HQ UNC)
     Destage (npm start -DestageMedia):
@@ -78,8 +81,9 @@
   never corrupts the existing known-good set.
 
 .PARAMETER FileSizeMb
-  DISM /Split-Image /FileSize (MB). Default 3800 - MUST match the builder's
-  on-the-fly split or the sets are not interchangeable.
+  Cap for DISM /Split-Image /FileSize (MB). Default 3800. Images at or under
+  the cap use the shared span in lib\Split-LWImage.ps1 so this producer and
+  the builder fallback stay interchangeable.
 
 .PARAMETER DeepHash
   Also compute and record per-chunk sha256 in the manifest (expensive on multi-GB
@@ -241,7 +245,7 @@ if (-not (Test-Path -LiteralPath $SplitLibPath)) {
     EmitError "shared split lib not found: $SplitLibPath"; exit 1
 }
 . $SplitLibPath
-$Arm64DriverLibPath = Join-Path $PSScriptRoot 'lib\Add-LwArm64SurfaceDrivers.ps1'
+$Arm64DriverLibPath = Join-Path $PSScriptRoot 'lib\Add-LwArm64Drivers.ps1'
 if (Test-Path -LiteralPath $Arm64DriverLibPath) { . $Arm64DriverLibPath }
 
 # --- Select source ISO --------------------------------------------------------
@@ -324,15 +328,9 @@ if ($Force) {
                 }
             }
         }
-        $hasSwm = @(Get-ChildItem -LiteralPath $Target -Filter 'install*.swm' -File -ErrorAction SilentlyContinue).Count -gt 0
-        if ($chk.Valid -and $isoMatch -and -not $hasSwm) {
-            EmitLog ('destage split: set at {0} is a single install image, not an SWM set - re-staging' -f $Target)
-            $chk = [pscustomobject]@{ Valid = $false; Reason = 'not an SWM set' }
-            $isoMatch = $false
-        }
         if ($chk.Valid -and $isoMatch) {
-            if ($bareArch -eq 'ARM64' -and -not (Test-LwArm64SurfaceDriversStamped -SetDir $Target)) {
-                EmitLog ('destage split: ARM64 set at {0} has no Surface driver stamp - re-staging' -f $Target)
+            if ($bareArch -eq 'ARM64' -and -not (Test-LwArm64DriversStamped -SetDir $Target)) {
+                EmitLog ('destage split: ARM64 set at {0} has no ARM64 driver stamp - re-staging' -f $Target)
             } else {
                 EmitLog ('destage skip: local UUP {0} already has a valid matching set at {1} (share PreSplit not used; other arches ignored). Shift-click / -Force to re-stage.' -f $bareArch, $Target)
                 $skipStaged = $true
@@ -345,14 +343,9 @@ if ($Force) {
     }
 } elseif ((Test-Path -LiteralPath $Target)) {
     $chk = Test-LWPreSplitSet -SetDir $Target
-    $hasSwm = @(Get-ChildItem -LiteralPath $Target -Filter 'install*.swm' -File -ErrorAction SilentlyContinue).Count -gt 0
-    if ($chk.Valid -and -not $hasSwm) {
-        EmitLog ('existing set at {0} is a single install image, not an SWM set - re-staging' -f $Target)
-        $chk = [pscustomobject]@{ Valid = $false; Reason = 'not an SWM set' }
-    }
     if ($chk.Valid) {
-        if ($bareArch -eq 'ARM64' -and -not (Test-LwArm64SurfaceDriversStamped -SetDir $Target)) {
-            EmitLog ('already-staged set at {0} has no Surface driver stamp - re-staging' -f $Target)
+        if ($bareArch -eq 'ARM64' -and -not (Test-LwArm64DriversStamped -SetDir $Target)) {
+            EmitLog ('already-staged set at {0} has no ARM64 driver stamp - re-staging' -f $Target)
         } else {
             EmitLog ('already-staged: a valid pre-split set for {0} exists at {1} - nothing to do (pass -Force to re-stage)' -f $isoItem.Name, $Target)
             $skipStaged = $true
@@ -419,16 +412,15 @@ try {
         $snapdragonStage = [bool](Test-LwSnapdragonWorkflow -WorkflowType $WorkflowType)
     }
     if ($snapdragonStage) {
-        if (-not (Get-Command -Name Resolve-LwArm64SurfaceDriverDir -ErrorAction SilentlyContinue)) {
-            throw 'FATAL: ARM64 Surface driver helper is not loaded (lib\Add-LwArm64SurfaceDrivers.ps1).'
+        if (-not (Get-Command -Name Resolve-LwArm64DriverDir -ErrorAction SilentlyContinue)) {
+            throw 'FATAL: ARM64 driver helper is not loaded (lib\Add-LwArm64Drivers.ps1).'
         }
-        $lwRepoRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..'))
-        $driverRoot = [string](Resolve-LwArm64SurfaceDriverDir -RepoRoot $lwRepoRoot)
+        $driverRoot = [string](Resolve-LwArm64DriverDir)
         if ([string]::IsNullOrWhiteSpace($driverRoot)) {
-            throw 'FATAL: ARM64 stage requires the Snapdragon/Surface driver set. Expected C:\SurfaceDrivers\SurfaceUpdate, the UUP WinPE-Drivers folder, or drivers\SurfaceLaptop7_ARM_Win11_26100_26.053.36539.0.msi.'
+            throw 'FATAL: ARM64 stage requires driver packages under C:\Repos\Windows_Installation\UUP\25h2\WinPE-Drivers.'
         }
         EmitPhase 'stage-drivers'
-        EmitLog "Injecting Snapdragon drivers from $driverRoot"
+        EmitLog "Injecting ARM64 drivers from $driverRoot"
         EmitProgress 'stage-drivers' 1
         $driverSources = Join-Path $scratch 'driver-sources'
         New-Item -ItemType Directory -Force -Path $driverSources | Out-Null
@@ -441,20 +433,36 @@ try {
             EmitLog 'stage-drivers: copying install.wim to a writable copy'
             Copy-Item -LiteralPath $installImg -Destination $writableWim -Force
         }
+        # Home and Pro both use this mount. WindowsEdition only selects the ISO.
         Add-LwArm64DriversToWritableWim -WimPath $writableWim -DriverRoot $driverRoot -Log { param($m) EmitLog $m } -Progress { param($p) EmitProgress 'stage-drivers' $p }
         EmitProgress 'stage-drivers' 100
         $splitSources = $driverSources
     } else {
-        EmitLog "Snapdragon driver inject skipped for $bareArch"
+        EmitLog "ARM64 driver inject skipped for $bareArch"
     }
     EmitPhase 'stage-split'
     EmitProgress 'stage-split' 0
     Split-LWImageForFat32 -SourceSourcesDir $splitSources -DestSourcesDir $scratchSources -FileSizeMb $FileSizeMb -Emit { param($m) EmitLog $m } -Progress { param($p) EmitProgress 'stage-split' $p }
     EmitProgress 'stage-split' 100
 
-    $chunkFiles = @(Get-ChildItem -LiteralPath $scratchSources -File -Filter 'install*.swm' -ErrorAction SilentlyContinue | Sort-Object Name)
+    $chunkFiles = @(Get-ChildItem -LiteralPath $scratchSources -File -ErrorAction SilentlyContinue |
+        Where-Object { $_.Name -match '^install(\d*)\.(swm|wim|esd)$' } |
+        Sort-Object Name)
     if ($chunkFiles.Count -eq 0) {
-        throw "stage-split produced no install*.swm chunks in $scratchSources"
+        throw "stage-split produced no install image in $scratchSources"
+    }
+    $splitInputLen = [long]$originalSize
+    $splitInputWim = Join-Path $splitSources 'install.wim'
+    $splitInputEsd = Join-Path $splitSources 'install.esd'
+    if (Test-Path -LiteralPath $splitInputWim) {
+        $splitInputLen = (Get-Item -LiteralPath $splitInputWim).Length
+    } elseif (Test-Path -LiteralPath $splitInputEsd) {
+        $splitInputLen = (Get-Item -LiteralPath $splitInputEsd).Length
+    }
+    $splitPlan = Get-LWFat32SplitPlan -LengthBytes $splitInputLen -FileSizeMb $FileSizeMb
+    $swmCount = @($chunkFiles | Where-Object { $_.Extension -eq '.swm' }).Count
+    if ($splitPlan.Split -and $swmCount -lt 2) {
+        throw ("stage-split: image is {0} bytes and /FileSize:{1} MB requires at least 2 install*.swm chunks, but {2} were produced. Stage not completed." -f $splitInputLen, $splitPlan.FileSizeMb, $swmCount)
     }
 
     # -- Copy the set to a temp sibling of the final target (atomic swap later) --
@@ -507,11 +515,11 @@ try {
             sourceKind           = $sourceKind
             sourceIndexCount     = $indexCount
             originalWimSizeBytes = [long]$originalSize
-            splitFileSizeMb      = $FileSizeMb
+            splitFileSizeMb      = $(if ($splitPlan.Split) { [int]$splitPlan.FileSizeMb } else { [int]$FileSizeMb })
             chunks               = $chunkObjs
         }
         producedByLauncherVersion = $launcherVersion
-        surfaceDrivers            = [bool]$snapdragonStage
+        arm64Drivers              = [bool]$snapdragonStage
         createdUtc                = $nowUtc
         updatedUtc                = $nowUtc
     }
@@ -546,8 +554,12 @@ try {
     }
     EmitProgress 'stage-verify' 100
 
-    $chunkGb = [math]::Round((($chunkFiles | Measure-Object -Property Length -Sum).Sum) / 1GB, 2)
-    $doneMsg = "staged $($chunkFiles.Count) SWM chunk(s), $chunkGb GB, sourceKind=$sourceKind"
+    $chunkGb = [math]::Round($originalSize / 1GB, 2)
+    $doneMsg = if ($swmCount -ge 2) {
+        "staged $swmCount SWM chunk(s), $chunkGb GB, sourceKind=$sourceKind"
+    } else {
+        "staged 1 file ($($chunkFiles[0].Name), $chunkGb GB, under 512 MB), sourceKind=$sourceKind"
+    }
     EmitLog "staged pre-split set at $Target ($doneMsg, imageVersion=$imageVersion)"
     if ($useDestageMedia) {
         EmitLog "destage: Rebuild from npm start reads this local UUP PreSplit set (packaged builds still use share PreSplit)"

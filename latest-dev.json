@@ -1,6 +1,6 @@
 {
-    "launcherVersion":  "6.2.1",
-    "payloadVersion":  "6.2.2",
+    "launcherVersion":  "6.2.0",
+    "payloadVersion":  "6.2.11",
     "channel":  "dev",
     "source":  "github-public-source",
     "latestReleaseUrl":  "https://github.com/joshuameadors-eng/Project-Lonewolf-Releases/releases/latest",
@@ -30,9 +30,72 @@
                  "payload":  "https://raw.githubusercontent.com/joshuameadors-eng/Project-Lonewolf-Releases/dev/FirstBase-payload.zip",
                  "manifest":  "https://raw.githubusercontent.com/joshuameadors-eng/Project-Lonewolf-Releases/dev/latest-dev.json"
              },
-    "portableSha256":  "87b5af3cf7b95b44a760bc8bd12b019d15795f0f71c1e9e95f8a21d2654adb8a",
-    "portableSize":  71551834,
+    "portableSha256":  "b530c312721f6b78523e7ac5699ad4cfbfa862ab8a5a0ba9ffb8b75bba9b5f7e",
+    "portableSize":  71555997,
     "changelog":  [
+                      {
+                          "version":  "6.2.11",
+                          "date":  "2026-10-06",
+                          "changes":  [
+                                          "ARM64 driver injection uses the WinPE-Drivers tree for every manufacturer folder. ISO build and pre-split show Injecting ARM64 drivers."
+                                      ]
+                      },
+                      {
+                          "version":  "6.2.10",
+                          "date":  "2026-10-06",
+                          "changes":  [
+                                          "Quick Install no longer copies WinPE-Startnet.cmd into FirstBase\\Deploy. Full Snapdragon Windows Updates still stages that file, and Quick Install still boots TechInstall.cmd."
+                                      ]
+                      },
+                      {
+                          "version":  "6.2.9",
+                          "date":  "2026-10-06",
+                          "changes":  [
+                                          "Quick Install reboots into a stock Windows OOBE. It no longer waits for a key, and it does not apply the audit reseal or SetupComplete startup path."
+                                      ]
+                      },
+                      {
+                          "version":  "6.2.8",
+                          "date":  "2026-10-06",
+                          "changes":  [
+                                          "Snapdragon Quick Install and Windows (amd64) skip the Windows Update payload. Full Snapdragon Windows Updates still stages it, and Snapdragon Quick Install still injects drivers."
+                                      ]
+                      },
+                      {
+                          "version":  "6.2.7",
+                          "date":  "2026-10-05",
+                          "changes":  [
+                                          "Snapdragon Home and Pro Stage ISO keeps the WIM path on the DISM /ImageFile argument, so driver injection can mount the install image."
+                                      ]
+                      },
+                      {
+                          "version":  "6.2.6",
+                          "date":  "2026-10-05",
+                          "changes":  [
+                                          "Snapdragon Home and Pro Stage ISO mount the ARM64 install image and inject drivers. The mount progress callback no longer calls itself."
+                                      ]
+                      },
+                      {
+                          "version":  "6.2.5",
+                          "date":  "2026-10-05",
+                          "changes":  [
+                                          "Snapdragon driver injection reads each install index with Get-WindowsImage -Index. An ARM64 image is injected, and a failed architecture query reports the DISM error."
+                                      ]
+                      },
+                      {
+                          "version":  "6.2.4",
+                          "date":  "2026-10-05",
+                          "changes":  [
+                                          "Pre-split writes at least two install.swm chunks for an image at or above 512 MB. A file under the 3800 MB cap uses a span just over half its size so DISM can split it, and a one-file set for that image is staged again."
+                                      ]
+                      },
+                      {
+                          "version":  "6.2.3",
+                          "date":  "2026-10-05",
+                          "changes":  [
+                                          "Pre-split copies an install image that is already under the 3800 MB span. DISM /Split-Image is only used when the image is larger than that span."
+                                      ]
+                      },
                       {
                           "version":  "6.2.2",
                           "date":  "2026-10-05",

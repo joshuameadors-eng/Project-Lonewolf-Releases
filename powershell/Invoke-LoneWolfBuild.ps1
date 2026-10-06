@@ -27,10 +27,13 @@
   After install the machine shuts down instead of rebooting to run update scripts.
 
 .PARAMETER QuickInstall
-  Workflow stamp only (LW_VERSION.json workflowType QUICK-INSTALL-<arch>).
-  A USB stick for this workflow is a full rebuild: the same payload map as
-  Snapdragon/Intel updates, including Deploy\TechInstall.cmd. It does not stage
-  the quick-install payload script.
+  Workflow stamp (LW_VERSION.json workflowType QUICK-INSTALL-<arch>).
+  Boots FirstBase\Deploy\TechInstall.cmd copied from TechInstall-QuickInstall.cmd
+  so WinPE installs Windows and reboots into a stock OOBE. Stages
+  Policy\autounattend-quickinstall.xml (no Audit reseal, no SetupComplete).
+  Does not stage the Windows Update payload (WUPayload, Edge, or offline
+  update packages). Snapdragon Quick Install still injects ARM64 drivers.
+  Intel/AMD Quick Install does not.
 
 .PARAMETER DiskNumbers
   Comma-separated list of disk numbers to write (e.g. "1,3").
@@ -116,8 +119,8 @@ param(
     [switch] $PreferIso,
     [switch] $Sequential,
     [switch] $NoPayload,
-    # Workflow stamp for Quick Install USB. Payload staging uses the full rebuild
-    # map (Deploy\TechInstall.cmd), not a separate quick-install payload.
+    # Quick Install USB. Boots TechInstall-QuickInstall.cmd (renamed to
+    # Deploy\TechInstall.cmd) and does not stage the Windows Update payload.
     [switch] $QuickInstall,
     # Cleanup-only mode: dismount any share ISO left mounted by a prior cancelled/crashed
     # build (per the mounted-ISO marker), then exit. Invoked by main.js on build:cancel.
@@ -416,11 +419,6 @@ function Copy-LwRepoEdgeInstaller {
     }
 }
 
-if (-not $NoPayload) {
-    Test-LwUpdateLoopPayload -Path (Join-Path $ContentRoot 'Invoke-WindowsUpdateLoop.ps1')
-    EmitLog -Disk 0 -Msg "payload: update-loop script parse+trailer OK ($ContentRoot)"
-}
-
 # New fixed-path layout: Staging\AMD64\ and Staging\AMD64\AMD64.wim
 # Quick Update has no staging root. Join-Path rejects an empty Path.
 if ([string]::IsNullOrWhiteSpace($StagingRoot)) {
@@ -447,10 +445,21 @@ if ($DestageMedia) {
 # (a job runspace cannot see script-scope functions of the parent).
 $SplitLibPath = Join-Path $PSScriptRoot 'lib\Split-LWImage.ps1'
 if (Test-Path -LiteralPath $SplitLibPath) { . $SplitLibPath }
-$Arm64DriverLibPath = Join-Path $PSScriptRoot 'lib\Add-LwArm64SurfaceDrivers.ps1'
+$Arm64DriverLibPath = Join-Path $PSScriptRoot 'lib\Add-LwArm64Drivers.ps1'
 if (Test-Path -LiteralPath $Arm64DriverLibPath) { . $Arm64DriverLibPath }
 $UsbOverlayLibPath = Join-Path $PSScriptRoot 'lib\LwUsbOverlay.ps1'
 if (Test-Path -LiteralPath $UsbOverlayLibPath) { . $UsbOverlayLibPath }
+
+# Only full Snapdragon Windows Updates parses the update loop. Windows (amd64)
+# and both Quick Install workflows skip that payload.
+$stageWuPayload = $false
+if (Get-Command -Name Test-LwStageWindowsUpdatePayload -ErrorAction SilentlyContinue) {
+    $stageWuPayload = [bool](Test-LwStageWindowsUpdatePayload -WorkflowType $WorkflowType -QuickInstall ([bool]$QuickInstall) -NoPayload ([bool]$NoPayload))
+}
+if ($stageWuPayload) {
+    Test-LwUpdateLoopPayload -Path (Join-Path $ContentRoot 'Invoke-WindowsUpdateLoop.ps1')
+    EmitLog -Disk 0 -Msg "payload: update-loop script parse+trailer OK ($ContentRoot)"
+}
 
 # WinPE OC source: Images\FB Image Creation\WinPE-OCs (arch via Resolve-WpeOcArchRoot).
 # LocalProjectRoot prefers Staging\WinPE-OCs when present. Explicit -WpeOcRoot wins.
@@ -736,29 +745,24 @@ function Get-LWPreSplitSet {
         }
 
         foreach ($setDir in $candidates) {
+            # Test-LWPreSplitSet accepts install.swm + install2.swm (and further
+            # chunks). A single install.wim/esd is accepted only under 512 MiB.
+            # The one-file AMD set for a multi-GB image is rejected here so the
+            # fast path does not copy that install.wim; Stage ISO re-stages it.
             $chk = Test-LWPreSplitSet -SetDir $setDir -VerifyHash:$VerifyHash
             if (-not $chk.Valid) {
                 EmitLog -Disk 0 -Msg "presplit: set '$setDir' rejected ($($chk.Reason))"
                 continue
             }
             $wantArch = if (Get-Command -Name Get-LWBareArch -ErrorAction SilentlyContinue) { Get-LWBareArch $Arch } else { $Arch }
-            $chunkNames = @()
+            $arm64DriverSet = $false
             try {
-                if ($chk.Manifest.install -and $chk.Manifest.install.chunks) {
-                    $chunkNames = @($chk.Manifest.install.chunks | ForEach-Object { [string]$_.name })
+                if (Get-Command -Name Test-LwPreSplitHasArm64Drivers -ErrorAction SilentlyContinue) {
+                    $arm64DriverSet = [bool](Test-LwPreSplitHasArm64Drivers -Manifest $chk.Manifest)
                 }
             } catch { }
-            $hasSwm = @($chunkNames | Where-Object { $_ -match '\.swm$' }).Count -gt 0
-            if (-not $hasSwm) {
-                EmitLog -Disk 0 -Msg "presplit: set '$setDir' is a single install image, not an SWM set - on-the-fly split will be used"
-                continue
-            }
-            $surfaceStamped = $false
-            try {
-                if ($chk.Manifest.PSObject.Properties['surfaceDrivers'] -and $chk.Manifest.surfaceDrivers) { $surfaceStamped = $true }
-            } catch { }
-            if ($surfaceStamped -and $wantArch -ne 'ARM64') {
-                EmitLog -Disk 0 -Msg "presplit: set '$setDir' includes Snapdragon drivers and is not used for $wantArch"
+            if ($arm64DriverSet -and $wantArch -ne 'ARM64') {
+                EmitLog -Disk 0 -Msg "presplit: set '$setDir' includes ARM64 drivers and is not used for $wantArch"
                 continue
             }
             $m   = $chk.Manifest
@@ -987,10 +991,12 @@ function Build-Cache {
     New-Item -ItemType Directory -Force -Path $overlayCache | Out-Null
 
     if (-not $NoPayload) {
-        # Full build: Deploy\, Policy\, WUPayload\, and Scripts\ carry the deploy entry-point layout.
+        # Deploy\ and Scripts\ are the install boot path. WUPayload is staged only for
+        # full Snapdragon Windows Updates ($stageWuPayload).
+        $cacheOverlayProfile = Get-LwUsbOverlayProfile -WorkflowType $WorkflowType -QuickInstall ([bool]$QuickInstall) -NoPayload $false
         New-Item -ItemType Directory -Force -Path (Join-Path $overlayCache 'FirstBase\Deploy'), (Join-Path $overlayCache 'FirstBase\Policy'), (Join-Path $overlayCache 'FirstBase\Scripts'), (Join-Path $overlayCache 'FirstBase\WUPayload'), (Join-Path $overlayCache 'FirstBase\WUPayload\Tools') | Out-Null
         $overlayMap = @(
-            @{ Src = (Join-Path $ContentRoot 'Deploy\TechInstall.cmd');                       Dst = 'FirstBase\Deploy\TechInstall.cmd' },
+            @{ Src = (Join-Path $ContentRoot $cacheOverlayProfile.TechInstallSource);         Dst = $cacheOverlayProfile.TechInstallDest },
             @{ Src = (Join-Path $ContentRoot 'Deploy\disksetup.cmd');                         Dst = 'FirstBase\Deploy\disksetup.cmd' },
             @{ Src = (Join-Path $ContentRoot 'Deploy\Invoke-FirstBaseRaidProbe.ps1');         Dst = 'FirstBase\Deploy\Invoke-FirstBaseRaidProbe.ps1' },
             @{ Src = (Join-Path $ContentRoot 'Deploy\WinPE-Startnet.cmd');                    Dst = 'FirstBase\Deploy\WinPE-Startnet.cmd' },
@@ -998,8 +1004,8 @@ function Build-Cache {
             @{ Src = (Join-Path $ContentRoot 'Deploy\Invoke-FbDeployUi.ps1');                 Dst = 'FirstBase\Deploy\Invoke-FbDeployUi.ps1' },
             @{ Src = (Join-Path $ContentRoot 'FirstBaseBuildIdentity.ps1');                   Dst = 'FirstBase\Deploy\FirstBaseBuildIdentity.ps1' },
             @{ Src = (Join-Path $ContentRoot 'Scripts\Invoke-FirstBaseDismApply.ps1');        Dst = 'FirstBase\Scripts\Invoke-FirstBaseDismApply.ps1' },
-            @{ Src = (Join-Path $ContentRoot 'Policy\autounattend.xml');                      Dst = 'FirstBase\Autounattend.xml' },
-            @{ Src = (Join-Path $ContentRoot 'Policy\autounattend.xml');                      Dst = 'FirstBase\Policy\Autounattend.xml' },
+            @{ Src = (Join-Path $ContentRoot (Get-LwUsbOverlayUnattendSource -QuickInstall ([bool]$QuickInstall))); Dst = 'FirstBase\Autounattend.xml' },
+            @{ Src = (Join-Path $ContentRoot (Get-LwUsbOverlayUnattendSource -QuickInstall ([bool]$QuickInstall))); Dst = 'FirstBase\Policy\Autounattend.xml' },
             @{ Src = (Join-Path $ContentRoot 'SetupComplete.cmd');                            Dst = 'FirstBase\WUPayload\SetupComplete.cmd' },
             @{ Src = (Join-Path $ContentRoot 'Invoke-WindowsUpdateLoop.ps1');                 Dst = 'FirstBase\WUPayload\Invoke-WindowsUpdateLoop.ps1' },
             @{ Src = (Join-Path $ContentRoot 'Tools\fb-dump.ps1');                             Dst = 'FirstBase\WUPayload\Tools\fb-dump.ps1' },
@@ -1026,6 +1032,12 @@ function Build-Cache {
             @{ Src = (Join-Path $ContentRoot 'Tools\seal_command.txt');                       Dst = 'FirstBase\WUPayload\Tools\seal_command.txt' },
             @{ Src = (Join-Path $ContentRoot 'FirstBase.ico');                                Dst = 'FirstBase\FirstBase.ico' }
         )
+        if (-not $stageWuPayload) {
+            $overlayMap = @($overlayMap | Where-Object { -not (Test-LwUpdatePayloadOverlayDest -Destination $_.Dst) })
+        }
+        if ($QuickInstall) {
+            $overlayMap = @($overlayMap | Where-Object { -not (Test-LwQuickInstallSkipDeployOverlayDest -Destination $_.Dst) })
+        }
         foreach ($o in $overlayMap) {
             $cacheDst = Join-Path $overlayCache $o.Dst
             $copied = Copy-LwOverlayPayloadFile -Source $o.Src -Destination $cacheDst
@@ -1036,7 +1048,11 @@ function Build-Cache {
         if (-not $NoPayload) {
             Assert-LwUpdatesOverlayTechInstall -PartRoot $overlayCache -WorkflowType $WorkflowType -QuickInstall $false -NoPayload $false
         }
-        if (-not $NoPayload) {
+        if ($QuickInstall) {
+            Assert-LwQuickInstallUnattend -PartRoot $overlayCache
+            Remove-LwQuickInstallStartnetFromDeploy -PartRoot $overlayCache
+        }
+        if ($stageWuPayload) {
             Copy-LwRepoEdgeInstaller -DestRoot $overlayCache
             Assert-LwUpdateLoopCopy -Src (Join-Path $ContentRoot 'Invoke-WindowsUpdateLoop.ps1') -Dst (Join-Path $overlayCache 'FirstBase\WUPayload\Invoke-WindowsUpdateLoop.ps1')
         }
@@ -1046,12 +1062,12 @@ function Build-Cache {
             New-Item -ItemType Directory -Path $scriptsDst -Force | Out-Null
             Copy-Item -Path (Join-Path $scriptsSrc '*') -Destination $scriptsDst -Recurse -Force -ErrorAction SilentlyContinue
         }
-        if (-not $NoPayload) {
+        if ($stageWuPayload) {
             $edgeShare = ''
             try { $edgeShare = [string]$shareLayout.EdgeRoot } catch {}
             $null = Copy-LwEdgeOfflineInstaller -WuPayloadRoot (Join-Path $overlayCache 'FirstBase\WUPayload') -Arch $wfUpper -ContentRoot $ContentRoot -EdgeShareRoot $edgeShare
         }
-        if ($DevBuild) {
+        if ($DevBuild -and $stageWuPayload) {
             try {
                 $wuDir = Join-Path $overlayCache 'FirstBase\WUPayload'
                 if (-not (Test-Path -LiteralPath $wuDir)) { New-Item -ItemType Directory -Force -Path $wuDir | Out-Null }
@@ -1067,6 +1083,9 @@ function Build-Cache {
                     Remove-Item -LiteralPath $marker -Force -ErrorAction SilentlyContinue
                 }
             }
+        }
+        if (-not $stageWuPayload) {
+            Remove-LwStagedWindowsUpdatePayload -PartRoot $overlayCache
         }
     } else {
         # WIN-INSTALL: overlay uses the same TechInstall architecture as a full build.
@@ -1215,10 +1234,12 @@ function Build-IsoCache {
     New-Item -ItemType Directory -Force -Path $overlayCache | Out-Null
 
     if (-not $NoPayload) {
-        # Full build: Deploy\, Policy\, WUPayload\, and Scripts\ carry the deploy entry-point layout.
+        # Deploy\ and Scripts\ are the install boot path. WUPayload is staged only for
+        # full Snapdragon Windows Updates ($stageWuPayload).
+        $cacheOverlayProfile = Get-LwUsbOverlayProfile -WorkflowType $WorkflowType -QuickInstall ([bool]$QuickInstall) -NoPayload $false
         New-Item -ItemType Directory -Force -Path (Join-Path $overlayCache 'FirstBase\Deploy'), (Join-Path $overlayCache 'FirstBase\Policy'), (Join-Path $overlayCache 'FirstBase\Scripts'), (Join-Path $overlayCache 'FirstBase\WUPayload'), (Join-Path $overlayCache 'FirstBase\WUPayload\Tools') | Out-Null
         $overlayMap = @(
-            @{ Src = (Join-Path $ContentRoot 'Deploy\TechInstall.cmd');                       Dst = 'FirstBase\Deploy\TechInstall.cmd' },
+            @{ Src = (Join-Path $ContentRoot $cacheOverlayProfile.TechInstallSource);         Dst = $cacheOverlayProfile.TechInstallDest },
             @{ Src = (Join-Path $ContentRoot 'Deploy\disksetup.cmd');                         Dst = 'FirstBase\Deploy\disksetup.cmd' },
             @{ Src = (Join-Path $ContentRoot 'Deploy\Invoke-FirstBaseRaidProbe.ps1');         Dst = 'FirstBase\Deploy\Invoke-FirstBaseRaidProbe.ps1' },
             @{ Src = (Join-Path $ContentRoot 'Deploy\WinPE-Startnet.cmd');                    Dst = 'FirstBase\Deploy\WinPE-Startnet.cmd' },
@@ -1226,8 +1247,8 @@ function Build-IsoCache {
             @{ Src = (Join-Path $ContentRoot 'Deploy\Invoke-FbDeployUi.ps1');                 Dst = 'FirstBase\Deploy\Invoke-FbDeployUi.ps1' },
             @{ Src = (Join-Path $ContentRoot 'FirstBaseBuildIdentity.ps1');                   Dst = 'FirstBase\Deploy\FirstBaseBuildIdentity.ps1' },
             @{ Src = (Join-Path $ContentRoot 'Scripts\Invoke-FirstBaseDismApply.ps1');        Dst = 'FirstBase\Scripts\Invoke-FirstBaseDismApply.ps1' },
-            @{ Src = (Join-Path $ContentRoot 'Policy\autounattend.xml');                      Dst = 'FirstBase\Autounattend.xml' },
-            @{ Src = (Join-Path $ContentRoot 'Policy\autounattend.xml');                      Dst = 'FirstBase\Policy\Autounattend.xml' },
+            @{ Src = (Join-Path $ContentRoot (Get-LwUsbOverlayUnattendSource -QuickInstall ([bool]$QuickInstall))); Dst = 'FirstBase\Autounattend.xml' },
+            @{ Src = (Join-Path $ContentRoot (Get-LwUsbOverlayUnattendSource -QuickInstall ([bool]$QuickInstall))); Dst = 'FirstBase\Policy\Autounattend.xml' },
             @{ Src = (Join-Path $ContentRoot 'SetupComplete.cmd');                            Dst = 'FirstBase\WUPayload\SetupComplete.cmd' },
             @{ Src = (Join-Path $ContentRoot 'Invoke-WindowsUpdateLoop.ps1');                 Dst = 'FirstBase\WUPayload\Invoke-WindowsUpdateLoop.ps1' },
             @{ Src = (Join-Path $ContentRoot 'Tools\fb-dump.ps1');                             Dst = 'FirstBase\WUPayload\Tools\fb-dump.ps1' },
@@ -1254,6 +1275,12 @@ function Build-IsoCache {
             @{ Src = (Join-Path $ContentRoot 'Tools\seal_command.txt');                       Dst = 'FirstBase\WUPayload\Tools\seal_command.txt' },
             @{ Src = (Join-Path $ContentRoot 'FirstBase.ico');                                Dst = 'FirstBase\FirstBase.ico' }
         )
+        if (-not $stageWuPayload) {
+            $overlayMap = @($overlayMap | Where-Object { -not (Test-LwUpdatePayloadOverlayDest -Destination $_.Dst) })
+        }
+        if ($QuickInstall) {
+            $overlayMap = @($overlayMap | Where-Object { -not (Test-LwQuickInstallSkipDeployOverlayDest -Destination $_.Dst) })
+        }
         foreach ($o in $overlayMap) {
             $cacheDst = Join-Path $overlayCache $o.Dst
             $copied = Copy-LwOverlayPayloadFile -Source $o.Src -Destination $cacheDst
@@ -1264,7 +1291,11 @@ function Build-IsoCache {
         if (-not $NoPayload) {
             Assert-LwUpdatesOverlayTechInstall -PartRoot $overlayCache -WorkflowType $WorkflowType -QuickInstall $false -NoPayload $false
         }
-        if (-not $NoPayload) {
+        if ($QuickInstall) {
+            Assert-LwQuickInstallUnattend -PartRoot $overlayCache
+            Remove-LwQuickInstallStartnetFromDeploy -PartRoot $overlayCache
+        }
+        if ($stageWuPayload) {
             Copy-LwRepoEdgeInstaller -DestRoot $overlayCache
             Assert-LwUpdateLoopCopy -Src (Join-Path $ContentRoot 'Invoke-WindowsUpdateLoop.ps1') -Dst (Join-Path $overlayCache 'FirstBase\WUPayload\Invoke-WindowsUpdateLoop.ps1')
         }
@@ -1274,12 +1305,12 @@ function Build-IsoCache {
             New-Item -ItemType Directory -Path $scriptsDst -Force | Out-Null
             Copy-Item -Path (Join-Path $scriptsSrc '*') -Destination $scriptsDst -Recurse -Force -ErrorAction SilentlyContinue
         }
-        if (-not $NoPayload) {
+        if ($stageWuPayload) {
             $edgeShare = ''
             try { $edgeShare = [string]$shareLayout.EdgeRoot } catch {}
             $null = Copy-LwEdgeOfflineInstaller -WuPayloadRoot (Join-Path $overlayCache 'FirstBase\WUPayload') -Arch $wfUpper -ContentRoot $ContentRoot -EdgeShareRoot $edgeShare
         }
-        if ($DevBuild) {
+        if ($DevBuild -and $stageWuPayload) {
             try {
                 $wuDir = Join-Path $overlayCache 'FirstBase\WUPayload'
                 if (-not (Test-Path -LiteralPath $wuDir)) { New-Item -ItemType Directory -Force -Path $wuDir | Out-Null }
@@ -1295,6 +1326,9 @@ function Build-IsoCache {
                     Remove-Item -LiteralPath $marker -Force -ErrorAction SilentlyContinue
                 }
             }
+        }
+        if (-not $stageWuPayload) {
+            Remove-LwStagedWindowsUpdatePayload -PartRoot $overlayCache
         }
     } else {
         # WIN-INSTALL: overlay uses the same TechInstall architecture as a full build.
@@ -1408,8 +1442,8 @@ function Clear-StaleWimMount {
     return $stale.Count
 }
 
-# Add-LwArm64WinPeUsbHost lives in lib\Add-LwArm64SurfaceDrivers.ps1.
-# It recurse-injects the Surface set (including qcpep) into a mounted image.
+# Add-LwArm64DriversToMountedImage lives in lib\Add-LwArm64Drivers.ps1.
+# It recurse-injects the WinPE-Drivers tree into a mounted image.
 
 # --- Inject WinPE-Startnet.cmd into boot.wim in the ESP cache ----------------
 # Mounts boot.wim index 1 offline with DISM, replaces Windows\System32\startnet.cmd
@@ -1586,8 +1620,8 @@ function Invoke-StartnetInjection {
             Copy-LwPeBrailleFont -WimFontsDir $peFontsDir
 
             if (-not [string]::IsNullOrWhiteSpace($Arm64UsbDriverDir)) {
-                EmitLog -Disk 0 -Msg "startnet inject: adding Surface drivers to boot.wim index $wimIndex from $Arm64UsbDriverDir"
-                Add-LwArm64WinPeUsbHost -MountDir $mountDir -DriverRoot $Arm64UsbDriverDir -Log {
+                EmitLog -Disk 0 -Msg "startnet inject: adding ARM64 drivers to boot.wim index $wimIndex from $Arm64UsbDriverDir"
+                Add-LwArm64DriversToMountedImage -MountDir $mountDir -DriverRoot $Arm64UsbDriverDir -Log {
                     param($m)
                     EmitLog -Disk 0 -Msg $m
                 } -Progress {
@@ -1693,10 +1727,10 @@ $workerDiskBlock = {
         [string] $EdgeToolsDir,
         # Destage skip-WU (npm start:updatesfinished). Only honored when $DevBuild is true.
         [bool]   $DestageSkipWu,
-        # ARM64 Surface driver folder. Empty on AMD64 and on overlay-only.
+        # ARM64 driver folder. Empty on AMD64 and on overlay-only.
         [string] $Arm64UsbDriverDir,
         [string] $Arm64DriverLibPath,
-        # Folder of Surface-driver install.wim or install*.swm. Empty on AMD64.
+        # Folder of ARM64-driver install.wim or install*.swm. Empty on AMD64.
         [string] $Arm64InstallImageDir,
         # lib\LwUsbOverlay.ps1. Start-Job cannot see parent functions.
         [string] $UsbOverlayLibPath
@@ -1725,6 +1759,11 @@ $workerDiskBlock = {
     if (-not $snapdragonWorkflow) {
         $Arm64UsbDriverDir = ''
         $Arm64InstallImageDir = ''
+    }
+    # Same gate as the main thread. Jobs cannot see the parent $stageWuPayload.
+    $stageWuPayload = $false
+    if (Get-Command -Name Test-LwStageWindowsUpdatePayload -ErrorAction SilentlyContinue) {
+        $stageWuPayload = [bool](Test-LwStageWindowsUpdatePayload -WorkflowType $WorkflowType -QuickInstall ([bool]$QuickInstall) -NoPayload ([bool]$NoPayload))
     }
 
     function Set-LwFat32BpbLabel {
@@ -2011,10 +2050,13 @@ $workerDiskBlock = {
     # Split-LWImageForFat32), dot-sourced into this job runspace above. Both the
     # on-the-fly fallback below and the pre-split producer (Stage-PreSplitImage.ps1)
     # call that one function, so a build's fallback output is byte-identical to a
-    # staged set (same /FileSize:3800, same /CheckIntegrity, same ESD-export path,
-    # same install*.swm naming). The deploy side (TechInstall.cmd /
-    # Invoke-FirstBaseDismApply.ps1) already applies from install*.swm via SWMFile
-    # when install.wim is absent. An install.wim/esd already <= 4 GB is copied as-is.
+    # staged set (same Get-LWFat32SplitPlan span, same /CheckIntegrity, same
+    # ESD-export path, same install*.swm naming). Images above 3800 MB keep
+    # /FileSize:3800. Images from 512 MiB through that cap use a span just over
+    # half the image so DISM writes at least two SWM chunks. The deploy side
+    # (TechInstall.cmd / Invoke-FirstBaseDismApply.ps1) already applies from
+    # install*.swm via SWMFile when install.wim is absent. An image under 512 MiB
+    # is copied as one file.
     #
     # Thin local wrapper preserving the previous call-site signature (-Disk) while
     # adapting the shared helper's plain-string $Emit into this worker's J log events.
@@ -2357,7 +2399,7 @@ $workerDiskBlock = {
                 # before this feature. Pre-split applies to ISO mode ONLY.
                 if ($Layout -eq 'Single') {
                     $dataSources = Join-Path $dataRoot 'sources'
-                    # ARM64 passes a Surface-driver install set. Prefer that over a stock pre-split folder.
+                    # ARM64 passes a ARM64-driver install set. Prefer that over a stock pre-split folder.
                     $lwInstallSet = $PreSplitSetDir
                     if (-not [string]::IsNullOrWhiteSpace($Arm64InstallImageDir) -and (Test-Path -LiteralPath $Arm64InstallImageDir)) {
                         $lwInstallSet = $Arm64InstallImageDir
@@ -2421,7 +2463,7 @@ $workerDiskBlock = {
                         # NON-empty-but-unreadable dir means detection matched but this worker's
                         # runspace could not reach the share path (creds / SMB session).
                         if ($snapdragonWorkflow) {
-                            throw "FATAL: ARM64 install image with Surface drivers was not staged (disk $DiskNumber)"
+                            throw "FATAL: ARM64 install image with ARM64 drivers was not staged (disk $DiskNumber)"
                         }
                         $psMiss = if ([string]::IsNullOrWhiteSpace($PreSplitSetDir)) {
                             'no staged set resolved on the main thread (see the disk 0 "presplit:" line for the exact reason)'
@@ -2434,7 +2476,7 @@ $workerDiskBlock = {
                     }
                 } elseif ($snapdragonWorkflow) {
                     if ([string]::IsNullOrWhiteSpace($Arm64InstallImageDir) -or -not (Test-Path -LiteralPath $Arm64InstallImageDir)) {
-                        throw "FATAL: ARM64 install image with Surface drivers was not staged (disk $DiskNumber)"
+                        throw "FATAL: ARM64 install image with ARM64 drivers was not staged (disk $DiskNumber)"
                     }
                     $armSources = Join-Path $dataRoot 'sources'
                     New-Item -ItemType Directory -Force -Path $armSources -ErrorAction SilentlyContinue | Out-Null
@@ -2490,11 +2532,11 @@ $workerDiskBlock = {
                     if (-not [string]::IsNullOrWhiteSpace($Arm64InstallImageDir) -and (Test-Path -LiteralPath $Arm64InstallImageDir)) {
                         $armDst = Join-Path $dataRoot 'sources'
                         New-Item -ItemType Directory -Force -Path $armDst -ErrorAction SilentlyContinue | Out-Null
-                        J @{ event='log'; disk=$DiskNumber; message="ARM64 install image: copying Surface-driver set from '$Arm64InstallImageDir'" }
+                        J @{ event='log'; disk=$DiskNumber; message="ARM64 install image: copying ARM64-driver set from '$Arm64InstallImageDir'" }
                         & robocopy.exe $Arm64InstallImageDir $armDst 'install*.swm' 'install.wim' 'install.esd' /R:2 /W:5 /NP /NJH /NJS | Out-Null
                         if ($LASTEXITCODE -gt 7) { throw "ARM64 install image copy failed (exit $LASTEXITCODE)" }
                     } elseif ($snapdragonWorkflow) {
-                        throw "FATAL: ARM64 install image with Surface drivers was not staged (disk $DiskNumber)"
+                        throw "FATAL: ARM64 install image with ARM64 drivers was not staged (disk $DiskNumber)"
                     } else {
                         Invoke-LWSplitForFat32 -SourceSourcesDir (Join-Path $SharedWimMount 'sources') -DestSourcesDir (Join-Path $dataRoot 'sources') -Disk $DiskNumber -ProgressPhase 'dism'
                     }
@@ -2593,11 +2635,11 @@ $workerDiskBlock = {
                         if (-not [string]::IsNullOrWhiteSpace($Arm64InstallImageDir) -and (Test-Path -LiteralPath $Arm64InstallImageDir)) {
                             $armDst = Join-Path $dataRoot 'sources'
                             New-Item -ItemType Directory -Force -Path $armDst -ErrorAction SilentlyContinue | Out-Null
-                            J @{ event='log'; disk=$DiskNumber; message="ARM64 install image: copying Surface-driver set from '$Arm64InstallImageDir'" }
+                            J @{ event='log'; disk=$DiskNumber; message="ARM64 install image: copying ARM64-driver set from '$Arm64InstallImageDir'" }
                             & robocopy.exe $Arm64InstallImageDir $armDst 'install*.swm' 'install.wim' 'install.esd' /R:2 /W:5 /NP /NJH /NJS | Out-Null
                             if ($LASTEXITCODE -gt 7) { throw "ARM64 install image copy failed (exit $LASTEXITCODE)" }
                         } elseif ($snapdragonWorkflow) {
-                            throw "FATAL: ARM64 install image with Surface drivers was not staged (disk $DiskNumber)"
+                            throw "FATAL: ARM64 install image with ARM64 drivers was not staged (disk $DiskNumber)"
                         } else {
                             # Split from the mounted WIM before the finally block unmounts it.
                             Invoke-LWSplitForFat32 -SourceSourcesDir (Join-Path $mountDir 'sources') -DestSourcesDir (Join-Path $dataRoot 'sources') -Disk $DiskNumber -ProgressPhase 'dism'
@@ -2890,10 +2932,10 @@ $workerDiskBlock = {
 
                             if ($snapdragonWorkflow) {
                                 if ([string]::IsNullOrWhiteSpace($Arm64UsbDriverDir)) {
-                                    throw "FATAL: ARM64 boot.wim index $peIdx has no Surface driver folder (disk $DiskNumber)"
+                                    throw "FATAL: ARM64 boot.wim index $peIdx has no ARM64 driver folder (disk $DiskNumber)"
                                 }
-                                J @{ event='log'; disk=$DiskNumber; message="startnet-inject: adding Surface drivers to boot.wim index $peIdx from $Arm64UsbDriverDir" }
-                                Add-LwArm64WinPeUsbHost -MountDir $peMountDir -DriverRoot $Arm64UsbDriverDir -Log {
+                                J @{ event='log'; disk=$DiskNumber; message="startnet-inject: adding ARM64 drivers to boot.wim index $peIdx from $Arm64UsbDriverDir" }
+                                Add-LwArm64DriversToMountedImage -MountDir $peMountDir -DriverRoot $Arm64UsbDriverDir -Log {
                                     param($m)
                                     J @{ event='log'; disk=$DiskNumber; message=$m }
                                 } -Progress {
@@ -2986,15 +3028,17 @@ $workerDiskBlock = {
                     }
                 }
                 if (-not $NoPayload) {
-                    Copy-LwRepoEdgeInstaller -DestRoot $partRoot
-                    $loopSrc = Join-Path $OverlayCache 'FirstBase\WUPayload\Invoke-WindowsUpdateLoop.ps1'
-                    if (-not (Test-Path -LiteralPath $loopSrc)) { $loopSrc = Join-Path $ContentRoot 'Invoke-WindowsUpdateLoop.ps1' }
-                    Assert-LoopCopyLocal -Src $loopSrc -Dst (Join-Path $partRoot 'FirstBase\WUPayload\Invoke-WindowsUpdateLoop.ps1')
                     $tiDst = Join-Path $partRoot $ovProfile.TechInstallDest
                     if (-not (Test-Path -LiteralPath $tiDst)) {
                         $null = Copy-LwOverlayPayloadFile -Source (Join-Path $ContentRoot $ovProfile.TechInstallSource) -Destination $tiDst
                     }
-                    Assert-LwUpdatesOverlayTechInstall -PartRoot $partRoot -WorkflowType $WorkflowType -QuickInstall $false -NoPayload $false
+                    Assert-LwUpdatesOverlayTechInstall -PartRoot $partRoot -WorkflowType $WorkflowType -QuickInstall ([bool]$QuickInstall) -NoPayload $false
+                }
+                if ($stageWuPayload) {
+                    Copy-LwRepoEdgeInstaller -DestRoot $partRoot
+                    $loopSrc = Join-Path $OverlayCache 'FirstBase\WUPayload\Invoke-WindowsUpdateLoop.ps1'
+                    if (-not (Test-Path -LiteralPath $loopSrc)) { $loopSrc = Join-Path $ContentRoot 'Invoke-WindowsUpdateLoop.ps1' }
+                    Assert-LoopCopyLocal -Src $loopSrc -Dst (Join-Path $partRoot 'FirstBase\WUPayload\Invoke-WindowsUpdateLoop.ps1')
                 }
             } else {
                 # Direct ContentRoot → USB (deprecated local overlay temp stage).
@@ -3009,8 +3053,8 @@ $workerDiskBlock = {
             @{ Src = (Join-Path $ContentRoot 'Deploy\Invoke-FbDeployUi.ps1');                 Dst = 'FirstBase\Deploy\Invoke-FbDeployUi.ps1' },
             @{ Src = (Join-Path $ContentRoot 'FirstBaseBuildIdentity.ps1');                   Dst = 'FirstBase\Deploy\FirstBaseBuildIdentity.ps1' },
                         @{ Src = (Join-Path $ContentRoot 'Scripts\Invoke-FirstBaseDismApply.ps1');        Dst = 'FirstBase\Scripts\Invoke-FirstBaseDismApply.ps1' },
-                        @{ Src = (Join-Path $ContentRoot 'Policy\autounattend.xml');                      Dst = 'FirstBase\Autounattend.xml' },
-                        @{ Src = (Join-Path $ContentRoot 'Policy\autounattend.xml');                      Dst = 'FirstBase\Policy\Autounattend.xml' },
+                        @{ Src = (Join-Path $ContentRoot (Get-LwUsbOverlayUnattendSource -QuickInstall ([bool]$QuickInstall))); Dst = 'FirstBase\Autounattend.xml' },
+                        @{ Src = (Join-Path $ContentRoot (Get-LwUsbOverlayUnattendSource -QuickInstall ([bool]$QuickInstall))); Dst = 'FirstBase\Policy\Autounattend.xml' },
                         @{ Src = (Join-Path $ContentRoot 'SetupComplete.cmd');                            Dst = 'FirstBase\WUPayload\SetupComplete.cmd' },
                         @{ Src = (Join-Path $ContentRoot 'Invoke-WindowsUpdateLoop.ps1');                 Dst = 'FirstBase\WUPayload\Invoke-WindowsUpdateLoop.ps1' },
                         @{ Src = (Join-Path $ContentRoot 'Tools\fb-dump.ps1');                             Dst = 'FirstBase\WUPayload\Tools\fb-dump.ps1' },
@@ -3038,6 +3082,12 @@ $workerDiskBlock = {
                         @{ Src = (Join-Path $ContentRoot 'FirstBase.ico');                                Dst = 'FirstBase\FirstBase.ico' },
                         @{ Src = (Join-Path $ContentRoot 'Deploy\Fonts\cascadiamono.ttf');                 Dst = 'FirstBase\Deploy\Fonts\cascadiamono.ttf' }
                     )
+                    if (-not $stageWuPayload) {
+                        $overlayMap = @($overlayMap | Where-Object { -not (Test-LwUpdatePayloadOverlayDest -Destination $_.Dst) })
+                    }
+                    if ($QuickInstall) {
+                        $overlayMap = @($overlayMap | Where-Object { -not (Test-LwQuickInstallSkipDeployOverlayDest -Destination $_.Dst) })
+                    }
                     foreach ($o in $overlayMap) {
                         $dstPath = Join-Path $partRoot $o.Dst
                         $copied = Copy-LwOverlayPayloadFile -Source $o.Src -Destination $dstPath
@@ -3045,8 +3095,8 @@ $workerDiskBlock = {
                             throw ("FATAL: {0} updates overlay did not stage {1} from '{2}'." -f $ovProfile.Arch, $ovProfile.TechInstallDest, $o.Src)
                         }
                     }
-                    Assert-LwUpdatesOverlayTechInstall -PartRoot $partRoot -WorkflowType $WorkflowType -QuickInstall $false -NoPayload $false
-                    if (-not $NoPayload) {
+                    Assert-LwUpdatesOverlayTechInstall -PartRoot $partRoot -WorkflowType $WorkflowType -QuickInstall ([bool]$QuickInstall) -NoPayload $false
+                    if ($stageWuPayload) {
                         Copy-LwRepoEdgeInstaller -DestRoot $partRoot
                         Assert-LoopCopyLocal -Src (Join-Path $ContentRoot 'Invoke-WindowsUpdateLoop.ps1') -Dst (Join-Path $partRoot 'FirstBase\WUPayload\Invoke-WindowsUpdateLoop.ps1')
                     }
@@ -3056,19 +3106,21 @@ $workerDiskBlock = {
                         New-Item -ItemType Directory -Path $scriptsDst -Force | Out-Null
                         Copy-Item -Path (Join-Path $scriptsSrc '*') -Destination $scriptsDst -Recurse -Force -ErrorAction SilentlyContinue
                     }
-                    $edgePs1 = Join-Path $ContentRoot 'Install-FbMicrosoftEdge.ps1'
-                    $wuDst = Join-Path $partRoot 'FirstBase\WUPayload'
-                    if ((Test-Path -LiteralPath $edgePs1) -and (Test-Path -LiteralPath $wuDst)) {
-                        Copy-Item -LiteralPath $edgePs1 -Destination (Join-Path $wuDst 'Install-FbMicrosoftEdge.ps1') -Force -ErrorAction SilentlyContinue
-                    }
-                    $edgeSrc = Join-Path $ContentRoot 'Edge'
-                    if ((Test-Path -LiteralPath $edgeSrc) -and (Test-Path -LiteralPath $wuDst)) {
-                        $edgeDst = Join-Path $wuDst 'Edge'
-                        if (-not (Test-Path -LiteralPath $edgeDst)) { New-Item -ItemType Directory -Path $edgeDst -Force | Out-Null }
-                        Copy-Item -Path (Join-Path $edgeSrc '*') -Destination $edgeDst -Recurse -Force -ErrorAction SilentlyContinue
+                    if ($stageWuPayload) {
+                        $edgePs1 = Join-Path $ContentRoot 'Install-FbMicrosoftEdge.ps1'
+                        $wuDst = Join-Path $partRoot 'FirstBase\WUPayload'
+                        if ((Test-Path -LiteralPath $edgePs1) -and (Test-Path -LiteralPath $wuDst)) {
+                            Copy-Item -LiteralPath $edgePs1 -Destination (Join-Path $wuDst 'Install-FbMicrosoftEdge.ps1') -Force -ErrorAction SilentlyContinue
+                        }
+                        $edgeSrc = Join-Path $ContentRoot 'Edge'
+                        if ((Test-Path -LiteralPath $edgeSrc) -and (Test-Path -LiteralPath $wuDst)) {
+                            $edgeDst = Join-Path $wuDst 'Edge'
+                            if (-not (Test-Path -LiteralPath $edgeDst)) { New-Item -ItemType Directory -Path $edgeDst -Force | Out-Null }
+                            Copy-Item -Path (Join-Path $edgeSrc '*') -Destination $edgeDst -Recurse -Force -ErrorAction SilentlyContinue
+                        }
                     }
                 } else {
-                    # WIN-INSTALL only. Quick Install USB takes the full rebuild map above.
+                    # WIN-INSTALL only. Quick Install uses the install boot map above, without the update payload.
                     New-Item -ItemType Directory -Force -Path (Join-Path $partRoot 'FirstBase\Policy'), (Join-Path $partRoot 'FirstBase\Deploy'), (Join-Path $partRoot 'FirstBase\WUPayload\Tools') | Out-Null
                     $autounattendInstallSrc = Join-Path $ContentRoot 'Policy\autounattend-install.xml'
                     $autounattendSrc = if (Test-Path -LiteralPath $autounattendInstallSrc) { $autounattendInstallSrc } else { Join-Path $ContentRoot 'Policy\autounattend.xml' }
@@ -3125,6 +3177,13 @@ $workerDiskBlock = {
                     Copy-LwPeBrailleFont -OverlayRoot $partRoot
                 }
                 J @{ event='log'; disk=$DiskNumber; message='overlay: copied deploy files directly from ContentRoot to USB (no local overlay temp stage)' }
+            }
+            if ($QuickInstall) {
+                Assert-LwQuickInstallUnattend -PartRoot $partRoot
+                Remove-LwQuickInstallStartnetFromDeploy -PartRoot $partRoot
+            }
+            if (-not $stageWuPayload -and -not $NoPayload) {
+                Remove-LwStagedWindowsUpdatePayload -PartRoot $partRoot
             }
             $logDir = Join-Path $partRoot 'FirstBase-Logs'
             if (-not (Test-Path -LiteralPath $logDir)) {
@@ -3483,17 +3542,26 @@ try {
         $snapdragonBuild = [bool](Test-LwSnapdragonWorkflow -WorkflowType $WorkflowType)
     }
     if ($snapdragonBuild -and -not $OverlayOnly) {
-        if (-not (Get-Command -Name Resolve-LwArm64SurfaceDriverDir -ErrorAction SilentlyContinue)) {
-            throw 'FATAL: ARM64 Surface driver helper is not loaded (lib\Add-LwArm64SurfaceDrivers.ps1).'
+        if (-not (Get-Command -Name Resolve-LwArm64DriverDir -ErrorAction SilentlyContinue)) {
+            throw 'FATAL: ARM64 driver helper is not loaded (lib\Add-LwArm64Drivers.ps1).'
         }
-        $lwRepoRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..'))
-        $arm64UsbDriverDir = [string](Resolve-LwArm64SurfaceDriverDir -RepoRoot $lwRepoRoot)
+        $arm64UsbDriverDir = [string](Resolve-LwArm64DriverDir)
         if ([string]::IsNullOrWhiteSpace($arm64UsbDriverDir)) {
-            throw 'FATAL: ARM64 build requires the Snapdragon/Surface driver set. Expected C:\SurfaceDrivers\SurfaceUpdate, C:\Repos\Windows_Installation\UUP\25h2\WinPE-Drivers\SurfaceLaptop7\SurfaceUpdate, or drivers\SurfaceLaptop7_ARM_Win11_26100_26.053.36539.0.msi.'
+            throw 'FATAL: ARM64 build requires driver packages under C:\Repos\Windows_Installation\UUP\25h2\WinPE-Drivers.'
         }
-        EmitLog -Disk 0 -Msg "ARM64 Surface drivers: $arm64UsbDriverDir (injected into boot.wim and the install image)"
+        EmitLog -Disk 0 -Msg "ARM64 drivers: $arm64UsbDriverDir (injected into boot.wim and the install image)"
     } elseif (-not $OverlayOnly) {
-        EmitLog -Disk 0 -Msg "Snapdragon driver inject skipped for $wfUpper (Intel/AMD and Quick Install Intel/AMD do not get Surface drivers)"
+        EmitLog -Disk 0 -Msg "ARM64 driver inject skipped for $wfUpper (Intel/AMD and Quick Install Intel/AMD do not get ARM64 drivers)"
+    }
+    if ($stageWuPayload) {
+        EmitLog -Disk 0 -Msg 'Snapdragon Windows Updates: staging Windows Update payload (WUPayload, Edge installer, update loop)'
+    } elseif ($QuickInstall -and $snapdragonBuild) {
+        $qiDriverNote = if ($OverlayOnly) { '' } else { ' ARM64 driver injection still runs.' }
+        EmitLog -Disk 0 -Msg ("Snapdragon Quick Install: skipping Windows Update payload (no WUPayload, Edge installer, or offline update servicing).{0}" -f $qiDriverNote)
+    } elseif ($QuickInstall) {
+        EmitLog -Disk 0 -Msg 'Quick Install Intel/AMD: skipping Windows Update payload (no WUPayload, Edge installer, or offline update servicing). ARM64 drivers are not injected.'
+    } elseif (-not $NoPayload) {
+        EmitLog -Disk 0 -Msg 'Windows (amd64): skipping Windows Update payload (no WUPayload, Edge installer, or offline update servicing). No ARM64 driver injection and no update servicing of the WIMs.'
     }
 
     # Measure ESP size for dynamic partition sizing
@@ -3757,11 +3825,11 @@ try {
     $edgeToolsDir = Join-Path ([IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..'))) 'tools'
     if ($snapdragonBuild -and -not $OverlayOnly -and -not $PreCacheOnly) {
         $stampedSet = $false
-        if (-not [string]::IsNullOrWhiteSpace($PreSplitSetDir) -and (Get-Command -Name Test-LwArm64SurfaceDriversStamped -ErrorAction SilentlyContinue)) {
-            $stampedSet = Test-LwArm64SurfaceDriversStamped -SetDir $PreSplitSetDir
+        if (-not [string]::IsNullOrWhiteSpace($PreSplitSetDir) -and (Get-Command -Name Test-LwArm64DriversStamped -ErrorAction SilentlyContinue)) {
+            $stampedSet = Test-LwArm64DriversStamped -SetDir $PreSplitSetDir
         }
         if ($stampedSet) {
-            EmitLog -Disk 0 -Msg "ARM64 install image: staged set already includes Surface drivers ($PreSplitSetDir)"
+            EmitLog -Disk 0 -Msg "ARM64 install image: staged set already includes ARM64 drivers ($PreSplitSetDir)"
             $arm64InstallImageDir = $PreSplitSetDir
         } else {
             $srcWim = ''
@@ -3778,11 +3846,11 @@ try {
                 $srcSwm = $PreSplitSetDir
             }
             if (-not $srcWim -and -not $srcEsd -and -not $srcSwm) {
-                throw 'FATAL: ARM64 build could not find install.wim, install.esd, or an install.swm set to inject Surface drivers into.'
+                throw 'FATAL: ARM64 build could not find install.wim, install.esd, or an install.swm set to inject ARM64 drivers into.'
             }
             $arm64InstallWorkDir = Join-Path $env:TEMP ('LW-Arm64Install-' + [guid]::NewGuid().ToString('N').Substring(0, 8))
             EmitPhase -Disk 0 -Phase 'driver-inject'
-            EmitLog -Disk 0 -Msg "Injecting Snapdragon drivers into the install image ($arm64InstallWorkDir)"
+            EmitLog -Disk 0 -Msg "Injecting ARM64 drivers into the install image ($arm64InstallWorkDir)"
             EmitProgress -Disk 0 -Phase 'driver-inject' -Pct 1
             New-LwArm64InjectedInstallSources -DriverRoot $arm64UsbDriverDir -DestDir $arm64InstallWorkDir -SourceWim $srcWim -SourceEsd $srcEsd -SourceSwmDir $srcSwm -SplitForFat32:($Layout -eq 'Single') -FileSizeMb 3800 -SplitLibPath $SplitLibPath -Log { param($m) EmitLog -Disk 0 -Msg $m } -Progress { param($p) EmitProgress -Disk 0 -Phase 'driver-inject' -Pct $p }
             EmitProgress -Disk 0 -Phase 'driver-inject' -Pct 100

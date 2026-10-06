@@ -1,8 +1,8 @@
 {
     "_comment":  "Product/payload version (version and payloadVersion) is independent of launcherVersion. npm start destage staging product version (chips, image dates, changelog, arch enablement) always comes from this file. Packaged Dev and production changelog/update feeds use public GitHub latest.json (main) or latest-dev.json (packaged Dev). The ISO share and Drive VERSION.json must not host launcher exe, payload zip, or live version overlay.",
-    "version":  "6.2.2",
-    "payloadVersion":  "6.2.2",
-    "launcherVersion":  "6.2.1",
+    "version":  "6.2.11",
+    "payloadVersion":  "6.2.11",
+    "launcherVersion":  "6.2.0",
     "launcherExeName":  "LoneWolf-Launcher.exe",
     "dev":  {
                 "_comment":  "npm start destage always versions from this checkout VERSION.json (local ISO, HQ UNC, Drive Desktop, or any other media). Packaged Dev uses the public dev branch / latest-dev.json. Packaged production uses main / latest.json. ISO/PreSplit/WinPE-OCs are filesystem-only: Google Drive for Desktop if mounted, else HQ UNC. A Drive folder URL is never ShareRoot. Do not publish exe/zip to Drive. Do not overlay Drive HTTPS VERSION.json on destage.",
@@ -25,6 +25,69 @@
                                     }
                       },
     "changelog":  [
+                      {
+                          "version":  "6.2.11",
+                          "date":  "2026-10-06",
+                          "changes":  [
+                                          "ARM64 driver injection uses the WinPE-Drivers tree for every manufacturer folder. ISO build and pre-split show Injecting ARM64 drivers."
+                                      ]
+                      },
+                      {
+                          "version":  "6.2.10",
+                          "date":  "2026-10-06",
+                          "changes":  [
+                                          "Quick Install no longer copies WinPE-Startnet.cmd into FirstBase\\Deploy. Full Snapdragon Windows Updates still stages that file, and Quick Install still boots TechInstall.cmd."
+                                      ]
+                      },
+                      {
+                          "version":  "6.2.9",
+                          "date":  "2026-10-06",
+                          "changes":  [
+                                          "Quick Install reboots into a stock Windows OOBE. It no longer waits for a key, and it does not apply the audit reseal or SetupComplete startup path."
+                                      ]
+                      },
+                      {
+                          "version":  "6.2.8",
+                          "date":  "2026-10-06",
+                          "changes":  [
+                                          "Snapdragon Quick Install and Windows (amd64) skip the Windows Update payload. Full Snapdragon Windows Updates still stages it, and Snapdragon Quick Install still injects drivers."
+                                      ]
+                      },
+                      {
+                          "version":  "6.2.7",
+                          "date":  "2026-10-05",
+                          "changes":  [
+                                          "Snapdragon Home and Pro Stage ISO keeps the WIM path on the DISM /ImageFile argument, so driver injection can mount the install image."
+                                      ]
+                      },
+                      {
+                          "version":  "6.2.6",
+                          "date":  "2026-10-05",
+                          "changes":  [
+                                          "Snapdragon Home and Pro Stage ISO mount the ARM64 install image and inject drivers. The mount progress callback no longer calls itself."
+                                      ]
+                      },
+                      {
+                          "version":  "6.2.5",
+                          "date":  "2026-10-05",
+                          "changes":  [
+                                          "Snapdragon driver injection reads each install index with Get-WindowsImage -Index. An ARM64 image is injected, and a failed architecture query reports the DISM error."
+                                      ]
+                      },
+                      {
+                          "version":  "6.2.4",
+                          "date":  "2026-10-05",
+                          "changes":  [
+                                          "Pre-split writes at least two install.swm chunks for an image at or above 512 MB. A file under the 3800 MB cap uses a span just over half its size so DISM can split it, and a one-file set for that image is staged again."
+                                      ]
+                      },
+                      {
+                          "version":  "6.2.3",
+                          "date":  "2026-10-05",
+                          "changes":  [
+                                          "Pre-split copies an install image that is already under the 3800 MB span. DISM /Split-Image is only used when the image is larger than that span."
+                                      ]
+                      },
                       {
                           "version":  "6.2.2",
                           "date":  "2026-10-05",

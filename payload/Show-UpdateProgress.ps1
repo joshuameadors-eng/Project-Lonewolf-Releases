@@ -3557,6 +3557,11 @@ function Start-FbSplashStalledUpdateLoop {
 }
 
 function Invoke-FbSplashKickLoopIfStalled {
+    # TEMPORARY / KEEP IN SYNC — Invoke-FbSplashKickLoopIfStalled
+    # WHY:    60s no-heartbeat kick can resurrect FirstBase\WindowsUpdateLoop after seal.
+    # GATE:   .firstbase-sealed / .pipeline-completed / Updates-Done / seal-teardown.
+    # CLEANUP: audit-only kick; stand down on the same markers as overlay helpers (~335).
+    # SEAL:   never schtasks /Run WindowsUpdateLoop after those markers exist.
     # 6.1.13 CQMLYB4-0805-DellInc: splash can sit over OOBE while the WU loop
     # never starts (OOBE swallows RunOnce/ONLOGON; a second SetupComplete /F
     # can kill ONSTART). Kick FirstBase\WindowsUpdateLoop once after 60s if
@@ -3565,6 +3570,12 @@ function Invoke-FbSplashKickLoopIfStalled {
     if ($script:FbSplashLoopKickAttempted) { return }
     if (Test-Path -LiteralPath $Marker) { return }
     if (Test-Path -LiteralPath $FbSplashSealTeardownMarker) { return }
+    try {
+        if (Test-Path -LiteralPath $FbSealedMarker) { return }
+        if (Test-Path -LiteralPath $FbSplashPipelineCompletedMarker) { return }
+    } catch {
+        return
+    }
     $elapsedSec = 0
     try {
         if ($null -eq $script:startTime) { return }

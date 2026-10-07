@@ -29,7 +29,8 @@
                           "version":  "6.2.13",
                           "date":  "2026-10-07",
                           "changes":  [
-                                          "Windows Updates for Intel/AMD stages the update payload. Quick Install still skips it."
+                                          "Windows Updates for Intel/AMD stages the update payload. Quick Install still skips it.",
+                                          "Snapdragon WinPE driver injection reads \\\\WIN-HQ5JDEACV3S\\Images\\FB Image Creation\\WinPE-Drivers."
                                       ]
                       },
                       {

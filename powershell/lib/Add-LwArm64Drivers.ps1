@@ -1,13 +1,22 @@
-# ARM64 driver inject shared by the USB builder and Stage-PreSplitImage.ps1.
-# One path: DISM /Add-Driver /Recurse of the WinPE-Drivers tree. Every manufacturer
-# folder under that root is included. Inbox USB services are left as the image shipped them.
+# ARM64 driver inject shared by the USB builder. WinPE only.
+# DISM /Add-Driver /Recurse of <ShareRoot>\WinPE-Drivers.
+# HQ share root is \\WIN-HQ5JDEACV3S\Images\FB Image Creation.
 
 function Resolve-LwArm64DriverDir {
-    $root = 'C:\Repos\Windows_Installation\UUP\25h2\WinPE-Drivers'
+    param([string] $ShareRoot = '')
+    $base = $ShareRoot
+    if ([string]::IsNullOrWhiteSpace($base)) {
+        if (Get-Command -Name Get-LwHqShareRoot -ErrorAction SilentlyContinue) {
+            $base = Get-LwHqShareRoot
+        } else {
+            $base = '\\WIN-HQ5JDEACV3S\Images\FB Image Creation'
+        }
+    }
+    $root = Join-Path $base 'WinPE-Drivers'
     if (-not (Test-Path -LiteralPath $root -PathType Container)) { return '' }
     $inf = @(Get-ChildItem -LiteralPath $root -Recurse -Filter '*.inf' -File -ErrorAction SilentlyContinue | Select-Object -First 1)
     if ($inf.Count -eq 0) { return '' }
-    return [System.IO.Path]::GetFullPath($root)
+    return $root
 }
 
 # Snapdragon Windows Updates and Snapdragon Quick Install only.

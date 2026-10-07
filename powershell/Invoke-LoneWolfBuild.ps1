@@ -3508,9 +3508,9 @@ try {
         if (-not (Get-Command -Name Resolve-LwArm64DriverDir -ErrorAction SilentlyContinue)) {
             throw 'FATAL: ARM64 driver helper is not loaded (lib\Add-LwArm64Drivers.ps1).'
         }
-        $arm64UsbDriverDir = [string](Resolve-LwArm64DriverDir)
+        $arm64UsbDriverDir = [string](Resolve-LwArm64DriverDir -ShareRoot $ShareRoot)
         if ([string]::IsNullOrWhiteSpace($arm64UsbDriverDir)) {
-            throw 'FATAL: ARM64 build requires driver packages under C:\Repos\Windows_Installation\UUP\25h2\WinPE-Drivers.'
+            throw ("FATAL: ARM64 build requires driver packages under '{0}'." -f (Join-Path $ShareRoot 'WinPE-Drivers'))
         }
         EmitLog -Disk 0 -Msg "ARM64 drivers: $arm64UsbDriverDir (injected into boot.wim only; the Windows install image stays stock)"
     } elseif (-not $OverlayOnly) {

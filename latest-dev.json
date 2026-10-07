@@ -1,6 +1,6 @@
 {
     "launcherVersion":  "6.2.0",
-    "payloadVersion":  "6.2.13",
+    "payloadVersion":  "6.2.14",
     "channel":  "dev",
     "source":  "github-public-source",
     "latestReleaseUrl":  "https://github.com/joshuameadors-eng/Project-Lonewolf-Releases/releases/latest",
@@ -33,6 +33,13 @@
     "portableSha256":  "b530c312721f6b78523e7ac5699ad4cfbfa862ab8a5a0ba9ffb8b75bba9b5f7e",
     "portableSize":  71555997,
     "changelog":  [
+                      {
+                          "version":  "6.2.14",
+                          "date":  "2026-10-07",
+                          "changes":  [
+                                          "Quick Update stages the Edge installer from the launcher payload (or downloads it) onto FirstBase\\WUPayload\\Edge."
+                                      ]
+                      },
                       {
                           "version":  "6.2.13",
                           "date":  "2026-10-07",

@@ -329,8 +329,8 @@ if ($Force) {
             }
         }
         if ($chk.Valid -and $isoMatch) {
-            if ($bareArch -eq 'ARM64' -and -not (Test-LwArm64DriversStamped -SetDir $Target)) {
-                EmitLog ('destage split: ARM64 set at {0} has no ARM64 driver stamp - re-staging' -f $Target)
+            if ($bareArch -eq 'ARM64' -and (Test-LwArm64DriversStamped -SetDir $Target)) {
+                EmitLog ('destage split: ARM64 set at {0} has drivers in the install image - re-staging a stock image' -f $Target)
             } else {
                 EmitLog ('destage skip: local UUP {0} already has a valid matching set at {1} (share PreSplit not used; other arches ignored). Shift-click / -Force to re-stage.' -f $bareArch, $Target)
                 $skipStaged = $true
@@ -344,8 +344,8 @@ if ($Force) {
 } elseif ((Test-Path -LiteralPath $Target)) {
     $chk = Test-LWPreSplitSet -SetDir $Target
     if ($chk.Valid) {
-        if ($bareArch -eq 'ARM64' -and -not (Test-LwArm64DriversStamped -SetDir $Target)) {
-            EmitLog ('already-staged set at {0} has no ARM64 driver stamp - re-staging' -f $Target)
+        if ($bareArch -eq 'ARM64' -and (Test-LwArm64DriversStamped -SetDir $Target)) {
+            EmitLog ('already-staged set at {0} has drivers in the install image - re-staging a stock image' -f $Target)
         } else {
             EmitLog ('already-staged: a valid pre-split set for {0} exists at {1} - nothing to do (pass -Force to re-stage)' -f $isoItem.Name, $Target)
             $skipStaged = $true
@@ -407,39 +407,7 @@ try {
     $scratchSources = Join-Path $scratch 'sources'
     New-Item -ItemType Directory -Force -Path $scratchSources | Out-Null
     $splitSources = $isoSources
-    $snapdragonStage = ($bareArch -eq 'ARM64')
-    if (Get-Command -Name Test-LwSnapdragonWorkflow -ErrorAction SilentlyContinue) {
-        $snapdragonStage = [bool](Test-LwSnapdragonWorkflow -WorkflowType $WorkflowType)
-    }
-    if ($snapdragonStage) {
-        if (-not (Get-Command -Name Resolve-LwArm64DriverDir -ErrorAction SilentlyContinue)) {
-            throw 'FATAL: ARM64 driver helper is not loaded (lib\Add-LwArm64Drivers.ps1).'
-        }
-        $driverRoot = [string](Resolve-LwArm64DriverDir)
-        if ([string]::IsNullOrWhiteSpace($driverRoot)) {
-            throw 'FATAL: ARM64 stage requires driver packages under C:\Repos\Windows_Installation\UUP\25h2\WinPE-Drivers.'
-        }
-        EmitPhase 'stage-drivers'
-        EmitLog "Injecting ARM64 drivers from $driverRoot"
-        EmitProgress 'stage-drivers' 1
-        $driverSources = Join-Path $scratch 'driver-sources'
-        New-Item -ItemType Directory -Force -Path $driverSources | Out-Null
-        $writableWim = Join-Path $driverSources 'install.wim'
-        if ($sourceKind -eq 'esd') {
-            EmitLog 'stage-drivers: exporting install.esd to a writable WIM'
-            $exported = Export-LwInstallIndexesToWim -SourceFile $installImg -DestWim $writableWim -Log { param($m) EmitLog $m }
-            if (-not $exported) { throw "FATAL: install.esd export produced no WIM: $installImg" }
-        } else {
-            EmitLog 'stage-drivers: copying install.wim to a writable copy'
-            Copy-Item -LiteralPath $installImg -Destination $writableWim -Force
-        }
-        # Home and Pro both use this mount. WindowsEdition only selects the ISO.
-        Add-LwArm64DriversToWritableWim -WimPath $writableWim -DriverRoot $driverRoot -Log { param($m) EmitLog $m } -Progress { param($p) EmitProgress 'stage-drivers' $p }
-        EmitProgress 'stage-drivers' 100
-        $splitSources = $driverSources
-    } else {
-        EmitLog "ARM64 driver inject skipped for $bareArch"
-    }
+    EmitLog "stage-split: Windows install image stays stock (ARM64 drivers are injected into WinPE only)"
     EmitPhase 'stage-split'
     EmitProgress 'stage-split' 0
     Split-LWImageForFat32 -SourceSourcesDir $splitSources -DestSourcesDir $scratchSources -FileSizeMb $FileSizeMb -Emit { param($m) EmitLog $m } -Progress { param($p) EmitProgress 'stage-split' $p }
@@ -519,7 +487,7 @@ try {
             chunks               = $chunkObjs
         }
         producedByLauncherVersion = $launcherVersion
-        arm64Drivers              = [bool]$snapdragonStage
+        arm64Drivers              = $false
         createdUtc                = $nowUtc
         updatedUtc                = $nowUtc
     }

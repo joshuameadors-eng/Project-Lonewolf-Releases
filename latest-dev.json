@@ -1,6 +1,6 @@
 {
     "launcherVersion":  "6.2.0",
-    "payloadVersion":  "6.2.11",
+    "payloadVersion":  "6.2.12",
     "channel":  "dev",
     "source":  "github-public-source",
     "latestReleaseUrl":  "https://github.com/joshuameadors-eng/Project-Lonewolf-Releases/releases/latest",
@@ -33,6 +33,13 @@
     "portableSha256":  "b530c312721f6b78523e7ac5699ad4cfbfa862ab8a5a0ba9ffb8b75bba9b5f7e",
     "portableSize":  71555997,
     "changelog":  [
+                      {
+                          "version":  "6.2.12",
+                          "date":  "2026-10-07",
+                          "changes":  [
+                                          "ARM64 drivers are injected into WinPE only. The Windows install image stays stock."
+                                      ]
+                      },
                       {
                           "version":  "6.2.11",
                           "date":  "2026-10-06",

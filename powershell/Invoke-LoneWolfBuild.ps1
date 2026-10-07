@@ -32,7 +32,8 @@
   so WinPE installs Windows and reboots into a stock OOBE. Stages
   Policy\autounattend-quickinstall.xml (no Audit reseal, no SetupComplete).
   Does not stage the Windows Update payload (WUPayload, Edge, or offline
-  update packages). Snapdragon Quick Install still injects ARM64 drivers.
+  update packages). Snapdragon Quick Install still injects ARM64 drivers into
+  WinPE (boot.wim) only. The Windows install image stays stock.
   Intel/AMD Quick Install does not.
 
 .PARAMETER DiskNumbers
@@ -754,15 +755,14 @@ function Get-LWPreSplitSet {
                 EmitLog -Disk 0 -Msg "presplit: set '$setDir' rejected ($($chk.Reason))"
                 continue
             }
-            $wantArch = if (Get-Command -Name Get-LWBareArch -ErrorAction SilentlyContinue) { Get-LWBareArch $Arch } else { $Arch }
             $arm64DriverSet = $false
             try {
                 if (Get-Command -Name Test-LwPreSplitHasArm64Drivers -ErrorAction SilentlyContinue) {
                     $arm64DriverSet = [bool](Test-LwPreSplitHasArm64Drivers -Manifest $chk.Manifest)
                 }
             } catch { }
-            if ($arm64DriverSet -and $wantArch -ne 'ARM64') {
-                EmitLog -Disk 0 -Msg "presplit: set '$setDir' includes ARM64 drivers and is not used for $wantArch"
+            if ($arm64DriverSet) {
+                EmitLog -Disk 0 -Msg "presplit: set '$setDir' has ARM64 drivers in the install image and is not used (WinPE injects drivers into boot.wim only)"
                 continue
             }
             $m   = $chk.Manifest
@@ -2399,11 +2399,8 @@ $workerDiskBlock = {
                 # before this feature. Pre-split applies to ISO mode ONLY.
                 if ($Layout -eq 'Single') {
                     $dataSources = Join-Path $dataRoot 'sources'
-                    # ARM64 passes a ARM64-driver install set. Prefer that over a stock pre-split folder.
+                    # Stock Windows install image. ARM64 drivers go into boot.wim only.
                     $lwInstallSet = $PreSplitSetDir
-                    if (-not [string]::IsNullOrWhiteSpace($Arm64InstallImageDir) -and (Test-Path -LiteralPath $Arm64InstallImageDir)) {
-                        $lwInstallSet = $Arm64InstallImageDir
-                    }
                     if (-not [string]::IsNullOrWhiteSpace($lwInstallSet) -and (Test-Path -LiteralPath $lwInstallSet)) {
                         JPhase 'wim-presplit'
                         JProgress 'wim-presplit' 0
@@ -2462,9 +2459,6 @@ $workerDiskBlock = {
                         # matching set - the authoritative reason is the disk 0 'presplit:' line. A
                         # NON-empty-but-unreadable dir means detection matched but this worker's
                         # runspace could not reach the share path (creds / SMB session).
-                        if ($snapdragonWorkflow) {
-                            throw "FATAL: ARM64 install image with ARM64 drivers was not staged (disk $DiskNumber)"
-                        }
                         $psMiss = if ([string]::IsNullOrWhiteSpace($PreSplitSetDir)) {
                             'no staged set resolved on the main thread (see the disk 0 "presplit:" line for the exact reason)'
                         } else {
@@ -2473,17 +2467,6 @@ $workerDiskBlock = {
                         J @{ event='log'; disk=$DiskNumber; message="presplit: $psMiss - falling back to on-the-fly split" }
                         JPhase 'wim-split'
                         Invoke-LWSplitForFat32 -SourceSourcesDir (Join-Path $IsoDrive 'sources') -DestSourcesDir $dataSources -Disk $DiskNumber
-                    }
-                } elseif ($snapdragonWorkflow) {
-                    if ([string]::IsNullOrWhiteSpace($Arm64InstallImageDir) -or -not (Test-Path -LiteralPath $Arm64InstallImageDir)) {
-                        throw "FATAL: ARM64 install image with ARM64 drivers was not staged (disk $DiskNumber)"
-                    }
-                    $armSources = Join-Path $dataRoot 'sources'
-                    New-Item -ItemType Directory -Force -Path $armSources -ErrorAction SilentlyContinue | Out-Null
-                    J @{ event='log'; disk=$DiskNumber; message="ARM64 install image: replacing the stock install image from '$Arm64InstallImageDir'" }
-                    & robocopy.exe $Arm64InstallImageDir $armSources 'install.wim' 'install*.swm' 'install.esd' /R:2 /W:5 /NP /NJH /NJS | Out-Null
-                    if ($LASTEXITCODE -gt 7) {
-                        throw "ARM64 install image: robocopy failed (exit $LASTEXITCODE) copying '$Arm64InstallImageDir' -> '$armSources'"
                     }
                 }
             } elseif (-not [string]::IsNullOrEmpty($SharedWimMount)) {
@@ -2529,17 +2512,7 @@ $workerDiskBlock = {
                 }
                 J @{ event='log'; disk=$DiskNumber; message="wim-shared: robocopy complete (exit $robExit)" }
                 if ($Layout -eq 'Single') {
-                    if (-not [string]::IsNullOrWhiteSpace($Arm64InstallImageDir) -and (Test-Path -LiteralPath $Arm64InstallImageDir)) {
-                        $armDst = Join-Path $dataRoot 'sources'
-                        New-Item -ItemType Directory -Force -Path $armDst -ErrorAction SilentlyContinue | Out-Null
-                        J @{ event='log'; disk=$DiskNumber; message="ARM64 install image: copying ARM64-driver set from '$Arm64InstallImageDir'" }
-                        & robocopy.exe $Arm64InstallImageDir $armDst 'install*.swm' 'install.wim' 'install.esd' /R:2 /W:5 /NP /NJH /NJS | Out-Null
-                        if ($LASTEXITCODE -gt 7) { throw "ARM64 install image copy failed (exit $LASTEXITCODE)" }
-                    } elseif ($snapdragonWorkflow) {
-                        throw "FATAL: ARM64 install image with ARM64 drivers was not staged (disk $DiskNumber)"
-                    } else {
-                        Invoke-LWSplitForFat32 -SourceSourcesDir (Join-Path $SharedWimMount 'sources') -DestSourcesDir (Join-Path $dataRoot 'sources') -Disk $DiskNumber -ProgressPhase 'dism'
-                    }
+                    Invoke-LWSplitForFat32 -SourceSourcesDir (Join-Path $SharedWimMount 'sources') -DestSourcesDir (Join-Path $dataRoot 'sources') -Disk $DiskNumber -ProgressPhase 'dism'
                 }
                 JProgress 'dism' 100
             } else {
@@ -2632,18 +2605,8 @@ $workerDiskBlock = {
                     }
                     J @{ event='log'; disk=$DiskNumber; message="wim-mount: robocopy complete (exit $robExit)" }
                     if ($Layout -eq 'Single') {
-                        if (-not [string]::IsNullOrWhiteSpace($Arm64InstallImageDir) -and (Test-Path -LiteralPath $Arm64InstallImageDir)) {
-                            $armDst = Join-Path $dataRoot 'sources'
-                            New-Item -ItemType Directory -Force -Path $armDst -ErrorAction SilentlyContinue | Out-Null
-                            J @{ event='log'; disk=$DiskNumber; message="ARM64 install image: copying ARM64-driver set from '$Arm64InstallImageDir'" }
-                            & robocopy.exe $Arm64InstallImageDir $armDst 'install*.swm' 'install.wim' 'install.esd' /R:2 /W:5 /NP /NJH /NJS | Out-Null
-                            if ($LASTEXITCODE -gt 7) { throw "ARM64 install image copy failed (exit $LASTEXITCODE)" }
-                        } elseif ($snapdragonWorkflow) {
-                            throw "FATAL: ARM64 install image with ARM64 drivers was not staged (disk $DiskNumber)"
-                        } else {
-                            # Split from the mounted WIM before the finally block unmounts it.
-                            Invoke-LWSplitForFat32 -SourceSourcesDir (Join-Path $mountDir 'sources') -DestSourcesDir (Join-Path $dataRoot 'sources') -Disk $DiskNumber -ProgressPhase 'dism'
-                        }
+                        # Split from the mounted WIM before the finally block unmounts it.
+                        Invoke-LWSplitForFat32 -SourceSourcesDir (Join-Path $mountDir 'sources') -DestSourcesDir (Join-Path $dataRoot 'sources') -Disk $DiskNumber -ProgressPhase 'dism'
                     }
                     JProgress 'dism' 100
 
@@ -3549,14 +3512,14 @@ try {
         if ([string]::IsNullOrWhiteSpace($arm64UsbDriverDir)) {
             throw 'FATAL: ARM64 build requires driver packages under C:\Repos\Windows_Installation\UUP\25h2\WinPE-Drivers.'
         }
-        EmitLog -Disk 0 -Msg "ARM64 drivers: $arm64UsbDriverDir (injected into boot.wim and the install image)"
+        EmitLog -Disk 0 -Msg "ARM64 drivers: $arm64UsbDriverDir (injected into boot.wim only; the Windows install image stays stock)"
     } elseif (-not $OverlayOnly) {
         EmitLog -Disk 0 -Msg "ARM64 driver inject skipped for $wfUpper (Intel/AMD and Quick Install Intel/AMD do not get ARM64 drivers)"
     }
     if ($stageWuPayload) {
         EmitLog -Disk 0 -Msg 'Snapdragon Windows Updates: staging Windows Update payload (WUPayload, Edge installer, update loop)'
     } elseif ($QuickInstall -and $snapdragonBuild) {
-        $qiDriverNote = if ($OverlayOnly) { '' } else { ' ARM64 driver injection still runs.' }
+        $qiDriverNote = if ($OverlayOnly) { '' } else { ' ARM64 drivers are injected into WinPE only.' }
         EmitLog -Disk 0 -Msg ("Snapdragon Quick Install: skipping Windows Update payload (no WUPayload, Edge installer, or offline update servicing).{0}" -f $qiDriverNote)
     } elseif ($QuickInstall) {
         EmitLog -Disk 0 -Msg 'Quick Install Intel/AMD: skipping Windows Update payload (no WUPayload, Edge installer, or offline update servicing). ARM64 drivers are not injected.'
@@ -3823,40 +3786,7 @@ try {
     }
 
     $edgeToolsDir = Join-Path ([IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..'))) 'tools'
-    if ($snapdragonBuild -and -not $OverlayOnly -and -not $PreCacheOnly) {
-        $stampedSet = $false
-        if (-not [string]::IsNullOrWhiteSpace($PreSplitSetDir) -and (Get-Command -Name Test-LwArm64DriversStamped -ErrorAction SilentlyContinue)) {
-            $stampedSet = Test-LwArm64DriversStamped -SetDir $PreSplitSetDir
-        }
-        if ($stampedSet) {
-            EmitLog -Disk 0 -Msg "ARM64 install image: staged set already includes ARM64 drivers ($PreSplitSetDir)"
-            $arm64InstallImageDir = $PreSplitSetDir
-        } else {
-            $srcWim = ''
-            $srcEsd = ''
-            $srcSwm = ''
-            if ($useIsoMode -and -not [string]::IsNullOrWhiteSpace($isoDriveLetter)) {
-                $isoSources = Join-Path "$isoDriveLetter\" 'sources'
-                $wimCand = Join-Path $isoSources 'install.wim'
-                $esdCand = Join-Path $isoSources 'install.esd'
-                if (Test-Path -LiteralPath $wimCand) { $srcWim = $wimCand }
-                elseif (Test-Path -LiteralPath $esdCand) { $srcEsd = $esdCand }
-            }
-            if (-not $srcWim -and -not $srcEsd -and $PreSplitSetDir -and (Test-Path -LiteralPath (Join-Path $PreSplitSetDir 'install.swm'))) {
-                $srcSwm = $PreSplitSetDir
-            }
-            if (-not $srcWim -and -not $srcEsd -and -not $srcSwm) {
-                throw 'FATAL: ARM64 build could not find install.wim, install.esd, or an install.swm set to inject ARM64 drivers into.'
-            }
-            $arm64InstallWorkDir = Join-Path $env:TEMP ('LW-Arm64Install-' + [guid]::NewGuid().ToString('N').Substring(0, 8))
-            EmitPhase -Disk 0 -Phase 'driver-inject'
-            EmitLog -Disk 0 -Msg "Injecting ARM64 drivers into the install image ($arm64InstallWorkDir)"
-            EmitProgress -Disk 0 -Phase 'driver-inject' -Pct 1
-            New-LwArm64InjectedInstallSources -DriverRoot $arm64UsbDriverDir -DestDir $arm64InstallWorkDir -SourceWim $srcWim -SourceEsd $srcEsd -SourceSwmDir $srcSwm -SplitForFat32:($Layout -eq 'Single') -FileSizeMb 3800 -SplitLibPath $SplitLibPath -Log { param($m) EmitLog -Disk 0 -Msg $m } -Progress { param($p) EmitProgress -Disk 0 -Phase 'driver-inject' -Pct $p }
-            EmitProgress -Disk 0 -Phase 'driver-inject' -Pct 100
-            $arm64InstallImageDir = $arm64InstallWorkDir
-        }
-    }
+    # ARM64 drivers are injected into boot.wim only. $arm64InstallImageDir stays empty.
 
     foreach ($diskNum in $requestedDisks) {
         EmitStart -Disk $diskNum

@@ -182,3 +182,114 @@ function Unlock-LwUsbOverlayForCopy {
         & attrib.exe -R -H -S $fb /D /S 2>&1 | Out-Null
     }
 }
+
+function Copy-LwEdgeOfflineInstaller {
+    <#
+    .SYNOPSIS
+        Copy / download Microsoft Edge Enterprise MSI/EXE onto the USB WUPayload.
+    .NOTES
+        Used by Full Rebuild overlay cache and by Quick Update (-OverlayOnly) disk jobs
+        (this lib is dotted into Start-Job). Search order: share EdgeRoot, ContentRoot\Edge,
+        then enterprise download. Does not delete tools\ or ContentRoot sources.
+    #>
+    param(
+        [Parameter(Mandatory)][string]$WuPayloadRoot,
+        [string]$Arch = '',
+        [string]$ContentRoot = '',
+        [string]$EdgeShareRoot = ''
+    )
+    if ([string]::IsNullOrWhiteSpace($Arch)) { $Arch = 'AMD64' }
+    if ($Arch -match 'ARM') { $Arch = 'ARM64' } else { $Arch = 'AMD64' }
+
+    $wu = $WuPayloadRoot
+    try {
+        if (-not (Test-Path -LiteralPath $wu)) {
+            New-Item -ItemType Directory -Path $wu -Force | Out-Null
+        }
+    } catch {}
+
+    $ps1Src = ''
+    if ($ContentRoot) { $ps1Src = Join-Path $ContentRoot 'Install-FbMicrosoftEdge.ps1' }
+    if ($ps1Src -and (Test-Path -LiteralPath $ps1Src)) {
+        Copy-Item -LiteralPath $ps1Src -Destination (Join-Path $wu 'Install-FbMicrosoftEdge.ps1') -Force -ErrorAction SilentlyContinue
+    }
+
+    $dstDir = Join-Path $wu ("Edge\{0}" -f $Arch)
+    try { New-Item -ItemType Directory -Path $dstDir -Force | Out-Null } catch {}
+
+    $wantName = if ($Arch -eq 'ARM64') { 'MicrosoftEdgeEnterpriseARM64.msi' } else { 'MicrosoftEdgeEnterpriseX64.msi' }
+    $copied = $null
+    $searchRoots = New-Object System.Collections.Generic.List[string]
+    if ($EdgeShareRoot) {
+        [void]$searchRoots.Add((Join-Path $EdgeShareRoot $Arch))
+        [void]$searchRoots.Add($EdgeShareRoot)
+    }
+    if ($ContentRoot) {
+        [void]$searchRoots.Add((Join-Path $ContentRoot ("Edge\{0}" -f $Arch)))
+        [void]$searchRoots.Add((Join-Path $ContentRoot 'Edge'))
+    }
+
+    foreach ($root in $searchRoots) {
+        if (-not $root -or -not (Test-Path -LiteralPath $root)) { continue }
+        $exact = Join-Path $root $wantName
+        if (Test-Path -LiteralPath $exact) {
+            Copy-Item -LiteralPath $exact -Destination (Join-Path $dstDir $wantName) -Force -ErrorAction SilentlyContinue
+            $copied = Join-Path $dstDir $wantName
+            break
+        }
+        $hit = @(Get-ChildItem -LiteralPath $root -File -ErrorAction SilentlyContinue |
+            Where-Object { $_.Extension -match '\.(msi|exe)$' -and $_.Name -match 'edge' } |
+            Select-Object -First 1)
+        if ($hit) {
+            Copy-Item -LiteralPath $hit[0].FullName -Destination (Join-Path $dstDir $hit[0].Name) -Force -ErrorAction SilentlyContinue
+            $copied = Join-Path $dstDir $hit[0].Name
+            break
+        }
+    }
+
+    if (-not $copied) {
+        $url = $null
+        try {
+            $wantArch = if ($Arch -eq 'ARM64') { 'arm64' } else { 'x64' }
+            $products = Invoke-RestMethod -Uri 'https://edgeupdates.microsoft.com/api/products?view=enterprise' -TimeoutSec 45
+            $stable = @($products | Where-Object { [string]$_.Product -eq 'Stable' } | Select-Object -First 1)
+            foreach ($product in $stable) {
+                foreach ($rel in @($product.Releases)) {
+                    if ([string]$rel.Platform -notmatch '(?i)Windows') { continue }
+                    if ([string]$rel.Architecture -notmatch ("(?i)^{0}$" -f [regex]::Escape($wantArch))) { continue }
+                    foreach ($art in @($rel.Artifacts)) {
+                        if ([string]$art.ArtifactName -match '(?i)msi' -and [string]$art.Location) {
+                            $url = [string]$art.Location
+                            break
+                        }
+                    }
+                    if ($url) { break }
+                }
+            }
+        } catch {}
+        if (-not $url -and $Arch -ne 'ARM64') {
+            $url = 'https://go.microsoft.com/fwlink/?linkid=2093437'
+        }
+        if ($url) {
+            $out = Join-Path $dstDir $wantName
+            try {
+                Invoke-WebRequest -Uri $url -OutFile $out -UseBasicParsing -TimeoutSec 180
+                $len = 0
+                try { $len = [int64](Get-Item -LiteralPath $out).Length } catch {}
+                if ($len -ge 1000000) { $copied = $out }
+                else { Remove-Item -LiteralPath $out -Force -ErrorAction SilentlyContinue }
+            } catch {}
+        }
+    }
+
+    if ($copied) {
+        if (Get-Command -Name EmitLog -ErrorAction SilentlyContinue) {
+            EmitLog -Disk 0 -Msg ("edge: staged {0} installer {1}" -f $Arch, $copied)
+        }
+        return $copied
+    }
+    if (Get-Command -Name EmitLog -ErrorAction SilentlyContinue) {
+        EmitLog -Disk 0 -Msg ("edge: no MSI for {0}. Drop {1} in Edge\{0}\ on the share (or payload Edge\{0}\). Destage/download failed." -f $Arch, $wantName)
+    }
+    return $null
+}

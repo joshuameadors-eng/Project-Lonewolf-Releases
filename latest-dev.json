@@ -1,6 +1,6 @@
 {
     "launcherVersion":  "6.2.0",
-    "payloadVersion":  "6.2.12",
+    "payloadVersion":  "6.2.13",
     "channel":  "dev",
     "source":  "github-public-source",
     "latestReleaseUrl":  "https://github.com/joshuameadors-eng/Project-Lonewolf-Releases/releases/latest",
@@ -33,6 +33,13 @@
     "portableSha256":  "b530c312721f6b78523e7ac5699ad4cfbfa862ab8a5a0ba9ffb8b75bba9b5f7e",
     "portableSize":  71555997,
     "changelog":  [
+                      {
+                          "version":  "6.2.13",
+                          "date":  "2026-10-07",
+                          "changes":  [
+                                          "Windows Updates for Intel/AMD stages the update payload. Quick Install still skips it."
+                                      ]
+                      },
                       {
                           "version":  "6.2.12",
                           "date":  "2026-10-07",

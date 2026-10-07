@@ -1,8 +1,7 @@
 # LoneWolf USB data-partition overlay profile.
-# Full Snapdragon Windows Updates (ARM64, not Quick Install) stages the Windows
-# Update payload. Snapdragon Quick Install, Windows (amd64), and Quick Install
-# Intel/AMD do not. Arch selects the identity (Snapdragon vs Intel/AMD,
-# bootaa64 vs bootx64).
+# Full Windows Updates (Intel/AMD and Snapdragon, not Quick Install) stages the
+# Windows Update payload. Both Quick Install workflows do not. Arch selects the
+# identity (Snapdragon vs Intel/AMD, bootaa64 vs bootx64).
 # Quick Install boots Deploy\TechInstall-QuickInstall.cmd renamed to
 # FirstBase\Deploy\TechInstall.cmd. Full updates boot Deploy\TechInstall.cmd.
 # WIN-INSTALL still stages TechInstall-Install.cmd under that same dest name.
@@ -74,8 +73,8 @@ function Assert-LwQuickInstallUnattend {
     }
 }
 
-# Full Snapdragon Windows Updates only (ARM64, not Quick Install, not WIN-INSTALL).
-# Windows (amd64) is the Intel/AMD card: workflow AMD64. It does not match.
+# Full Windows Updates for Intel/AMD (AMD64) and Snapdragon (ARM64).
+# Quick Install and WIN-INSTALL do not stage the update loop.
 function Test-LwStageWindowsUpdatePayload {
     param(
         [string]$WorkflowType = '',
@@ -85,11 +84,8 @@ function Test-LwStageWindowsUpdatePayload {
     if ($QuickInstall -or $NoPayload) { return $false }
     $raw = ([string]$WorkflowType).ToUpperInvariant()
     if ($raw -match '^(QUICK-INSTALL-|WIN-INSTALL-)') { return $false }
-    if (Get-Command -Name Test-LwSnapdragonWorkflow -ErrorAction SilentlyContinue) {
-        return [bool](Test-LwSnapdragonWorkflow -WorkflowType $WorkflowType)
-    }
     $bare = [regex]::Replace($raw, '^(QUICK-INSTALL-|WIN-INSTALL-|LONEWOLF-)', '')
-    return ($bare -eq 'ARM64')
+    return ($bare -eq 'ARM64' -or $bare -eq 'AMD64')
 }
 
 # WinPE-Startnet.cmd is injected into boot.wim. Full Snapdragon Updates also

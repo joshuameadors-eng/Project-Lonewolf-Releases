@@ -451,8 +451,8 @@ if (Test-Path -LiteralPath $Arm64DriverLibPath) { . $Arm64DriverLibPath }
 $UsbOverlayLibPath = Join-Path $PSScriptRoot 'lib\LwUsbOverlay.ps1'
 if (Test-Path -LiteralPath $UsbOverlayLibPath) { . $UsbOverlayLibPath }
 
-# Only full Snapdragon Windows Updates parses the update loop. Windows (amd64)
-# and both Quick Install workflows skip that payload.
+# Full Windows Updates (Intel/AMD and Snapdragon) parses the update loop.
+# Both Quick Install workflows and WIN-INSTALL skip that payload.
 $stageWuPayload = $false
 if (Get-Command -Name Test-LwStageWindowsUpdatePayload -ErrorAction SilentlyContinue) {
     $stageWuPayload = [bool](Test-LwStageWindowsUpdatePayload -WorkflowType $WorkflowType -QuickInstall ([bool]$QuickInstall) -NoPayload ([bool]$NoPayload))
@@ -3517,14 +3517,12 @@ try {
         EmitLog -Disk 0 -Msg "ARM64 driver inject skipped for $wfUpper (Intel/AMD and Quick Install Intel/AMD do not get ARM64 drivers)"
     }
     if ($stageWuPayload) {
-        EmitLog -Disk 0 -Msg 'Snapdragon Windows Updates: staging Windows Update payload (WUPayload, Edge installer, update loop)'
+        EmitLog -Disk 0 -Msg 'Windows Updates: staging Windows Update payload (WUPayload, Edge installer, update loop)'
     } elseif ($QuickInstall -and $snapdragonBuild) {
         $qiDriverNote = if ($OverlayOnly) { '' } else { ' ARM64 drivers are injected into WinPE only.' }
         EmitLog -Disk 0 -Msg ("Snapdragon Quick Install: skipping Windows Update payload (no WUPayload, Edge installer, or offline update servicing).{0}" -f $qiDriverNote)
     } elseif ($QuickInstall) {
         EmitLog -Disk 0 -Msg 'Quick Install Intel/AMD: skipping Windows Update payload (no WUPayload, Edge installer, or offline update servicing). ARM64 drivers are not injected.'
-    } elseif (-not $NoPayload) {
-        EmitLog -Disk 0 -Msg 'Windows (amd64): skipping Windows Update payload (no WUPayload, Edge installer, or offline update servicing). No ARM64 driver injection and no update servicing of the WIMs.'
     }
 
     # Measure ESP size for dynamic partition sizing

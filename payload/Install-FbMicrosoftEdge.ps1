@@ -198,6 +198,23 @@ function Invoke-FbEdgeInstallerFile {
     }
 }
 
+function Remove-FbEdgeStagingFolder {
+    # Offline installer bits staged by TechInstall. Keep them only while Edge is missing.
+    $dirs = @(
+        'C:\Windows\Setup\FirstBase\Edge'
+        'C:\Windows\Setup\FirstBase\WUPayload\Edge'
+    )
+    foreach ($dir in $dirs) {
+        if (-not $dir -or -not (Test-Path -LiteralPath $dir)) { continue }
+        try {
+            Remove-Item -LiteralPath $dir -Recurse -Force -ErrorAction Stop
+            Write-FbEdgeLog ("Removed Edge staging folder {0}" -f $dir) 'INFO'
+        } catch {
+            Write-FbEdgeLog ("Could not remove Edge staging folder {0}: {1}" -f $dir, $_.Exception.Message) 'WARN'
+        }
+    }
+}
+
 function Install-FbMicrosoftEdge {
     param(
         [switch]$AllowDownload = $true,
@@ -206,6 +223,7 @@ function Install-FbMicrosoftEdge {
     $existing = Test-FbMicrosoftEdgePresent
     if ($existing -and -not $Force) {
         Write-FbEdgeLog ("Edge already present: {0}" -f $existing) 'INFO'
+        Remove-FbEdgeStagingFolder
         return [pscustomobject]@{ Present = $true; Path = $existing; Installed = $false; Source = 'already-present' }
     }
 
@@ -225,6 +243,7 @@ function Install-FbMicrosoftEdge {
     $path = Test-FbMicrosoftEdgePresent
     if ($path) {
         Write-FbEdgeLog ("Edge ready after {0} install: {1}" -f $source, $path) 'INFO'
+        Remove-FbEdgeStagingFolder
         return [pscustomobject]@{ Present = $true; Path = $path; Installed = $true; Source = $source }
     }
     Write-FbEdgeLog ("Edge installer ran (ok={0}) but msedge.exe was not found." -f $ok) 'ERROR'

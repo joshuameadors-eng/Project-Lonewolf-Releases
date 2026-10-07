@@ -242,6 +242,45 @@ namespace FbFirstBaseNative {
     Add-Type -TypeDefinition $src -ErrorAction Stop
 }
 
+function Test-FbWatcherSplashSuppressed {
+    if (Test-Path -LiteralPath $fbSealedMarker) { return $true }
+    if (Test-Path -LiteralPath $fbDeliveryStartedMarker) { return $true }
+    if (Test-Path -LiteralPath $fbPipelineMarker) { return $true }
+    return $false
+}
+
+function Test-FbWatcherInteractiveSplashPresent {
+    try {
+        $procs = @(Get-CimInstance -ClassName Win32_Process -Filter "Name = 'powershell.exe'" -ErrorAction Stop)
+    } catch {
+        return $false
+    }
+    foreach ($p in $procs) {
+        $cmd = [string]$p.CommandLine
+        if ($cmd -notmatch 'Show-UpdateProgress\.ps1') { continue }
+        $sid = -1
+        try { $sid = [int](Get-Process -Id ([int]$p.ProcessId) -ErrorAction Stop).SessionId } catch { $sid = -1 }
+        if ($sid -ge 1) { return $true }
+    }
+    return $false
+}
+
+function Invoke-FbWatcherRelaunchSplash {
+    param([int]$ExplorerPid)
+    $childPid = 0
+    try {
+        $childPid = [int](Invoke-FbWatcherLaunchSplashInteractive -ExplorerPid $ExplorerPid)
+    } catch {
+        $childPid = 0
+    }
+    if ($childPid -gt 0) { return $childPid }
+    try {
+        $null = & schtasks.exe /Run /TN $SplashTask 2>&1
+        if ($LASTEXITCODE -eq 0) { return -1 }
+    } catch {}
+    return 0
+}
+
 function Invoke-FbWatcherLaunchSplashInteractive {
     param([int]$ExplorerPid)
     try {
@@ -502,6 +541,57 @@ try {
         }
 
         Start-Sleep -Seconds 1
+    }
+
+    # A failed shutdown.exe restarts Explorer and kills the interactive splash
+    # while the update task is left Queued. Dump 4FVGN94-0829 had no splash
+    # process at capture. Stay resident and put the splash back.
+    if ($fired) {
+        $keepUntil = (Get-Date).AddHours(6)
+        $keepIter = 0
+        Write-FbWatcherLog 'GUARD' 'splash guard armed for up to 6h; relaunch if the interactive splash process is gone before seal'
+        Start-Sleep -Seconds 20
+        while ((Get-Date) -lt $keepUntil) {
+            $keepIter++
+            if (Test-FbWatcherSplashSuppressed) {
+                Write-FbWatcherLog 'INFO' 'guard: delivery, pipeline, or sealed marker present; splash stays down'
+                break
+            }
+            $splashUp = $false
+            try { $splashUp = [bool](Test-FbWatcherInteractiveSplashPresent) } catch { $splashUp = $false }
+            if ($splashUp) {
+                if ((($keepIter - 1) % 16) -eq 0) {
+                    Write-FbWatcherLog 'GUARD' ("interactive splash still present; iter={0}" -f $keepIter)
+                }
+            } else {
+                $exp = $null
+                try {
+                    $exp = Get-Process -Name 'explorer' -ErrorAction SilentlyContinue |
+                        Where-Object { $_.SessionId -ge 1 } |
+                        Select-Object -First 1
+                } catch { $exp = $null }
+                if ($null -eq $exp) {
+                    Write-FbWatcherLog 'GUARD' ("splash missing and no interactive Explorer; iter={0}" -f $keepIter)
+                } else {
+                    Start-Sleep -Seconds 3
+                    if (Test-FbWatcherSplashSuppressed) { break }
+                    $stillDown = $true
+                    try { if (Test-FbWatcherInteractiveSplashPresent) { $stillDown = $false } } catch {}
+                    if ($stillDown) {
+                        $relaunched = 0
+                        try { $relaunched = [int](Invoke-FbWatcherRelaunchSplash -ExplorerPid ([int]$exp.Id)) } catch { $relaunched = 0 }
+                        if ($relaunched -gt 0) {
+                            Write-FbWatcherLog 'RELAUNCH' ("interactive splash was gone; CreateProcessAsUser child pid={0}; explorer pid={1}" -f $relaunched, $exp.Id)
+                        } elseif ($relaunched -lt 0) {
+                            Write-FbWatcherLog 'RELAUNCH' ("interactive splash was gone; schtasks /Run {0} accepted; explorer pid={1}" -f $SplashTask, $exp.Id)
+                        } else {
+                            Write-FbWatcherLog 'WARN' ("interactive splash was gone and relaunch failed; explorer pid={0}" -f $exp.Id)
+                        }
+                    }
+                }
+            }
+            Start-Sleep -Seconds 15
+        }
     }
 
     if (-not $fired) {

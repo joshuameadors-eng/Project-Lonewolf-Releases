@@ -1,6 +1,16 @@
 :: ===========================================================================
-:: FirstBase MANUAL seal - 5.1.55
+:: FirstBase MANUAL seal - 6.1.14
 :: ===========================================================================
+:: KEEP IN SYNC: Set-FbDefenderRealtime + Invoke-FbInlineMdmScrub
+::   (Invoke-WindowsUpdateLoop.ps1) and Invoke-FbImSealToOobe (fb-im.ps1).
+:: GATE: elevated Audit-Mode paste only. Disable path is specialize
+::   :DISABLE_DEFENDER + loop pre-install — this file must not add a disable.
+:: CLEANUP: restore Defender realtime (visible fail if it cannot) + MDM keys
+::   + DmEnrollmentSvc + Defender exclusions + tree scrub.
+:: SEAL: stamp durable C:\ProgramData\FirstBase\.firstbase-sealed AFTER the
+::   ProgramData tree is removed (recreate the folder so the marker survives).
+::   Do NOT sysprep if Defender restore failed.
+::
 :: Run this from an ELEVATED (Administrator) Audit-Mode prompt. Several of the
 :: native reg / sc / schtasks removals below silently do nothing otherwise.
 ::
@@ -27,6 +37,9 @@
 ::      C:\Windows\Setup\FirstBase\Logs in place, merges the ProgramData logs
 ::      in beneath it, and writes the same README + scrub manifest the
 ::      automated cleanup writes.
+::
+:: 6.1.14: Defender realtime restore + durable .firstbase-sealed (must survive
+:: the ProgramData scrub). MDM/exclusion/tree scrub is unchanged.
 ::
 :: WHAT THE OPERATOR SHOULD SEE AND DO AT THE END
 :: ----------------------------------------------
@@ -79,13 +92,17 @@ reg delete "HKLM\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate\AU" /v NoAuto
 reg delete "HKLM\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate\AU" /v NoAutoUpdate /f
 powershell -NoProfile -ExecutionPolicy Bypass -Command "foreach ($ex in @('C:\Windows\Setup\FirstBase','C:\ProgramData\FirstBase','C:\ProgramData\Microsoft\Windows\Start Menu\Programs\Startup')) { Remove-MpPreference -ExclusionPath $ex -ErrorAction SilentlyContinue }"
 
-:: --- 4. Write the pipeline-completed marker --------------------------------
-:: Written BEFORE the trees are cleaned, because step 6 deletes the folder it
-:: lives in. Its only consumer is the specialize-pass arm suppression, which
-:: has already run by the time a manual seal is being performed.
-echo 1 > "C:\ProgramData\FirstBase\.pipeline-completed"
+:: --- 3b. Restore Defender real-time monitoring -----------------------------
+:: KEEP IN SYNC / GATE / CLEANUP / SEAL: same restore as Set-FbDefenderRealtime
+:: (loop) and fb-im Seal. If this fails, STOP — do not stamp sealed, do not sysprep.
+powershell -NoProfile -ExecutionPolicy Bypass -Command "try { Set-MpPreference -DisableRealtimeMonitoring $false -ErrorAction Stop; $p = Get-MpPreference -ErrorAction Stop; if ($p.DisableRealtimeMonitoring) { Write-Host 'ERROR: Defender real-time is still OFF after restore.'; exit 1 }; Write-Host 'OK: Defender real-time RESTORED'; exit 0 } catch { Write-Host ('ERROR: Defender restore FAILED: ' + $_.Exception.Message); exit 1 }"
+if errorlevel 1 (
+  echo ERROR: Defender restore FAILED. Device is NOT sealed. Do not continue.
+  pause
+  exit /b 1
+)
 
-:: --- 5. Merge the ProgramData logs into the surviving Logs folder ----------
+:: --- 4. Merge the ProgramData logs into the surviving Logs folder ----------
 :: /XF excludes everything executable so the operator kit and splash scripts
 :: cannot be carried into a folder that survives on the customer's device.
 :: Exit codes 0-7 are success; 8 and above mean something did not copy.
@@ -100,12 +117,17 @@ echo 1 > "C:\ProgramData\FirstBase\.pipeline-completed"
 robocopy "C:\ProgramData\FirstBase" "C:\Windows\Setup\FirstBase\Logs\ProgramData-FirstBase" /E /R:1 /W:1 /XJ /NFL /NDL /NJH /NJS /NP /XF *.ps1 *.psm1 *.psd1 *.cmd *.bat *.vbs *.vbe *.js *.jse *.wsf *.wsh *.hta *.exe *.dll *.com *.scr *.msi *.lnk *.pif *.reg
 robocopy "C:\ProgramData\FirstBase" "C:\Windows\Setup\FirstBase\Logs\ProgramData-FirstBase" /E /ZB /R:1 /W:1 /XJ /NFL /NDL /NJH /NJS /NP /XF *.ps1 *.psm1 *.psd1 *.cmd *.bat *.vbs *.vbe *.js *.jse *.wsf *.wsh *.hta *.exe *.dll *.com *.scr *.msi *.lnk *.pif *.reg
 
-:: --- 6. Remove the ProgramData tree in full --------------------------------
-:: Its evidence was merged in step 5. /q matters: without it rd prompts and the
+:: --- 5. Remove the ProgramData tree, then stamp durable seal markers -------
+:: Evidence was merged in step 4. /q matters: without it rd prompts and the
 :: seal stalls waiting for a keypress nobody is watching for.
+:: Recreate C:\ProgramData\FirstBase AFTER rd so .firstbase-sealed survives
+:: (automated + fb-im write the same path; READY / WU-loop abort both read it).
 rd /s /q "C:\ProgramData\FirstBase"
+md "C:\ProgramData\FirstBase"
+echo Sealed (seal_command.txt) %DATE% %TIME%; device ready for customer OOBE after sysprep /oobe.> "C:\ProgramData\FirstBase\.firstbase-sealed"
+echo Pipeline completed (seal_command.txt) %DATE% %TIME%> "C:\ProgramData\FirstBase\.pipeline-completed"
 
-:: --- 7. Scrub the Setup tree down to Logs and nothing else -----------------
+:: --- 6. Scrub the Setup tree down to Logs and nothing else -----------------
 :: Mirroring an EMPTY folder onto the tree with /MIR purges everything in it,
 :: and /XD holds Logs back. This is used instead of a FOR loop for the reason in
 :: the header, and instead of "rd /s" because rd cannot spare a subfolder.
@@ -115,19 +137,20 @@ md "%TEMP%\fb-empty"
 robocopy "%TEMP%\fb-empty" "C:\Windows\Setup\FirstBase" /MIR /XD "C:\Windows\Setup\FirstBase\Logs" /R:1 /W:1 /NFL /NDL /NJH /NJS /NP
 rd /s /q "%TEMP%\fb-empty"
 
-:: --- 8. Remove SetupComplete.cmd ------------------------------------------
+:: --- 7. Remove SetupComplete.cmd ------------------------------------------
 :: Must not exist to be re-invoked on the customer's specialize pass.
 del /f /q "C:\Windows\Setup\Scripts\SetupComplete.cmd"
 
-:: --- 9. README + scrub manifest -------------------------------------------
+:: --- 8. README + scrub manifest -------------------------------------------
 :: Same two artifacts the automated cleanup writes, so a manually sealed device
 :: is indistinguishable from an automatically sealed one during verification.
 echo FirstBase - preserved provisioning logs> "C:\Windows\Setup\FirstBase\Logs\README-FirstBase-Logs.txt"
-echo Sealed MANUALLY via Tools\seal_command.txt ^(5.1.55^).>> "C:\Windows\Setup\FirstBase\Logs\README-FirstBase-Logs.txt"
-echo C:\ProgramData\FirstBase was deleted; its logs were merged into ProgramData-FirstBase\.>> "C:\Windows\Setup\FirstBase\Logs\README-FirstBase-Logs.txt"
+echo Sealed MANUALLY via Tools\seal_command.txt ^(6.1.14^).>> "C:\Windows\Setup\FirstBase\Logs\README-FirstBase-Logs.txt"
+echo C:\ProgramData\FirstBase scripts were deleted; logs were merged into ProgramData-FirstBase\.>> "C:\Windows\Setup\FirstBase\Logs\README-FirstBase-Logs.txt"
+echo Durable .firstbase-sealed + .pipeline-completed were rewritten after that scrub.>> "C:\Windows\Setup\FirstBase\Logs\README-FirstBase-Logs.txt"
 echo Everything in C:\Windows\Setup\FirstBase was deleted EXCEPT this Logs folder.>> "C:\Windows\Setup\FirstBase\Logs\README-FirstBase-Logs.txt"
 echo This folder is inert and is safe to delete once the logs have been collected.>> "C:\Windows\Setup\FirstBase\Logs\README-FirstBase-Logs.txt"
-echo FirstBase 5.1.55 manual seal scrub manifest - %DATE% %TIME%> "C:\Windows\Setup\FirstBase\Logs\reaper-scrub-manifest.txt"
+echo FirstBase 6.1.14 manual seal scrub manifest - %DATE% %TIME%> "C:\Windows\Setup\FirstBase\Logs\reaper-scrub-manifest.txt"
 echo Everything remaining under C:\Windows\Setup\FirstBase follows.>> "C:\Windows\Setup\FirstBase\Logs\reaper-scrub-manifest.txt"
 dir /s /b /a "C:\Windows\Setup\FirstBase" >> "C:\Windows\Setup\FirstBase\Logs\reaper-scrub-manifest.txt"
 echo Executable-residue search - any line below this one is a defect.>> "C:\Windows\Setup\FirstBase\Logs\reaper-scrub-manifest.txt"
@@ -138,12 +161,12 @@ dir /s /b /a "C:\Windows\Setup\FirstBase\*.vbs" >> "C:\Windows\Setup\FirstBase\L
 dir /s /b /a "C:\Windows\Setup\FirstBase\*.exe" >> "C:\Windows\Setup\FirstBase\Logs\reaper-scrub-manifest.txt" 2>nul
 dir /s /b /a "C:\Windows\Setup\FirstBase\*.dll" >> "C:\Windows\Setup\FirstBase\Logs\reaper-scrub-manifest.txt" 2>nul
 
-:: --- 10. CHECK BEFORE SEALING ---------------------------------------------
+:: --- 9. CHECK BEFORE SEALING ---------------------------------------------
 :: Open the manifest. If anything appears under the executable-residue heading,
 :: STOP - do not seal. That device would ship carrying runnable FirstBase code.
 notepad "C:\Windows\Setup\FirstBase\Logs\reaper-scrub-manifest.txt"
 
-:: --- 11. Seal: reboot to OOBE --------------------------------------------
+:: --- 10. Seal: reboot to OOBE --------------------------------------------
 :: Identical to the automated seal. The device restarts and comes up at the OOBE
 :: region / language screen; that screen appearing is the proof the boot chain
 :: works. Power the device off from there to pack it.

@@ -6,14 +6,15 @@ setlocal EnableDelayedExpansion
 :: Invoke-LoneWolfBuild.ps1 for the QUICK-INSTALL-AMD64 / QUICK-INSTALL-ARM64
 :: profiles (-QuickInstall). It NEVER appears under its own filename on a stick.
 :: Sequence: find media -> disksetup (partition) -> DISM apply -> offline unattend
-:: -> bcdboot -> firmware handoff -> shutdown. No FirstBase payload, no
-:: SetupComplete arming, no update loop, no seal/sysprep, no reaper.
+:: -> bcdboot -> firmware handoff -> wpeutil reboot into stock OOBE.
+:: No FirstBase payload, no SetupComplete arming, no update loop, no
+:: seal/sysprep, no reaper, no keypress wait.
 :: Optional: set QUICKINSTALL_WIM_INDEX before launch (default 1).
 
 title FirstBase Quick Install - For Internal Use Only
 
 if not defined QUICKINSTALL_WIM_INDEX set "QUICKINSTALL_WIM_INDEX=1"
-set "FB_QI_REV=2026-08-24.2"
+set "FB_QI_REV=2026-10-06.1"
 set "FB_TOTAL_STEPS=6"
 set "LOG=X:\FirstBase-QuickInstall.log"
 
@@ -179,17 +180,26 @@ title FirstBase Quick Install - For Internal Use Only
 :: Direct DISM apply (no setup.exe) means there is no Windows Setup
 :: edition/disk menu to suppress; this offline unattend only tidies OOBE and
 :: still shows the region / keyboard / account screens for the end user.
+:: Refuse the full updates unattend. Its Audit reseal and SetupComplete
+:: RunSynchronous would boot into audit mode instead of a fresh OOBE.
 set "FB_UNATTEND="
 if exist "!FB_PAYLOAD!\Autounattend.xml" set "FB_UNATTEND=!FB_PAYLOAD!\Autounattend.xml"
 if not defined FB_UNATTEND if exist "!FB_PAYLOAD!\autounattend.xml" set "FB_UNATTEND=!FB_PAYLOAD!\autounattend.xml"
 if not defined FB_UNATTEND if exist "%SRC%\Autounattend.xml"        set "FB_UNATTEND=%SRC%\Autounattend.xml"
 if not defined FB_UNATTEND if exist "%SRC%\autounattend.xml"        set "FB_UNATTEND=%SRC%\autounattend.xml"
 if defined FB_UNATTEND (
+    findstr /i /c:"<Mode>Audit</Mode>" /c:"<RunSynchronous" "!FB_UNATTEND!" >nul
+    if not errorlevel 1 (
+        echo [%DATE% %TIME%] Skipping !FB_UNATTEND! - it reseals to Audit or runs SetupComplete. Stock OOBE will run. >> "%LOG%"
+        set "FB_UNATTEND="
+    )
+)
+if defined FB_UNATTEND (
     if not exist "W:\Windows\Panther" mkdir "W:\Windows\Panther" >nul 2>&1
     copy /y "!FB_UNATTEND!" "W:\Windows\Panther\unattend.xml" >> "%LOG%" 2>&1
     echo [%DATE% %TIME%] Copied offline unattend to W:\Windows\Panther\unattend.xml >> "%LOG%"
 ) else (
-    echo [%DATE% %TIME%] No autounattend.xml on media - stock Windows OOBE will run. >> "%LOG%"
+    echo [%DATE% %TIME%] No quick-install unattend on media - stock Windows OOBE will run. >> "%LOG%"
 )
 
 :: -- STEP 7: bootloader + firmware handoff -------------------------------
@@ -223,19 +233,18 @@ echo [%DATE% %TIME%] SUCCESS >> "%LOG%"
 title FirstBase Quick Install - For Internal Use Only - Complete
 call :FB_UI_PROGRESS 6 "Done"
 
+echo [%DATE% %TIME%] SUCCESS - rebooting into Windows >> "%LOG%"
 call :FB_UI_RESOLVE
 if defined FB_UI_SCRIPT (
-    "!FB_UI_PS!" -NoProfile -ExecutionPolicy Bypass -File "!FB_UI_SCRIPT!" -Action Done -Text "Windows install complete. Remove the USB drive." -Reason "Press any key to shut down..." 2>nul
+    "!FB_UI_PS!" -NoProfile -ExecutionPolicy Bypass -File "!FB_UI_SCRIPT!" -Action Done -Text "Windows install complete. Rebooting into Windows." 2>nul
 ) else (
     echo.
     echo ============================================================
-    echo   Windows install complete. Remove the USB drive.
-    echo   Press any key to shut down...
+    echo   Windows install complete. Rebooting into Windows.
     echo ============================================================
     echo.
 )
-pause >nul
-wpeutil shutdown
+wpeutil reboot
 exit /b 0
 
 :: -- FIND_SOURCE : first volume carrying sources\install.* ----------------
@@ -397,8 +406,6 @@ if defined FB_UI_SCRIPT (
     echo ================================================================
     echo.
 )
-echo   Press any key to continue...
-pause >nul
 exit /b 1
 
 :: -- FB_SHOW_BANNER : legacy no-op -------------------------------------------

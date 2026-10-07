@@ -357,12 +357,10 @@ public static class FbEfiRead {
                 Write-PrefLog 'L2 NVRAM: ERROR_INVALID_FUNCTION = legacy BIOS; Secure Boot not applicable'
                 $sbChecked = $true
             } elseif ($nvErr -eq 1314 -or $nvErr -eq 5) {
-                # 1314 = ERROR_PRIVILEGE_NOT_HELD, 5 = ERROR_ACCESS_DENIED
-                # These are UEFI-only errors (BIOS returns 1, not 1314/5).
-                # Privilege enable should have succeeded; reaching here means a policy/token issue.
-                # Treat as UEFI mode with unreadable SB state -> assume disabled (conservative).
-                $sbOff = $true
-                Write-PrefLog ('FAIL: UEFI mode confirmed (Win32Error={0} = privilege/access; not BIOS error=1) but SecureBoot variable unreadable - ASSUMING Secure Boot DISABLED (conservative)' -f $nvErr)
+                # 1314 = ERROR_PRIVILEGE_NOT_HELD, 5 = ERROR_ACCESS_DENIED.
+                # In WinPE (especially ARM/Surface) this is common even when Secure Boot
+                # is ON. Do NOT assume disabled and reboot - that USB-boot loops.
+                Write-PrefLog ('WARN: SecureBoot NVRAM unreadable (Win32Error={0}) - inconclusive; not rebooting to firmware' -f $nvErr)
                 $sbChecked = $true
             } else {
                 Write-PrefLog ('L2 NVRAM: read returned 0, Win32Error={0} (variable absent or access denied)' -f $nvErr)
@@ -382,13 +380,8 @@ if (-not $sbChecked) {
         $bcdLines = & 'X:\Windows\System32\bcdedit.exe' /enum '{current}' 2>&1
         $isUefi   = ($bcdLines | Where-Object { $_ -match 'winload\.efi' }) -ne $null
         if ($isUefi) {
-            $sbOff = $true
-            Write-PrefLog 'FAIL: UEFI mode confirmed (winload.efi) but SB state unreadable - ASSUMING Secure Boot DISABLED (conservative)'
-            Write-Host ''
-            Write-Host '  NOTE: Secure Boot status could not be read directly.'
-            Write-Host '  UEFI mode detected. Conservatively assuming SB is disabled.'
-            Write-Host '  To bypass: set FIRSTBASE_SKIP_PREFLIGHT=1 at a debug shell.'
-            Write-Host ''
+            Write-PrefLog 'WARN: UEFI mode confirmed but SB state unreadable - inconclusive; not rebooting to firmware'
+            Write-PrefLog 'To force firmware UI: set FIRSTBASE_SKIP_PREFLIGHT=0 and fix SB detection, or enter UEFI manually.'
         } else {
             Write-PrefLog 'L3 bcdedit: winload.efi absent - legacy BIOS or non-UEFI boot; Secure Boot check skipped'
         }

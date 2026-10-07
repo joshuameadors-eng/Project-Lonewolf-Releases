@@ -66,17 +66,17 @@ $FirstBaseScriptVersion = @{
 
     'Build-UsbStick.ps1'               = '1.1.0'
 
-    'Invoke-WindowsUpdateLoop.ps1'       = '1.0.31'
+    'Invoke-WindowsUpdateLoop.ps1'       = '1.0.54'
 
-    'SetupComplete.cmd'                = '1.0.7'
-
-
-
-    'FirstBaseWuEngine.ps1'            = '1.0.8'
+    'SetupComplete.cmd'                = '1.0.15'
 
 
 
-    'Show-UpdateProgress.ps1'          = '3.0.15'
+    'FirstBaseWuEngine.ps1'            = '1.0.9'
+
+
+
+    'Show-UpdateProgress.ps1'          = '3.0.31'
 
 
 
@@ -84,18 +84,18 @@ $FirstBaseScriptVersion = @{
 
 
 
-    'FirstBaseSplashWatcher.ps1'       = '1.0.1'
+    'FirstBaseSplashWatcher.ps1'       = '1.0.2'
 
     'FirstBaseDebugHotkeyWatcher.ps1'  = '1.0.0'
 
 
 
-    'FirstBaseDeferredOobeSound.ps1'   = '1.0.6'
+    'FirstBaseDeferredOobeSound.ps1'   = '1.0.7'
 
 
 
-    'FirstBaseOobeOperatorFinalize.ps1' = '1.0.10'
-    'FirstBaseOobeDeferredSoundBootstrap.ps1' = '1.0.5'
+    'FirstBaseOobeOperatorFinalize.ps1' = '1.0.12'
+    'FirstBaseOobeDeferredSoundBootstrap.ps1' = '1.0.6'
 
 
 
@@ -105,12 +105,12 @@ $FirstBaseScriptVersion = @{
 
     'FirstBaseShowSplash.ps1'          = '1.0.0'
 
-    'FirstBaseHandoffSplash.ps1'        = '1.0.4'
+    'FirstBaseHandoffSplash.ps1'        = '1.0.5'
 
-    'FirstBaseOpenSettingsAndFinish.ps1' = '1.1.9'
+    'FirstBaseOpenSettingsAndFinish.ps1' = '1.1.13'
 
-    'FirstBaseHardwareCheck.ps1'        = '1.0.3'
-    'Install-FbMicrosoftEdge.ps1'       = '1.0.0'
+    'FirstBaseHardwareCheck.ps1'        = '1.0.4'
+    'Install-FbMicrosoftEdge.ps1'       = '1.0.1'
 
 
 

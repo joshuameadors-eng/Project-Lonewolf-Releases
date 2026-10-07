@@ -1,6 +1,16 @@
 @echo off
 setlocal EnableDelayedExpansion
 
+if /I "%~1"=="--source-test" (
+    call :FIND_SOURCE
+    if defined SRC (
+        echo SOURCE !SRC!
+        exit /b 0
+    )
+    echo SOURCE_MISS
+    exit /b 1
+)
+
 :: This is the LIVE deploy script for the full "LoneWolf" build (WorkflowProfile
 :: ProvisionMode=lonewolf, e.g. AMD64/ARM64 profiles), in BOTH WIM mode and ISO mode
 :: (Invoke-LoneWolfBuild.ps1 Build-Cache / Build-IsoCache / Build-OverlayCache all copy
@@ -15,7 +25,7 @@ title FirstBase ? For Internal Use Only
 :: Optional: set TECHINSTALL_WIM_INDEX before launch (default 1).
 if not defined TECHINSTALL_WIM_INDEX set "TECHINSTALL_WIM_INDEX=1"
 set "FB_TOTAL_STEPS=7"
-set "FB_TECHINSTALL_REV=2026-08-24.2"
+set "FB_TECHINSTALL_REV=2026-10-05.2"
 
 :: %TEMP% is not guaranteed to resolve to an existing directory in WinPE, so it can
 :: never be the LAST-RESORT log location: a ">>" into a path that does not exist
@@ -25,6 +35,16 @@ set "FB_TECHINSTALL_REV=2026-08-24.2"
 :: for every fallback log path and temp script file below.
 set "FB_TMPD=X:"
 if defined TEMP if exist "%TEMP%\." set "FB_TMPD=%TEMP%"
+
+:: Log on the script volume before any source search or UI. startnet used to
+:: exit without calling this file, so D: had TechInstall.cmd and no log at all.
+:: FirstBase-Logs stays visible (not inside Hidden+System FirstBase).
+set "FB_EARLY_VOL=%~d0"
+if /i not "!FB_EARLY_VOL:~-1!"==":" set "FB_EARLY_VOL=!FB_EARLY_VOL!:"
+set "FB_EARLY_DIR=!FB_EARLY_VOL!\FirstBase-Logs"
+if not exist "!FB_EARLY_DIR!\" mkdir "!FB_EARLY_DIR!" >nul 2>&1
+attrib -H -S "!FB_EARLY_DIR!" >nul 2>&1
+echo [%DATE% %TIME%] TechInstall started rev=%FB_TECHINSTALL_REV% script=%~f0 >> "!FB_EARLY_DIR!\FirstBase-Deploy.log"
 
 :: -- Hand the screen to the PowerShell deploy UI --------------------------
 :: Invoke-FbDeployUi.ps1 owns the console: Init plays the splash reveal, then
@@ -711,93 +731,14 @@ if defined FBLOG if exist "%FBLOG%" (
     echo [%DATE% %TIME%] WinPE bootstrap log copied to USB ^(FBLOG saved before reboot^) >> "%LOG%"
 )
 
-REM Physical disk # that owns %SRC%. Needed for optional diskpart offline.
-REM
-REM This used to parse a LIVE diskpart pipe inline, with a for /f whose command
-REM string was '"!FB_DISKPART!" /s "in.txt" piped through findstr'.
-REM That command string STARTS with a double quote, which cmd mangles when it wraps
-REM it for its "cmd /c" subshell - diskpart never ran, the loop body never executed,
-REM the console got "The filename, directory name, or volume label syntax is
-REM incorrect.", and MEDIADISK was left EMPTY. An empty MEDIADISK silently skipped
-REM the offline-disk step below. usebackq does not
-REM fix the quoting hazard. Run diskpart once into a CAPTURE FILE and parse the file
-REM instead - the same capture-file pattern TechInstall-Install.cmd already uses.
-set "VLE=%SRC:~0,1%"
-set "MEDIADISK="
-set "MEDIADISK_SRC=none"
-echo [%DATE% %TIME%] Install media volume detail ^(disk number for offline^): >> "%LOG%"
-call :FB_DISK_OF_LETTER !VLE!
-set "MEDIADISK=!FB_DOL_DISK!"
-set "MEDIADISK_SRC=!FB_DOL_SRC!"
-if not defined MEDIADISK call :FB_MEDIADISK_PS_FALLBACK
-REM The "if defined" guard is load-bearing: "set VAR=!VAR: =!" on an UNDEFINED
-REM variable leaves the literal " =" behind, which then satisfies "if defined VAR"
-REM with junk - that is how the log came to read "Disk  =" while the
-REM self-wipe comparisons silently no-opped.
-if defined MEDIADISK set "MEDIADISK=!MEDIADISK: =!"
-if defined MEDIADISK (
-    echo !MEDIADISK!| findstr /R "^[0-9][0-9]*$" >nul 2>&1
-    if errorlevel 1 (
-        set "MEDIADISK="
-        set "MEDIADISK_SRC=none"
-    )
-)
-echo [%DATE% %TIME%] MEDIADISK ^(install volume physical disk^)=!MEDIADISK! source=!MEDIADISK_SRC! >> "%LOG%"
 echo [%DATE% %TIME%] USB boot loaders left in place ^(stick stays bootable after apply^) >> "%LOG%"
 call :FB_TRACE "USB boot files left in place"
-
-REM --------------------------------------------------------------------------
-REM Optional: mark install-media disk offline ^(Windows stack, this WinPE session
-REM only^). USB EFI loaders and sources\boot.wim stay on the stick.
-REM --------------------------------------------------------------------------
-echo [%DATE% %TIME%] Install media offline-disk ^(diskpart^): >> "%LOG%"
-if defined MEDIADISK (
-    echo [%DATE% %TIME%] Taking install media disk !MEDIADISK! offline >> "%LOG%"
-    (
-        echo select disk !MEDIADISK!
-        echo offline disk
-    ) > "!FB_TMPD!\fb_offline.txt"
-    "!FB_DISKPART!" /s "!FB_TMPD!\fb_offline.txt" >> "!LOG!" 2>&1
-    set "FB_OFFLINE_EC=!ERRORLEVEL!"
-    rem The install media disk is now OFFLINE, so its USB-hosted LOG path no longer
-    rem resolves and any further append would print "The system cannot find the path
-    rem specified." to the WinPE console. Re-point LOG to the RAM scratch root BEFORE
-    rem logging the offline result. The read below MUST be !LOG!, not %LOG% - cmd
-    rem expands %LOG% at parse time for the whole block, so the re-point above would
-    rem silently never take effect and the write would still target the dead USB path.
-    set "LOG=!FB_TMPD!\FirstBase-Deploy.log"
-    echo [%DATE% %TIME%]   diskpart offline exit=!FB_OFFLINE_EC! >> "!LOG!" 2>nul
-) else (
-    echo [%DATE% %TIME%] WARNING: MEDIADISK unset - offline disk skipped; removing data volume letter fallback >> "!LOG!" 2>nul
-    (
-        echo select volume !VLE!:
-        echo remove letter=!VLE!
-    ) > "!FB_TMPD!\fb_eject.txt"
-    rem Dropping the data volume's drive letter kills the USB-hosted LOG path just as
-    rem surely as taking the disk offline does, so re-point LOG the same way the if
-    rem branch above does - BEFORE the diskpart output is appended.
-    set "LOG=!FB_TMPD!\FirstBase-Deploy.log"
-    "!FB_DISKPART!" /s "!FB_TMPD!\fb_eject.txt" >> "!LOG!" 2>&1
-)
-
-REM Wait for the technician to press a key before rebooting - no automatic
-REM timer. Handoff, offline-disk, and log copy above have already
-REM completed, so pausing here cannot block any finalization work.
-call :FB_TRACE "STEP7 waiting for user keypress before reboot"
-call :FB_UI_RESOLVE
-if defined FB_UI_SCRIPT (
-    "!FB_UI_PS!" -NoProfile -ExecutionPolicy Bypass -File "!FB_UI_SCRIPT!" -Action Done -Text "Image application complete. Remove the USB drive." -Reason "Press any key to continue and reboot..." 2>nul
-) else (
-    echo.
-    echo ============================================================
-    echo   Image application complete. Remove the USB drive.
-    echo   Press any key to continue and reboot...
-    echo ============================================================
-    echo.
-)
-pause >nul
-call :FB_TRACE "STEP7 keypress received, rebooting"
-
+REM Firmware bootsequence already points at the internal Windows Boot Manager.
+REM Do not offline the stick or remove its drive letter here. On the 5:37
+REM Surface apply, diskpart stopped on that in-use volume and waited for a
+REM confirmation key, so wpeutil reboot never ran.
+call :FB_TRACE "STEP7 rebooting into Windows"
+echo [%DATE% %TIME%] STEP7 rebooting into Windows >> "%LOG%"
 wpeutil reboot
 exit /b 0
 
@@ -1119,37 +1060,47 @@ exit /b 0
 
 :FIND_SOURCE
 set "SRC="
-REM Prefer the volume that hosts this script ^(D:\TechInstall.cmd ? try D:\sources\ first^).
-REM Scanning C: first can miss split-USB timing or pick the wrong disk if another volume shadows install.* .
+REM Prefer the volume that hosts this script. sources\ is Hidden+System on a
+REM finished stick; dir /a-d sees those files, so the run can log and apply.
 set "FBBOOT=%~d0"
 if defined FBBOOT if /i not "!FBBOOT:~0,2!"=="\\" (
-    if exist "!FBBOOT!\sources\install.wim" (
+    call :FB_DIR_HAS "!FBBOOT!\sources\install.wim"
+    if not errorlevel 1 (
         set "SRC=!FBBOOT!"
         goto :FIND_SOURCE_DONE
     )
-    if exist "!FBBOOT!\sources\install.esd" (
+    call :FB_DIR_HAS "!FBBOOT!\sources\install.esd"
+    if not errorlevel 1 (
         set "SRC=!FBBOOT!"
         goto :FIND_SOURCE_DONE
     )
-    if exist "!FBBOOT!\sources\install.swm" (
+    call :FB_DIR_HAS "!FBBOOT!\sources\install.swm"
+    if not errorlevel 1 (
         set "SRC=!FBBOOT!"
         goto :FIND_SOURCE_DONE
     )
 )
 for %%D in (C D E F G H I J K L M N O P Q R S T U V W X Y Z) do (
-    if exist "%%D:\sources\install.wim" (
-        set "SRC=%%D:"
-        goto :FIND_SOURCE_DONE
-    )
-    if exist "%%D:\sources\install.esd" (
-        set "SRC=%%D:"
-        goto :FIND_SOURCE_DONE
-    )
-    if exist "%%D:\sources\install.swm" (
-        set "SRC=%%D:"
-        goto :FIND_SOURCE_DONE
-    )
+    if not defined SRC call :FB_TAKE_SRC "%%D:"
 )
+goto :FIND_SOURCE_DONE
+
+:FB_TAKE_SRC
+if defined SRC goto :eof
+call :FB_DIR_HAS "%~1\sources\install.wim"
+if not errorlevel 1 set "SRC=%~1"
+if defined SRC goto :eof
+call :FB_DIR_HAS "%~1\sources\install.esd"
+if not errorlevel 1 set "SRC=%~1"
+if defined SRC goto :eof
+call :FB_DIR_HAS "%~1\sources\install.swm"
+if not errorlevel 1 set "SRC=%~1"
+goto :eof
+
+:FB_DIR_HAS
+dir /a-d /b "%~1" >nul 2>&1
+goto :eof
+
 :FIND_SOURCE_DONE
 exit /b 0
 

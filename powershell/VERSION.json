@@ -1,8 +1,8 @@
 {
     "_comment":  "Product/payload version (version and payloadVersion) is independent of launcherVersion. npm start destage staging product version (chips, image dates, changelog, arch enablement) always comes from this file. Packaged Dev and production changelog/update feeds use public GitHub latest.json (main) or latest-dev.json (packaged Dev). The ISO share and Drive VERSION.json must not host launcher exe, payload zip, or live version overlay.",
-    "version":  "6.1.11",
-    "payloadVersion":  "6.1.11",
-    "launcherVersion":  "6.1.11",
+    "version":  "6.2.13",
+    "payloadVersion":  "6.2.13",
+    "launcherVersion":  "6.2.0",
     "launcherExeName":  "LoneWolf-Launcher.exe",
     "dev":  {
                 "_comment":  "npm start destage always versions from this checkout VERSION.json (local ISO, HQ UNC, Drive Desktop, or any other media). Packaged Dev uses the public dev branch / latest-dev.json. Packaged production uses main / latest.json. ISO/PreSplit/WinPE-OCs are filesystem-only: Google Drive for Desktop if mounted, else HQ UNC. A Drive folder URL is never ShareRoot. Do not publish exe/zip to Drive. Do not overlay Drive HTTPS VERSION.json on destage.",
@@ -25,6 +25,315 @@
                                     }
                       },
     "changelog":  [
+                      {
+                          "version":  "6.2.13",
+                          "date":  "2026-10-07",
+                          "changes":  [
+                                          "Windows Updates for Intel/AMD stages the update payload. Quick Install still skips it.",
+                                          "Snapdragon WinPE driver injection reads \\\\WIN-HQ5JDEACV3S\\Images\\FB Image Creation\\WinPE-Drivers."
+                                      ]
+                      },
+                      {
+                          "version":  "6.2.12",
+                          "date":  "2026-10-07",
+                          "changes":  [
+                                          "ARM64 drivers are injected into WinPE only. The Windows install image stays stock."
+                                      ]
+                      },
+                      {
+                          "version":  "6.2.11",
+                          "date":  "2026-10-06",
+                          "changes":  [
+                                          "ARM64 driver injection uses the WinPE-Drivers tree for every manufacturer folder. ISO build and pre-split show Injecting ARM64 drivers."
+                                      ]
+                      },
+                      {
+                          "version":  "6.2.10",
+                          "date":  "2026-10-06",
+                          "changes":  [
+                                          "Quick Install no longer copies WinPE-Startnet.cmd into FirstBase\\Deploy. Full Snapdragon Windows Updates still stages that file, and Quick Install still boots TechInstall.cmd."
+                                      ]
+                      },
+                      {
+                          "version":  "6.2.9",
+                          "date":  "2026-10-06",
+                          "changes":  [
+                                          "Quick Install reboots into a stock Windows OOBE. It no longer waits for a key, and it does not apply the audit reseal or SetupComplete startup path."
+                                      ]
+                      },
+                      {
+                          "version":  "6.2.8",
+                          "date":  "2026-10-06",
+                          "changes":  [
+                                          "Snapdragon Quick Install and Windows (amd64) skip the Windows Update payload. Full Snapdragon Windows Updates still stages it, and Snapdragon Quick Install still injects drivers."
+                                      ]
+                      },
+                      {
+                          "version":  "6.2.7",
+                          "date":  "2026-10-05",
+                          "changes":  [
+                                          "Snapdragon Home and Pro Stage ISO keeps the WIM path on the DISM /ImageFile argument, so driver injection can mount the install image."
+                                      ]
+                      },
+                      {
+                          "version":  "6.2.6",
+                          "date":  "2026-10-05",
+                          "changes":  [
+                                          "Snapdragon Home and Pro Stage ISO mount the ARM64 install image and inject drivers. The mount progress callback no longer calls itself."
+                                      ]
+                      },
+                      {
+                          "version":  "6.2.5",
+                          "date":  "2026-10-05",
+                          "changes":  [
+                                          "Snapdragon driver injection reads each install index with Get-WindowsImage -Index. An ARM64 image is injected, and a failed architecture query reports the DISM error."
+                                      ]
+                      },
+                      {
+                          "version":  "6.2.4",
+                          "date":  "2026-10-05",
+                          "changes":  [
+                                          "Pre-split writes at least two install.swm chunks for an image at or above 512 MB. A file under the 3800 MB cap uses a span just over half its size so DISM can split it, and a one-file set for that image is staged again."
+                                      ]
+                      },
+                      {
+                          "version":  "6.2.3",
+                          "date":  "2026-10-05",
+                          "changes":  [
+                                          "Pre-split copies an install image that is already under the 3800 MB span. DISM /Split-Image is only used when the image is larger than that span."
+                                      ]
+                      },
+                      {
+                          "version":  "6.2.2",
+                          "date":  "2026-10-05",
+                          "changes":  [
+                                          "Snapdragon driver injection stays on Snapdragon and Snapdragon Quick Install, with a live progress bar while DISM is working.",
+                                          "Pre-split always writes an install.swm set. A single install.wim is no longer treated as a finished split."
+                                      ]
+                      },
+                      {
+                          "version":  "6.2.1",
+                          "date":  "2026-10-05",
+                          "changes":  [
+                                          "USB builds load the overlay profile after WinPE injection, so Get-LwUsbOverlayProfile is available in the disk job."
+                                      ]
+                      },
+                      {
+                          "version":  "6.2.0",
+                          "date":  "2026-10-05",
+                          "changes":  [
+                                          "Halloween is the launcher theme, with pumpkins on screen and the skeleton crossing.",
+                                          "ARM64 apply reboots into Windows, then Audit starts the update splash."
+                                      ]
+                      },
+                      {
+                          "version":  "6.1.75",
+                          "date":  "2026-10-05",
+                          "changes":  [
+                                          "WinPE reboots into the applied Windows image after boot handoff, without a diskpart confirmation or a key press.",
+                                          "ARM64 specialize runs SetupComplete so Audit starts splash and updates.",
+                                          "Audit strips the OOBE Reseal during auditUser so sysprep does not sit on the desktop."
+                                      ]
+                      },
+                      {
+                          "version":  "6.1.74",
+                          "date":  "2026-10-02",
+                          "changes":  [
+                                          "ARM64 builds inject Snapdragon drivers into boot.wim and the install image.",
+                                          "WinPE no longer shows the diskpart debug list."
+                                      ]
+                      },
+                      {
+                          "version":  "6.1.73",
+                          "date":  "2026-10-02",
+                          "changes":  [
+                                          "ARM64 WinPE no longer overlays Snapdragon USB drivers, so headless install uses the stock USB stack."
+                                      ]
+                      },
+                      {
+                          "version":  "6.1.72",
+                          "date":  "2026-10-02",
+                          "changes":  [
+                                          "Snapdragon WinPE Type-C opens UCS0.bin from X:\\Windows\\System32\\drivers. The old %13% path never started the USB host, so the stick never showed up as a disk."
+                                      ]
+                      },
+                      {
+                          "version":  "6.1.71",
+                          "date":  "2026-09-30",
+                          "changes":  [
+                                          "Inbox USB drivers in the Snapdragon WinPE image are demand-start again. Forcing them to boot-start left the xHCI controller waiting for a reboot."
+                                      ]
+                      },
+                      {
+                          "version":  "6.1.70",
+                          "date":  "2026-09-30",
+                          "changes":  [
+                                          "The Snapdragon xHCI filter is no longer injected into WinPE. It left the USB controller waiting for a reboot that WinPE cannot complete."
+                                      ]
+                      },
+                      {
+                          "version":  "6.1.69",
+                          "date":  "2026-09-30",
+                          "changes":  [
+                                          "When WinPE cannot see the USB stick, it restarts the Snapdragon xHCI controller in that same session, then saves the problem-device list and shuts down. A full reboot cannot clear that controller."
+                                      ]
+                      },
+                      {
+                          "version":  "6.1.68",
+                          "date":  "2026-09-30",
+                          "changes":  [
+                                          "WinPE records problem devices and stays open when the USB stick is missing from diskpart. It no longer rescans disks on that path, which was restarting Snapdragon devices."
+                                      ]
+                      },
+                      {
+                          "version":  "6.1.58",
+                          "date":  "2026-09-30",
+                          "changes":  [
+                                          "The loading bar on splash update cards jumps in steps instead of sliding."
+                                      ]
+                      },
+                      {
+                          "version":  "6.1.56",
+                          "date":  "2026-09-30",
+                          "changes":  [
+                                          "The loading bar on splash update cards moves more slowly and repaints less often."
+                                      ]
+                      },
+                      {
+                          "version":  "6.1.49",
+                          "date":  "2026-09-28",
+                          "changes":  [
+                                          "Hardware pass opens the YouTube watch page in Edge. After that window is closed, a leftover Windows Update reboot flag no longer restarts into Audit. Scrub renames Project Lonewolf back to Administrator."
+                                      ]
+                      },
+                      {
+                          "version":  "6.1.40",
+                          "date":  "2026-09-28",
+                          "changes":  [
+                                          "The hardware check runs before a pending-reboot restart. Start Hardware Checks in fb-im starts that check instead of going back to the update scan."
+                                      ]
+                      },
+                      {
+                          "version":  "6.1.39",
+                          "date":  "2026-09-28",
+                          "changes":  [
+                                          "A hung download stops at 12 minutes and install continues with what is already staged. If a failed restart closes the splash, it is opened again while updates are still running."
+                                      ]
+                      },
+                      {
+                          "version":  "6.1.38",
+                          "date":  "2026-09-25",
+                          "changes":  [
+                                          "Updates that Windows still offers are downloaded before the updates-complete path. A matching title is skipped only when that same install batch already has it."
+                                      ]
+                      },
+                      {
+                          "version":  "6.1.37",
+                          "date":  "2026-09-25",
+                          "changes":  [
+                                          "The splash opens fb-im again. Quick Update copies the GitHub payload onto a USB without requiring the FirstbaseHQ network."
+                                      ]
+                      },
+                      {
+                          "version":  "6.1.36",
+                          "date":  "2026-09-25",
+                          "changes":  [
+                                          "Update cards stay four across on the device splash. Download and install cards use a repeating loading bar."
+                                      ]
+                      },
+                      {
+                          "version":  "6.1.35",
+                          "date":  "2026-09-25",
+                          "changes":  [
+                                          "Splash status screens are small boxes with their own transitions. Update cards are narrower, a fourth row fits, and download or install cards show a loading bar."
+                                      ]
+                      },
+                      {
+                          "version":  "6.1.34",
+                          "date":  "2026-09-25",
+                          "changes":  [
+                                          "The splash preview keeps status buttons around the logo. Each button opens that imaging status, and the buttons stay on screen."
+                                      ]
+                      },
+                      {
+                          "version":  "6.1.33",
+                          "date":  "2026-09-25",
+                          "changes":  [
+                                          "The temporary imaging administrator account is named Project Lonewolf.",
+                                          "After a reboot, the splash waits for this boot's updates instead of showing the previous boot's list.",
+                                          "Updates on the splash are cards. Each card glows in that update's status color, and a failure shows as Error."
+                                      ]
+                      },
+                      {
+                          "version":  "6.1.32",
+                          "date":  "2026-09-25",
+                          "changes":  [
+                                          "A driver that already installed is not downloaded again when Windows offers that same title, including the version, under a new update id. A different version still installs."
+                                      ]
+                      },
+                      {
+                          "version":  "6.1.31",
+                          "date":  "2026-09-25",
+                          "changes":  [
+                                          "Total elapsed keeps counting through the hardware check. It no longer restarts when Windows finishes settling.",
+                                          "fb-im shows that elapsed time beside the sealed or not sealed marker.",
+                                          "A hardware pass opens the YouTube video fullscreen, without the browser page around it.",
+                                          "A second splash no longer opens on top of the first, and the tools menu can open fb-im.",
+                                          "The same UpdateId is not downloaded again after it installs. A new UpdateId for the same driver title is still installed, and that repeat is written to the update log."
+                                      ]
+                      },
+                      {
+                          "version":  "6.1.30",
+                          "date":  "2026-09-25",
+                          "changes":  [
+                                          "Update repeats are logged. Each time a title goes to Downloading, Installing, or Done, the log records whether it is the same package or a new Windows Update id for a title that already finished."
+                                      ]
+                      },
+                      {
+                          "version":  "6.1.29",
+                          "date":  "2026-09-25",
+                          "changes":  [
+                                          "Splash tools can open fb-im again. A restart that Windows accepts and then drops no longer tells the technician to hold the power button. The splash says Restart the device and starts the update loop again so the next restart step can run."
+                                      ]
+                      },
+                      {
+                          "version":  "6.1.28",
+                          "date":  "2026-09-23",
+                          "changes":  [
+                                          "After a hardware check, YouTube (pass) or Settings (fail) covers the screen. The splash moves behind that window until it is closed."
+                                      ]
+                      },
+                      {
+                          "version":  "6.1.27",
+                          "date":  "2026-09-23",
+                          "changes":  [
+                                          "Splash rows distinguish a staged install from a finished one. An update that still needs a reboot shows Pending Restart. Downloading it again shows Reapplying, including byte progress. An update Windows still lists after we already installed that exact package shows Still offered."
+                                      ]
+                      },
+                      {
+                          "version":  "6.1.26",
+                          "date":  "2026-09-23",
+                          "changes":  [
+                                          "A restart that Windows accepts but never starts no longer leaves the splash on Rebooting with the update loop dead.",
+                                          "The splash starts the loop again. That retry skips the shutdown call that already failed on this boot. If it still cannot restart, the splash asks for a power-cycle."
+                                      ]
+                      },
+                      {
+                          "version":  "6.1.25",
+                          "date":  "2026-09-23",
+                          "changes":  [
+                                          "Fresh image applies enter Audit before OOBE. Reseal Mode=Audit is on the oobeSystem pass, which Windows actually processes. The 6.1.23 specialize Reseal was ignored, so Just a Moment and the defaultuser0 login still ran.",
+                                          "auditSystem strips that Reseal before the first Audit logon so audit.exe does not open the System Preparation Tool."
+                                      ]
+                      },
+                      {
+                          "version":  "6.1.24",
+                          "date":  "2026-09-23",
+                          "changes":  [
+                                          "Reverted the 6.1.22 detached sysprep /audit waiter and the 6.1.23 specialize Reseal plus auditSystem strip.",
+                                          "First boot is the 6.1.21 path again: specialize SetupComplete arms Administrator autologon (computer name, blank password) and the update triggers, then returns. No unattend Reseal. The update loop starts on the next logon or startup."
+                                      ]
+                      },
                       {
                           "version":  "6.1.11",
                           "date":  "2026-09-21",

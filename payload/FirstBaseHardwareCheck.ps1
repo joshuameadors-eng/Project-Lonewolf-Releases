@@ -405,6 +405,32 @@ function Test-FbHardwareCriticalPnp {
     return New-FbHardwareCheckItem -Name 'pnp' -Passed $passed -Detail $detail
 }
 
+function Set-FbHardwareCheckSplashStatus {
+    param(
+        [string]$Phase = 'HardwareChecks',
+        [string]$Message
+    )
+    $statusPath = Join-Path $FbRoot 'wu-status.json'
+    $updates = @()
+    try {
+        if (Test-Path -LiteralPath $statusPath) {
+            $prev = Get-Content -LiteralPath $statusPath -Raw -ErrorAction Stop | ConvertFrom-Json -ErrorAction Stop
+            if ($prev -and $prev.updates) { $updates = @($prev.updates) }
+        }
+    } catch {}
+    $payload = @{
+        phase     = $Phase
+        message   = $Message
+        updatedAt = (Get-Date).ToString('o')
+        updates   = $updates
+    }
+    try {
+        [System.IO.File]::WriteAllText($statusPath, ($payload | ConvertTo-Json -Depth 6), [System.Text.Encoding]::UTF8)
+    } catch {
+        try { Write-FbHardwareCheckLog ("splash status write failed: {0}" -f $_.Exception.Message) 'WARN' } catch {}
+    }
+}
+
 function Invoke-FbHardwareGate {
     Write-FbHardwareCheckLog ("start payload={0} script={1}" -f $FirstBasePayloadRevision, $script:ThisScriptVersion)
     try {
@@ -413,23 +439,43 @@ function Invoke-FbHardwareGate {
         }
         Set-Content -LiteralPath $HwRunningMarker -Value ('pid={0} at {1}' -f $PID, (Get-Date -Format 'o')) -Encoding ascii -Force
     } catch {}
+    try { Set-FbHardwareCheckSplashStatus -Message 'Starting hardware checks (sound, camera, Wi-Fi, PnP).' } catch {}
     $items = @()
-    try { $items += Test-FbHardwareSound } catch {
+    try {
+        try { Set-FbHardwareCheckSplashStatus -Message 'Running hardware checks: sound (microphone and speakers).' } catch {}
+        $items += Test-FbHardwareSound
+    } catch {
         $items += New-FbHardwareCheckItem -Name 'sound' -Passed $false -Detail ('Sound probe threw: {0}' -f $_.Exception.Message)
     }
-    try { $items += Test-FbHardwareCamera } catch {
+    try {
+        try { Set-FbHardwareCheckSplashStatus -Message 'Running hardware checks: camera.' } catch {}
+        $items += Test-FbHardwareCamera
+    } catch {
         $items += New-FbHardwareCheckItem -Name 'camera' -Passed $false -Detail ('Camera probe threw: {0}' -f $_.Exception.Message)
     }
-    try { $items += Test-FbHardwareWifi } catch {
+    try {
+        try { Set-FbHardwareCheckSplashStatus -Message 'Running hardware checks: Wi-Fi.' } catch {}
+        $items += Test-FbHardwareWifi
+    } catch {
         $items += New-FbHardwareCheckItem -Name 'wifi' -Passed $false -Detail ('Wi-Fi probe threw: {0}' -f $_.Exception.Message)
     }
-    try { $items += Test-FbHardwareCriticalPnp } catch {
+    try {
+        try { Set-FbHardwareCheckSplashStatus -Message 'Running hardware checks: PnP.' } catch {}
+        $items += Test-FbHardwareCriticalPnp
+    } catch {
         $items += New-FbHardwareCheckItem -Name 'pnp' -Passed $false -Detail ('PnP probe threw: {0}' -f $_.Exception.Message)
     }
 
     $failed = @($items | Where-Object { -not $_.Passed })
     $passed = ($failed.Count -eq 0 -and $items.Count -eq 4)
     $summary = ($items | ForEach-Object { '{0}={1}' -f $_.Name, $(if ($_.Passed) { 'PASS' } else { 'FAIL' }) }) -join '; '
+    try {
+        if ($passed) {
+            Set-FbHardwareCheckSplashStatus -Phase 'HardwarePass' -Message ('Hardware passed ({0}). Operator gate is next.' -f $summary)
+        } else {
+            Set-FbHardwareCheckSplashStatus -Phase 'HardwareFail' -Message ('Hardware failed ({0}). Settings is next.' -f $summary)
+        }
+    } catch {}
     Write-FbHardwareCheckLog ("result passed={0} {1}" -f $passed, $summary) $(if ($passed) { 'INFO' } else { 'WARN' })
     foreach ($it in $items) {
         Write-FbHardwareCheckLog ('  {0}: {1}' -f $it.Name, $it.Detail) $(if ($it.Passed) { 'INFO' } else { 'WARN' })

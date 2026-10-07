@@ -38,7 +38,7 @@ $FbPdFirstBase = 'C:\ProgramData\FirstBase'
 # the 2295 .oobe-sound-delivery-started early write). If not an OOBE/system user, perform full disarm
 # and exit 0 — Settings is NEVER opened, no shutdown issued.
 $fb2271DosUser = $env:USERNAME
-$fb2271DosIsOobeSession = ($fb2271DosUser -eq 'defaultuser0') -or ($fb2271DosUser -eq 'SYSTEM') -or ($fb2271DosUser -eq 'Administrator') -or ([string]::IsNullOrWhiteSpace($fb2271DosUser))
+$fb2271DosIsOobeSession = ($fb2271DosUser -eq 'defaultuser0') -or ($fb2271DosUser -eq 'SYSTEM') -or ($fb2271DosUser -eq 'Administrator') -or ($fb2271DosUser -eq 'Project Lonewolf') -or ([string]::IsNullOrWhiteSpace($fb2271DosUser))
 if (-not $fb2271DosIsOobeSession) {
     $fb2271DosTs = Get-Date -Format 'o'
     $fb2271DosLine = ('[{0}] [WARN] [runId=deferred-oobe-sound] 2271: ABORT — DeferredOobeSound fired for real user [{1}] PID={2}; user-context guard. Sealing and disarming all delivery surfaces. No Settings will open.' -f $fb2271DosTs, $fb2271DosUser, $PID)

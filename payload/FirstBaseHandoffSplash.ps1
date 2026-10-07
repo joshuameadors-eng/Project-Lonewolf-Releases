@@ -2,9 +2,10 @@
 .SYNOPSIS
     FirstBase pre-seal OOBE handoff indicator (non-blocking).
 .DESCRIPTION
-    Visual status only. Shown while the OOBE handoff prepares, while hardware
-    checks actually run, and while sealing or a fail-restart is in progress.
-    It must never arm RunOnce / scheduled tasks, never wait for an
+    Fallback-only visual when Show-UpdateProgress is NOT alive. The Audit
+    path drives status on the WU splash via wu-status.json; this script
+    exits immediately if that splash is running so a second window is not
+    spawned. It must never arm RunOnce / scheduled tasks, never wait for an
     Acknowledge click, and never delay shutdown or restart. Callers
     launch it with Start-Process (no Wait) so the pipeline keeps moving.
 #>
@@ -188,6 +189,20 @@ function Get-FbHandoffCopy {
             }
         }
     }
+}
+
+if (-not $script:PreviewMode) {
+    try {
+        $mainSplash = @(Get-CimInstance -ClassName Win32_Process -ErrorAction SilentlyContinue |
+            Where-Object {
+                $_.Name -and ($_.Name -match '^(powershell|pwsh)\.exe$') -and
+                $_.CommandLine -and ($_.CommandLine -match 'Show-UpdateProgress\.ps1')
+            })
+        if ($mainSplash.Count -gt 0) {
+            Write-FbHandoffLog 'Show-UpdateProgress is alive; exiting without a second splash window.'
+            exit 0
+        }
+    } catch {}
 }
 
 try {

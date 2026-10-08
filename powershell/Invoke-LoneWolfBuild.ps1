@@ -172,7 +172,10 @@ param(
     [string] $StagingIsoPath = '',
     # Public Drive folder → USB over HTTPS (no local ShareRoot cache). npm start / packaged when Desktop absent.
     [switch] $DriveHttpDirect,
-    [string] $DriveHttpFolderId = ''
+    [string] $DriveHttpFolderId = '',
+    # Packaged Full Rebuild: base URL for bin/WinPeUi-AMD64.zip + WinPeUi-ARM64.zip
+    # (raw.githubusercontent.com/.../dev|main/bin). Empty = local trees only (npm start).
+    [string] $WinPeUiZipBaseUrl = ''
 )
 
 $ErrorActionPreference = 'Stop'
@@ -871,15 +874,14 @@ function Copy-LwPeBrailleFont {
 # Self-contained WPF deploy UI (AMD64 + ARM64 publish trees under payload Deploy\WinPeUi).
 function Copy-LwWinPeUiOverlay {
     param([string]$OverlayRoot = '')
-    if (-not $OverlayRoot -or -not $ContentRoot) { return }
-    $srcRoot = Join-Path $ContentRoot 'Deploy\WinPeUi'
-    if (-not (Test-Path -LiteralPath $srcRoot)) {
-        EmitLog -Disk 0 -Msg 'WinPeUi: no published trees under src/payload/Deploy/WinPeUi (run npm run winpe-ui:publish)'
-        return
-    }
+    if (-not $OverlayRoot) { return }
     foreach ($arch in @('AMD64', 'ARM64')) {
-        $src = Join-Path $srcRoot $arch
-        if (-not (Test-Path -LiteralPath $src)) { continue }
+        $src = ''
+        try { $src = Ensure-LwWinPeUiArchDir -Arch $arch } catch { $src = '' }
+        if (-not $src -or -not (Test-Path -LiteralPath (Join-Path $src 'LoneWolf.WinPeUi.exe'))) {
+            EmitLog -Disk 0 -Msg ("WinPeUi: {0} not available (local publish or GitHub bin/WinPeUi-{0}.zip)" -f $arch)
+            continue
+        }
         $dst = Join-Path $OverlayRoot ("FirstBase\Deploy\WinPeUi\{0}" -f $arch)
         New-Item -ItemType Directory -Force -Path $dst | Out-Null
         Copy-Item -Path (Join-Path $src '*') -Destination $dst -Recurse -Force -ErrorAction SilentlyContinue
@@ -919,9 +921,120 @@ function Resolve-LwWinPeUiPublishDir {
         [string] $ContentRootPath,
         [string] $Arch = 'AMD64'
     )
-    if ([string]::IsNullOrWhiteSpace($ContentRootPath)) { return '' }
     $folder = if ($Arch -match '(?i)ARM64|Snapdragon') { 'ARM64' } else { 'AMD64' }
+    try {
+        $ensured = Ensure-LwWinPeUiArchDir -Arch $folder
+        if ($ensured) { return $ensured }
+    } catch {}
+    if ([string]::IsNullOrWhiteSpace($ContentRootPath)) { return '' }
     return (Join-Path $ContentRootPath ("Deploy\WinPeUi\{0}" -f $folder))
+}
+
+function Get-LwWinPeUiFolderName {
+    param([string] $Arch = 'AMD64')
+    if ($Arch -match '(?i)ARM64|Snapdragon') { return 'ARM64' }
+    return 'AMD64'
+}
+
+function Ensure-LwWinPeUiArchDir {
+    # Prefer local publish trees (npm start). Packaged builds download arch zips from
+    # GitHub bin/ (under 100 MB) into a writable cache — resources\payload is often read-only.
+    param(
+        [Parameter(Mandatory)][ValidateSet('AMD64', 'ARM64')][string] $Arch,
+        [switch] $Required
+    )
+    $bundled = ''
+    if ($ContentRoot) {
+        $bundled = Join-Path $ContentRoot ("Deploy\WinPeUi\{0}" -f $Arch)
+        $bundledExe = Join-Path $bundled 'LoneWolf.WinPeUi.exe'
+        if (Test-Path -LiteralPath $bundledExe) { return $bundled }
+    }
+    $cacheRoot = $script:LwWinPeUiCacheRoot
+    if ([string]::IsNullOrWhiteSpace($cacheRoot)) {
+        $cacheRoot = Join-Path $env:TEMP 'LWWinPeUi'
+        $script:LwWinPeUiCacheRoot = $cacheRoot
+    }
+    $cached = Join-Path $cacheRoot $Arch
+    $cachedExe = Join-Path $cached 'LoneWolf.WinPeUi.exe'
+    if (Test-Path -LiteralPath $cachedExe) { return $cached }
+
+    $zipName = "WinPeUi-$Arch.zip"
+    $zipCandidates = New-Object System.Collections.Generic.List[string]
+    if ($ContentRoot) {
+        [void]$zipCandidates.Add((Join-Path $ContentRoot ("Deploy\{0}" -f $zipName)))
+        [void]$zipCandidates.Add((Join-Path $ContentRoot $zipName))
+    }
+    if ($AppResourcesPath) {
+        [void]$zipCandidates.Add((Join-Path $AppResourcesPath ("bin\{0}" -f $zipName)))
+        [void]$zipCandidates.Add((Join-Path (Split-Path -Parent $AppResourcesPath) ("bin\{0}" -f $zipName)))
+    }
+    $localZip = $null
+    foreach ($c in $zipCandidates) {
+        if ($c -and (Test-Path -LiteralPath $c)) { $localZip = $c; break }
+    }
+
+    $downloadZip = Join-Path $cacheRoot $zipName
+    if (-not $localZip) {
+        $base = [string]$WinPeUiZipBaseUrl
+        if ([string]::IsNullOrWhiteSpace($base)) {
+            if ($Required) {
+                throw ("WinPeUi {0}: no local tree/zip and -WinPeUiZipBaseUrl was not set (run npm run winpe-ui:publish for destage, or pass the public bin/ URL for packaged builds)." -f $Arch)
+            }
+            return ''
+        }
+        $base = $base.TrimEnd('/')
+        $url = "$base/$zipName"
+        New-Item -ItemType Directory -Path $cacheRoot -Force -ErrorAction SilentlyContinue | Out-Null
+        EmitLog -Disk 0 -Msg ("WinPeUi: downloading {0} -> {1}" -f $url, $downloadZip)
+        try {
+            Invoke-WebRequest -Uri $url -OutFile $downloadZip -UseBasicParsing -ErrorAction Stop
+        } catch {
+            if ($Required) { throw ("WinPeUi {0}: download failed from {1}: {2}" -f $Arch, $url, $_.Exception.Message) }
+            EmitLog -Disk 0 -Msg ("WinPeUi: download failed ({0}) - splash stays USB-only" -f $_.Exception.Message)
+            return ''
+        }
+        $localZip = $downloadZip
+    }
+
+    if (-not $localZip -or -not (Test-Path -LiteralPath $localZip)) {
+        if ($Required) { throw ("WinPeUi {0}: zip missing" -f $Arch) }
+        return ''
+    }
+
+    if (Test-Path -LiteralPath $cached) {
+        Remove-Item -LiteralPath $cached -Recurse -Force -ErrorAction SilentlyContinue
+    }
+    New-Item -ItemType Directory -Path $cached -Force | Out-Null
+    Expand-Archive -LiteralPath $localZip -DestinationPath $cached -Force
+    if (-not (Test-Path -LiteralPath $cachedExe)) {
+        # Some zips nest one folder; flatten one level if needed.
+        $nested = Get-ChildItem -LiteralPath $cached -Directory -ErrorAction SilentlyContinue | Select-Object -First 1
+        if ($nested -and (Test-Path -LiteralPath (Join-Path $nested.FullName 'LoneWolf.WinPeUi.exe'))) {
+            Copy-Item -Path (Join-Path $nested.FullName '*') -Destination $cached -Recurse -Force
+        }
+    }
+    if (-not (Test-Path -LiteralPath $cachedExe)) {
+        if ($Required) { throw ("WinPeUi {0}: LoneWolf.WinPeUi.exe missing after expand of {1}" -f $Arch, $localZip) }
+        EmitLog -Disk 0 -Msg ("WinPeUi: expand of {0} did not yield LoneWolf.WinPeUi.exe" -f $localZip)
+        return ''
+    }
+    EmitLog -Disk 0 -Msg ("WinPeUi: ready at {0}" -f $cached)
+    return $cached
+}
+
+function Ensure-LwWinPeUiForBuild {
+    param([string[]] $Arches = @('AMD64', 'ARM64'))
+    if (-not $script:LwWinPeUiCacheRoot) {
+        if ($CacheRoot) {
+            $script:LwWinPeUiCacheRoot = Join-Path $CacheRoot 'WinPeUi'
+        } else {
+            $script:LwWinPeUiCacheRoot = Join-Path $env:TEMP ('LWWinPeUi_' + [guid]::NewGuid().ToString('n').Substring(0, 8))
+        }
+    }
+    foreach ($a in $Arches) {
+        $folder = Get-LwWinPeUiFolderName -Arch $a
+        $null = Ensure-LwWinPeUiArchDir -Arch $folder
+    }
 }
 
 # --- Build ESP + overlay local cache -----------------------------------------
@@ -1800,7 +1913,9 @@ $workerDiskBlock = {
         [string] $BootInjectSourcesDir,
         [bool]   $DriveHttpDirect,
         [string] $DriveHttpFolderId,
-        [string] $DriveHttpLibPath
+        [string] $DriveHttpLibPath,
+        # Main-thread Ensure-LwWinPeUiForBuild cache (…\AMD64, …\ARM64). Empty = ContentRoot only.
+        [string] $WinPeUiCacheRoot
     )
 
     $ErrorActionPreference = 'Stop'
@@ -1964,12 +2079,18 @@ $workerDiskBlock = {
 
     function Copy-LwWinPeUiOverlay {
         param([string]$OverlayRoot = '')
-        if (-not $OverlayRoot -or -not $ContentRoot) { return }
-        $srcRoot = Join-Path $ContentRoot 'Deploy\WinPeUi'
-        if (-not (Test-Path -LiteralPath $srcRoot)) { return }
+        if (-not $OverlayRoot) { return }
         foreach ($arch in @('AMD64', 'ARM64')) {
-            $src = Join-Path $srcRoot $arch
-            if (-not (Test-Path -LiteralPath $src)) { continue }
+            $src = ''
+            if ($WinPeUiCacheRoot) {
+                $cand = Join-Path $WinPeUiCacheRoot $arch
+                if (Test-Path -LiteralPath (Join-Path $cand 'LoneWolf.WinPeUi.exe')) { $src = $cand }
+            }
+            if (-not $src -and $ContentRoot) {
+                $cand = Join-Path $ContentRoot ("Deploy\WinPeUi\{0}" -f $arch)
+                if (Test-Path -LiteralPath (Join-Path $cand 'LoneWolf.WinPeUi.exe')) { $src = $cand }
+            }
+            if (-not $src) { continue }
             $dst = Join-Path $OverlayRoot ("FirstBase\Deploy\WinPeUi\{0}" -f $arch)
             New-Item -ItemType Directory -Force -Path $dst | Out-Null
             Copy-Item -Path (Join-Path $src '*') -Destination $dst -Recurse -Force -ErrorAction SilentlyContinue
@@ -2983,7 +3104,13 @@ $workerDiskBlock = {
                 if ((Test-Path -LiteralPath $_espSentinel) -and (Test-Path -LiteralPath $startnetSrc)) {
                     $_sentHash = (Get-Content -LiteralPath $_espSentinel -Raw -ErrorAction SilentlyContinue).Trim()
                     $_uiFolder = if ($snapdragonWorkflow -or ($WorkflowType -match '(?i)ARM64')) { 'ARM64' } else { 'AMD64' }
-                    $_uiExe = Join-Path $ContentRoot ("Deploy\WinPeUi\{0}\LoneWolf.WinPeUi.exe" -f $_uiFolder)
+                    $_uiExe = ''
+                    if ($WinPeUiCacheRoot) {
+                        $_uiExe = Join-Path $WinPeUiCacheRoot ("{0}\LoneWolf.WinPeUi.exe" -f $_uiFolder)
+                    }
+                    if (-not $_uiExe -or -not (Test-Path -LiteralPath $_uiExe)) {
+                        $_uiExe = Join-Path $ContentRoot ("Deploy\WinPeUi\{0}\LoneWolf.WinPeUi.exe" -f $_uiFolder)
+                    }
                     $_curHash  = if (Get-Command -Name Get-LwBootWimInjectSentinel -ErrorAction SilentlyContinue) {
                         Get-LwBootWimInjectSentinel -StartnetPath $startnetSrc -DriverDir $Arm64UsbDriverDir -WinPeUiExePath $_uiExe
                     } else {
@@ -3115,7 +3242,13 @@ $workerDiskBlock = {
 
                             # Job runspace: flat-copy arch-matched WinPeUi into boot.wim (X:\FirstBase\WinPeUi).
                             $peUiFolder = if ($snapdragonWorkflow -or ($WorkflowType -match '(?i)ARM64')) { 'ARM64' } else { 'AMD64' }
-                            $peWinPeUiSrc = Join-Path $ContentRoot ("Deploy\WinPeUi\{0}" -f $peUiFolder)
+                            $peWinPeUiSrc = ''
+                            if ($WinPeUiCacheRoot) {
+                                $peWinPeUiSrc = Join-Path $WinPeUiCacheRoot $peUiFolder
+                            }
+                            if (-not $peWinPeUiSrc -or -not (Test-Path -LiteralPath (Join-Path $peWinPeUiSrc 'LoneWolf.WinPeUi.exe'))) {
+                                $peWinPeUiSrc = Join-Path $ContentRoot ("Deploy\WinPeUi\{0}" -f $peUiFolder)
+                            }
                             $peUiExe = Join-Path $peWinPeUiSrc 'LoneWolf.WinPeUi.exe'
                             if (Test-Path -LiteralPath $peUiExe) {
                                 $peUiDst = Join-Path $peMountDir 'FirstBase\WinPeUi'
@@ -3124,7 +3257,7 @@ $workerDiskBlock = {
                                 Copy-Item -Path (Join-Path $peWinPeUiSrc '*') -Destination $peUiDst -Recurse -Force
                                 J @{ event='log'; disk=$DiskNumber; message=("startnet-inject: WinPeUi boot inject: staged -> {0}" -f $peUiDst) }
                             } else {
-                                J @{ event='log'; disk=$DiskNumber; message=("startnet-inject: WinPeUi boot inject: source missing '{0}' (run npm run winpe-ui:publish) - splash stays USB-only" -f $peWinPeUiSrc) }
+                                J @{ event='log'; disk=$DiskNumber; message=("startnet-inject: WinPeUi boot inject: source missing '{0}' (run npm run winpe-ui:publish or pass -WinPeUiZipBaseUrl) - splash stays USB-only" -f $peWinPeUiSrc) }
                             }
 
                             if ($snapdragonWorkflow) {
@@ -4308,6 +4441,13 @@ try {
     $edgeToolsDir = Join-Path ([IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..'))) 'tools'
     # ARM64 drivers are injected into boot.wim only. $arm64InstallImageDir stays empty.
 
+    # Warm WinPeUi (local trees or GitHub bin/ zips) before per-disk overlay / boot inject.
+    try {
+        Ensure-LwWinPeUiForBuild -Arches @('AMD64', 'ARM64')
+    } catch {
+        EmitLog -Disk 0 -Msg ("WinPeUi ensure: {0}" -f $_.Exception.Message)
+    }
+
     foreach ($diskNum in $requestedDisks) {
         EmitStart -Disk $diskNum
         if ($Sequential) {
@@ -4350,7 +4490,8 @@ try {
                 $bootInjectSourcesDirForWorker,
                 ([bool]$DriveHttpDirect),
                 $DriveHttpFolderId,
-                $DriveHttpLibPath
+                $DriveHttpLibPath,
+                $script:LwWinPeUiCacheRoot
             )
 
         if ($Sequential) {

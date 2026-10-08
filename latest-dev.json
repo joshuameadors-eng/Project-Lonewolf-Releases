@@ -1,6 +1,6 @@
 {
     "launcherVersion":  "6.2.1",
-    "payloadVersion":  "6.2.39",
+    "payloadVersion":  "6.2.40",
     "channel":  "dev",
     "source":  "github-public-source",
     "latestReleaseUrl":  "https://github.com/joshuameadors-eng/Project-Lonewolf-Releases/releases/latest",
@@ -22,25 +22,31 @@
                    "payload":  "FirstBase-payload.zip",
                    "payloadDir":  "payload/",
                    "powershellDir":  "powershell/",
+                   "winpeUiAmd64":  "bin/WinPeUi-AMD64.zip",
+                   "winpeUiArm64":  "bin/WinPeUi-ARM64.zip",
                    "manifest":  "latest-dev.json"
                },
     "urls":  {
                  "setup":  "https://raw.githubusercontent.com/joshuameadors-eng/Project-Lonewolf-Releases/dev/bin/LoneWolf-Launcher-Setup-Dev.exe",
                  "portable":  "https://raw.githubusercontent.com/joshuameadors-eng/Project-Lonewolf-Releases/dev/bin/LoneWolf-Launcher-Dev.exe",
                  "payload":  "https://raw.githubusercontent.com/joshuameadors-eng/Project-Lonewolf-Releases/dev/FirstBase-payload.zip",
+                 "winpeUiAmd64":  "https://raw.githubusercontent.com/joshuameadors-eng/Project-Lonewolf-Releases/dev/bin/WinPeUi-AMD64.zip",
+                 "winpeUiArm64":  "https://raw.githubusercontent.com/joshuameadors-eng/Project-Lonewolf-Releases/dev/bin/WinPeUi-ARM64.zip",
+                 "winpeUiZipBase":  "https://raw.githubusercontent.com/joshuameadors-eng/Project-Lonewolf-Releases/dev/bin",
                  "manifest":  "https://raw.githubusercontent.com/joshuameadors-eng/Project-Lonewolf-Releases/dev/latest-dev.json"
              },
-    "portableSha256":  "e3a342e00f42fed786238a5c73f976d18efa9d7b1b3be491830e0c8784c8408e",
-    "portableSize":  73253372,
+    "portableSha256":  "410222c0ec139a9037098b8bbd8222b81fb36f9b8a76401b3d7978197a4a2103",
+    "portableSize":  73253309,
     "changelog":  [
                       {
                           "version":  "6.2.1",
                           "date":  "2026-10-08",
                           "changes":  [
-                                          "Official release 6.2.1 â€” second RELEASE cut of the v6 line (RELEASE 1â†’2). Launcher 6.2.1; public payload 6.2.39.",
+                                          "Official release 6.2.1 â€” second RELEASE cut of the v6 line (RELEASE 1â†’2). Launcher 6.2.1; public payload 6.2.40.",
                                           "Added",
                                           "Halloween launcher theme (pumpkins on screen and the skeleton crossing)",
                                           "Google Drive media â€” stage ISOs over Drive HTTP without a Desktop/cache copy; Stage All runs AMD64/ARM64 Ã— Home/Pro",
+                                          "WinPE UI â€” AMD64 and ARM64 self-contained publish zips on the public bin/ tree; packaged Full Rebuild downloads them for boot.wim inject",
                                           "Changed",
                                           "Snapdragon â€” ARM64 WinPE OC and driver injection from FB Image Creation (WinPE-OCs and WinPE-Drivers); empty local UUP driver folders fall back to the HQ share",
                                           "Quick Install â€” stock Windows OOBE without the update payload, audit reseal, or SetupComplete update path; Snapdragon Quick Install still injects drivers",

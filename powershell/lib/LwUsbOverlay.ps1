@@ -51,6 +51,27 @@ function Get-LwUsbOverlayProfile {
     }
 }
 
+function Move-LwUsbMediaRootArtifacts {
+    param([Parameter(Mandatory)][string] $VolRoot)
+    if ([string]::IsNullOrWhiteSpace($VolRoot)) { return }
+    $vol = $VolRoot.TrimEnd('\') + '\'
+    $fbDir = Join-Path $vol 'FirstBase'
+    if (-not (Test-Path -LiteralPath $fbDir)) {
+        New-Item -ItemType Directory -Path $fbDir -Force | Out-Null
+    }
+    foreach ($leaf in @('current', 'current.json', 'presplit-manifest.json')) {
+        $src = Join-Path $vol $leaf
+        if (-not (Test-Path -LiteralPath $src)) { continue }
+        $dst = Join-Path $fbDir $leaf
+        if (Test-Path -LiteralPath $dst) {
+            & attrib.exe -H -S -R $dst 2>&1 | Out-Null
+            Remove-Item -LiteralPath $dst -Force -ErrorAction SilentlyContinue
+        }
+        & attrib.exe -H -S -R $src 2>&1 | Out-Null
+        Move-Item -LiteralPath $src -Destination $dst -Force -ErrorAction Stop
+    }
+}
+
 # Quick Install lands at stock OOBE. Full updates keep the audit unattend
 # (specialize SetupComplete, oobeSystem Reseal Audit, auditUser strip).
 function Get-LwUsbOverlayUnattendSource {

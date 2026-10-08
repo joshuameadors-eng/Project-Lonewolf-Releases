@@ -25,13 +25,14 @@
 
   LocalProjectRoot (dev / Local Build Mode) still uses <LocalProjectRoot>\Staging\...
 
-  Destage (npm start, -DestageMedia) does NOT use LocalProjectRoot for ISO/PreSplit:
-    ISO  = C:\Repos\Windows_Installation\UUP\25h2\ISO only (no share IsoRoot)
-    PreSplit write/read = C:\Repos\Windows_Installation\UUP\25h2\PreSplit (flat set folders)
-    WinPE-OCs prefer HQ Images\FB Image Creation\WinPE-OCs when reachable.
-  Packaged production/Dev keep this share-root / legacy-staging resolver unchanged.
+  Destage mediaSource (main.js -MediaSource, npm start only):
+    local       - UUP ISO + UUP PreSplit (legacy -DestageMedia)
+    share       - HQ UNC ISO / PreSplit / WinPE-OCs
+    googleDrive - Drive for Desktop ShareRoot, or HTTPS direct onto USB during Rebuild
+                  when Desktop is not mounted (Image Ready package; no local cache)
+  Packaged production/Dev keep auto Drive-then-HQ / HTTPS-cache resolution.
 
-  A Google Drive folder URL is never a filesystem ShareRoot.
+  A Google Drive folder URL is never a filesystem ShareRoot (cache or Desktop path is).
 #>
 
 function Get-LwHqShareRoot {
@@ -61,6 +62,8 @@ function Test-LwLooksLikeStagingRoot {
     foreach ($n in @('ISO', 'PreSplit', 'WinPE-OCs', 'Edge')) {
         if (Test-Path -LiteralPath (Join-Path $Path $n)) { return $true }
     }
+    # Flat Google Drive package root: current.json + set folders (no PreSplit\ wrapper).
+    if (Test-Path -LiteralPath (Join-Path $Path 'current.json')) { return $true }
     return $false
 }
 
@@ -167,6 +170,18 @@ function Resolve-LwShareLayout {
         }
     }
 
+    # Join-Path rejects an empty -Path (DriveHttpDirect / missing Desktop ShareRoot).
+    if ([string]::IsNullOrWhiteSpace($ShareRoot)) {
+        return [pscustomobject]@{
+            Layout       = 'empty-share'
+            StagingRoot  = ''
+            IsoRoot      = ''
+            PreSplitRoot = ''
+            WpeOcRoot    = ''
+            EdgeRoot     = ''
+        }
+    }
+
     $legacyStaging = Join-Path $ShareRoot 'Remote\Staging'
     $rootIso = Join-Path $ShareRoot 'ISO'
     $rootPre = Join-Path $ShareRoot 'PreSplit'
@@ -177,6 +192,7 @@ function Resolve-LwShareLayout {
     $legacyEdge = Join-Path $legacyStaging 'Edge'
     $useRoot = (Test-LwShareDir $rootIso) -or (Test-LwShareDir $rootPre) -or (Test-LwShareDir $rootOc) -or (Test-LwShareDir $rootEdge)
     $wpeOcRoot = Resolve-LwWpeOcRoot -ShareRoot $ShareRoot
+    $flatPackageRoot = Test-Path -LiteralPath (Join-Path $ShareRoot 'current.json')
 
     if ($useRoot) {
         return [pscustomobject]@{
@@ -186,6 +202,18 @@ function Resolve-LwShareLayout {
             PreSplitRoot = $(if (Test-LwShareDir $rootPre) { $rootPre } else { $legacyPre })
             WpeOcRoot    = $wpeOcRoot
             EdgeRoot     = $(if (Test-LwShareDir $rootEdge) { $rootEdge } else { (Join-Path $legacyStaging 'Edge') })
+        }
+    }
+
+    # Google Drive shared folder: set packages + current.json at the root (no PreSplit\).
+    if ($flatPackageRoot) {
+        return [pscustomobject]@{
+            Layout       = 'drive-package-root'
+            StagingRoot  = $ShareRoot
+            IsoRoot      = $(if (Test-LwShareDir $rootIso) { $rootIso } else { '' })
+            PreSplitRoot = $ShareRoot
+            WpeOcRoot    = $wpeOcRoot
+            EdgeRoot     = $(if (Test-LwShareDir $rootEdge) { $rootEdge } else { '' })
         }
     }
 
@@ -215,10 +243,79 @@ function Get-LwDestageUupLayout {
 # Destage (npm start) media: ISO and PreSplit are local UUP only (no share ISO).
 # WinPE-OCs come from Images\FB Image Creation\WinPE-OCs\{AMD64|ARM64} (HQ preferred).
 function Resolve-LwDestageMediaLayout {
-    param([string]$ShareRoot = '')
+    param(
+        [string]$ShareRoot = '',
+        [ValidateSet('local', 'share', 'googleDrive', '')]
+        [string]$MediaSource = 'local'
+    )
+    $ms = if ([string]::IsNullOrWhiteSpace($MediaSource)) { 'local' } else { $MediaSource.ToLowerInvariant() }
+    if ($ms -eq 'googledrive') { $ms = 'googleDrive' }
+
+    if ($ms -eq 'share') {
+        $hq = Get-LwHqShareRoot
+        $share = Resolve-LwShareLayout -ShareRoot $hq
+        $wpeOcRoot = Resolve-LwWpeOcRoot -ShareRoot $hq -LocalOcRoot $share.WpeOcRoot
+        return [pscustomobject]@{
+            Layout          = 'destage-share'
+            StagingRoot     = $share.StagingRoot
+            IsoRoot         = $share.IsoRoot
+            IsoFallbackRoot = ''
+            PreSplitRoot    = $share.PreSplitRoot
+            WpeOcRoot       = $wpeOcRoot
+            UupRoot         = ''
+            ShareLayout     = [string]$share.Layout
+            MediaSource     = 'share'
+            # Same Image Ready package shape as Google Drive (injected boot.wim under PreSplit).
+            BootInjectRoot  = $share.PreSplitRoot
+        }
+    }
+
+    if ($ms -eq 'googleDrive') {
+        $drive = $ShareRoot
+        $hqRoot = Get-LwHqShareRoot
+        # Never treat the HQ UNC default as a Google Drive ShareRoot.
+        if (-not [string]::IsNullOrWhiteSpace($drive) -and $hqRoot -and
+            ($drive.TrimEnd('\') -ieq $hqRoot.TrimEnd('\'))) {
+            $drive = ''
+        }
+        if ([string]::IsNullOrWhiteSpace($drive) -or -not (Test-LwLooksLikeStagingRoot $drive)) {
+            $drive = Resolve-LwGoogleDriveDesktopRoot
+        }
+        if ([string]::IsNullOrWhiteSpace($drive)) {
+            return [pscustomobject]@{
+                Layout          = 'destage-drive-missing'
+                StagingRoot     = ''
+                IsoRoot         = ''
+                IsoFallbackRoot = ''
+                PreSplitRoot    = ''
+                WpeOcRoot       = ''
+                UupRoot         = ''
+                ShareLayout     = 'drive-missing'
+                MediaSource     = 'googleDrive'
+                BootInjectRoot  = ''
+            }
+        }
+        $share = Resolve-LwShareLayout -ShareRoot $drive
+        # OCs always from HQ arch trees (Drive/UUP rarely ship WinPE-OCs\{ARCH}).
+        $wpeOcRoot = Resolve-LwWpeOcRoot -ShareRoot (Get-LwHqShareRoot) -LocalOcRoot ''
+        return [pscustomobject]@{
+            Layout          = 'destage-drive'
+            StagingRoot     = $share.StagingRoot
+            IsoRoot         = $share.IsoRoot
+            IsoFallbackRoot = ''
+            PreSplitRoot    = $share.PreSplitRoot
+            WpeOcRoot       = $wpeOcRoot
+            UupRoot         = ''
+            ShareLayout     = [string]$share.Layout
+            MediaSource     = 'googleDrive'
+            BootInjectRoot  = $share.PreSplitRoot
+        }
+    }
+
     $uup = Get-LwDestageUupLayout
     $share = Resolve-LwShareLayout -ShareRoot $ShareRoot
-    $wpeOcRoot = Resolve-LwWpeOcRoot -ShareRoot $ShareRoot -LocalOcRoot $share.WpeOcRoot
+    # Local UUP has no WinPE-OCs; use HQ Images\...\WinPE-OCs\{AMD64|ARM64}.
+    $wpeOcRoot = Resolve-LwWpeOcRoot -ShareRoot (Get-LwHqShareRoot) -LocalOcRoot ''
     return [pscustomobject]@{
         Layout          = 'destage-uup'
         StagingRoot     = $share.StagingRoot
@@ -228,7 +325,51 @@ function Resolve-LwDestageMediaLayout {
         WpeOcRoot       = $wpeOcRoot
         UupRoot         = $uup.Root
         ShareLayout     = [string]$share.Layout
+        MediaSource     = 'local'
+        BootInjectRoot  = ''
     }
+}
+
+# PreSplit\<set>\sources\boot.wim from Stage-GoogleDriveMedia.ps1 (preferred).
+# Legacy: BootInject\<ARCH>\<home|pro>\sources\boot.wim.
+function Resolve-LwBootInjectSourcesDir {
+    param(
+        [string]$BootInjectRoot,
+        [string]$Arch,
+        [string]$Edition = 'Pro'
+    )
+    if ([string]::IsNullOrWhiteSpace($BootInjectRoot)) { return '' }
+    $archKey = if ($Arch -match '(?i)ARM64|Snapdragon') { 'ARM64' } else { 'AMD64' }
+    $ed = if ($Edition -match '^(?i)home$') { 'Home' } else { 'Pro' }
+    if (Get-Command -Name Get-LWPreSplitCandidateDirs -ErrorAction SilentlyContinue) {
+        foreach ($setDir in @(Get-LWPreSplitCandidateDirs -PreSplitRoot $BootInjectRoot -Arch $archKey -Edition $ed)) {
+            $sources = Join-Path $setDir 'sources'
+            if (Test-Path -LiteralPath (Join-Path $sources 'boot.wim')) { return $sources }
+        }
+    }
+    $editionFolder = $Edition.ToLowerInvariant()
+    $legacySources = Join-Path (Join-Path (Join-Path $BootInjectRoot $archKey) $editionFolder) 'sources'
+    if (Test-Path -LiteralPath (Join-Path $legacySources 'boot.wim')) { return $legacySources }
+    return ''
+}
+
+function Test-LwBootInjectSentinelCurrent {
+    param(
+        [Parameter(Mandatory)][string]$SourcesDir,
+        [Parameter(Mandatory)][string]$StartnetPath,
+        [string]$DriverDir = '',
+        [string]$WinPeUiExePath = ''
+    )
+    $bootWim = Join-Path $SourcesDir 'boot.wim'
+    $sentinel = Join-Path $SourcesDir 'boot.wim.lw-injected'
+    if (-not ((Test-Path -LiteralPath $bootWim) -and (Test-Path -LiteralPath $sentinel))) { return $false }
+    if (-not (Get-Command -Name Get-LwBootWimInjectSentinel -ErrorAction SilentlyContinue)) { return $false }
+    if (-not (Test-Path -LiteralPath $StartnetPath)) { return $false }
+    $currentHash = Get-LwBootWimInjectSentinel -StartnetPath $StartnetPath -DriverDir $DriverDir -WinPeUiExePath $WinPeUiExePath
+    $cachedHash = (Get-Content -LiteralPath $sentinel -Raw -ErrorAction SilentlyContinue).Trim()
+    if (-not $currentHash -or -not $cachedHash -or $currentHash -ne $cachedHash) { return $false }
+    if ((Get-Item -LiteralPath $sentinel).LastWriteTime -lt (Get-Item -LiteralPath $bootWim).LastWriteTime) { return $false }
+    return $true
 }
 
 function Initialize-LwDestageUupDirs {

@@ -1,7 +1,7 @@
 <#
     Invoke-FbDeployUi.ps1  (Project LoneWolf)
 
-    ScriptVersion: 1.1.5  (destage: red text+wolf, no DEV tag)
+    ScriptVersion: 1.2.0  (WPF WinPeUi host + overall %; console fallback)
 
     The WinPE deploy screen. One console surface: splash branding (wolf +
     framed title) is the header - there is no separate title ribbon and no
@@ -40,16 +40,18 @@
       Done     [-Text <s>]                      completion screen
       Repaint                                   redraw from existing state
 
-    Progress is shown by a |/-\ spinner next to the active step (no overall
-    percent bar). DISM apply paints a themed "Applying image" bar (cyan/dark
-    gray/green, same palette as this screen) under the step list.
+    When LoneWolf.WinPeUi.exe is staged under Deploy\WinPeUi\<ARCH>\, this
+    script seeds JSON and launches the WPF surface (overall % bar, meta row).
+    Console Braille paint remains the fallback if the exe is missing or fails.
+    DISM apply writes ApplyPercent into the same JSON when WPF is active; the
+    console cursor-bar remains the fallback path.
 
     This script must never break a deploy: every action is wrapped, and it
     always exits 0.
 #>
 [CmdletBinding()]
 param(
-    [ValidateSet('Init', 'Step', 'Detail', 'Fail', 'Done', 'Repaint', 'SpinWatch')]
+    [ValidateSet('Init', 'Step', 'Detail', 'Fail', 'Done', 'Repaint', 'SpinWatch', 'SetApply')]
     [string] $Action = 'Repaint',
 
     [string] $StateFile = 'X:\FirstBase-DeployUi.json',
@@ -61,6 +63,7 @@ param(
     [string] $Reason = '',
     [string] $LogFile = '',
     [int]    $Tail = 10,
+    [int]    $ApplyPercent = -1,
 
     [ValidateSet('Auto', 'Yes', 'No')]
     [string] $Dev = 'Auto',
@@ -362,7 +365,14 @@ function Write-Row {
 
 # --- Build identity ----------------------------------------------------------
 function Get-FbUiBuildInfo {
-    $info = [ordered]@{ Dev = $false; Destage = $false; Launcher = ''; Script = '' }
+    $info = [ordered]@{
+        Dev            = $false
+        Destage        = $false
+        Launcher       = ''
+        Script         = ''
+        PayloadVersion = ''
+        ImageBuildDate = ''
+    }
     if (-not $PSScriptRoot) { return $info }
 
     $identityPs1 = Join-Path $PSScriptRoot 'FirstBaseBuildIdentity.ps1'
@@ -376,9 +386,118 @@ function Get-FbUiBuildInfo {
             $info.Destage  = [bool]$resolved.Destage
             $info.Launcher = [string]$resolved.Launcher
             $info.Script   = [string]$resolved.Script
+            if ($resolved.Script) { $info.PayloadVersion = [string]$resolved.Script }
+            if ($resolved.PSObject.Properties['ImageBuildDate'] -and $resolved.ImageBuildDate) {
+                $info.ImageBuildDate = [string]$resolved.ImageBuildDate
+            }
         }
     } catch {}
     return $info
+}
+
+function Update-FbUiOverallPercent($state) {
+    if (-not $state) { return }
+    $total = 0
+    if ($state.Steps) { $total = @($state.Steps).Count }
+    if ($total -le 0) {
+        try { $state.OverallPercent = 0 } catch {}
+        return
+    }
+    if ([string]$state.Status -eq 'done') {
+        try { $state.OverallPercent = 100 } catch {}
+        return
+    }
+    $done = 0
+    $activeFraction = 0.0
+    foreach ($s in @($state.Steps)) {
+        switch ([string]$s.State) {
+            'done' { $done++ }
+            'active' {
+                $ap = 0.0
+                try {
+                    if ($null -ne $state.ApplyPercent) { $ap = [double]$state.ApplyPercent }
+                } catch {}
+                if ($ap -gt 0) { $activeFraction = [Math]::Max(0.0, [Math]::Min(100.0, $ap)) / 100.0 }
+            }
+        }
+    }
+    $pct = (($done + $activeFraction) / [double]$total) * 100.0
+    try { $state.OverallPercent = [int][Math]::Round([Math]::Max(0.0, [Math]::Min(100.0, $pct)), 0) } catch {}
+}
+
+function Get-FbWinPeUiArchFolder {
+    $pa = [string]$env:PROCESSOR_ARCHITECTURE
+    if ($pa -eq 'ARM64') { return 'ARM64' }
+    return 'AMD64'
+}
+
+function Get-FbWinPeUiExePath {
+    if (-not $PSScriptRoot) { return $null }
+    $arch = Get-FbWinPeUiArchFolder
+    $exe = Join-Path $PSScriptRoot ("WinPeUi\{0}\LoneWolf.WinPeUi.exe" -f $arch)
+    if (Test-Path -LiteralPath $exe) { return $exe }
+    return $null
+}
+
+function Test-FbWinPeUiProcessRunning {
+    try {
+        $procs = @(Get-Process -Name 'LoneWolf.WinPeUi' -ErrorAction SilentlyContinue)
+        return ($procs.Count -gt 0)
+    } catch { return $false }
+}
+
+function Hide-FbPeConsoleWindow {
+    try {
+        if (-not ('FbPeConFont' -as [type])) { return }
+        $hwnd = [FbPeConFont]::GetConsoleWindow()
+        if ($hwnd -eq [IntPtr]::Zero) { return }
+        Add-Type -Namespace FbPeUiWin32 -Name ShowWin -MemberDefinition @'
+[DllImport("user32.dll")] public static extern bool ShowWindow(System.IntPtr hWnd, int nCmdShow);
+'@ -ErrorAction SilentlyContinue | Out-Null
+        [FbPeUiWin32.ShowWin]::ShowWindow($hwnd, 6) | Out-Null  # SW_MINIMIZE
+    } catch {}
+}
+
+function Ensure-FbWinPeUiHost {
+    param(
+        [string] $StateFilePath,
+        $State
+    )
+    $exe = Get-FbWinPeUiExePath
+    if (-not $exe) { return $false }
+    try {
+        if (-not (Test-FbWinPeUiProcessRunning)) {
+            $argList = @('--state-file', $StateFilePath)
+            if ($env:FB_WINPE_UI_WINDOWED -eq '1') {
+                $argList += '--windowed'
+            }
+            $workDir = Split-Path -Parent $exe
+            $p = Start-Process -FilePath $exe -ArgumentList $argList -WorkingDirectory $workDir -PassThru -WindowStyle Normal -ErrorAction Stop
+            if (-not $p) { return $false }
+            # Self-contained WPF can take >400ms to fail on WinPE; wait before hiding console.
+            Start-Sleep -Milliseconds 1500
+            if ($p.HasExited) { return $false }
+        } else {
+            Start-Sleep -Milliseconds 200
+            if (-not (Test-FbWinPeUiProcessRunning)) { return $false }
+        }
+        try { $State.WpfHost = $true } catch {}
+        Hide-FbPeConsoleWindow
+        return $true
+    } catch {
+        return $false
+    }
+}
+
+function Test-FbDeployWpfHostActive {
+    param([string] $Path = $StateFile)
+    if ([string]::IsNullOrWhiteSpace($Path)) { return $false }
+    try {
+        if (-not (Test-Path -LiteralPath $Path)) { return $false }
+        $st = Get-Content -LiteralPath $Path -Raw -ErrorAction Stop | ConvertFrom-Json -ErrorAction Stop
+        if ($st -and $st.PSObject.Properties['WpfHost'] -and $st.WpfHost) { return $true }
+    } catch {}
+    return (Test-FbWinPeUiProcessRunning)
 }
 
 # --- Splash header (replaces the old title ribbon) ---------------------------
@@ -544,22 +663,31 @@ function New-FbUiState {
         }
     }
 
+    $payloadVer = if ($build.PayloadVersion) { [string]$build.PayloadVersion } elseif ($build.Script) { [string]$build.Script } else { '' }
+    $imgDate = if ($build.ImageBuildDate) { [string]$build.ImageBuildDate } else { '' }
+
     return [pscustomobject]@{
-        Workflow   = $Workflow
-        Dev        = $isDestage
-        Launcher   = $build.Launcher
-        Script     = $build.Script
-        Steps      = $plan
-        Current    = 0
-        Detail     = ''
-        Status     = 'running'
-        Message    = ''
-        Spin       = 0
-        SpinCol    = -1
-        SpinRow    = -1
-        PlanEndRow = -1
-        SplashDone = $false
-        StartedUtc = (Get-Date).ToUniversalTime().ToString('o')
+        Workflow       = $Workflow
+        Dev            = $isDestage
+        Launcher       = $build.Launcher
+        Script         = $build.Script
+        PayloadVersion = $payloadVer
+        ImageBuildDate = $imgDate
+        PhaseLabel     = 'Windows installation'
+        OverallPercent = 0
+        ApplyPercent   = $null
+        WpfHost        = $false
+        Steps          = $plan
+        Current        = 0
+        Detail         = ''
+        Status         = 'running'
+        Message        = ''
+        Spin           = 0
+        SpinCol        = -1
+        SpinRow        = -1
+        PlanEndRow     = -1
+        SplashDone     = $false
+        StartedUtc     = (Get-Date).ToUniversalTime().ToString('o')
     }
 }
 
@@ -742,6 +870,7 @@ try {
             if (-not $state) { $state = New-FbUiState }
             if ($Step -gt 0) {
                 $state.Current = $Step - 1
+                try { $state.ApplyPercent = $null } catch {}
                 foreach ($s in @($state.Steps)) {
                     if ($s.N -lt $Step) {
                         if ($s.State -ne 'fail') { $s.State = 'done' }
@@ -754,12 +883,14 @@ try {
             }
             if ($Text) { $state.Detail = $Text }
             try { $state.Spin = (([int]$state.Spin) + 1) % 4 } catch { $state.Spin = 1 }
+            Update-FbUiOverallPercent $state
         }
 
         'Detail' {
             if (-not $state) { $state = New-FbUiState }
             $state.Detail = $Text
             try { $state.Spin = (([int]$state.Spin) + 1) % 4 } catch { $state.Spin = 1 }
+            Update-FbUiOverallPercent $state
         }
 
         'Fail' {
@@ -777,6 +908,7 @@ try {
             }
             $state.Message = $msg
             $state.Detail = 'Halted'
+            Update-FbUiOverallPercent $state
         }
 
         'Done' {
@@ -788,9 +920,21 @@ try {
             if ($Reason) { $msg += "`n" + $Reason }
             $state.Message = $msg
             $state.Detail = 'Complete'
+            try { $state.ApplyPercent = $null } catch {}
+            Update-FbUiOverallPercent $state
+        }
+
+        'SetApply' {
+            if (-not $state) { $state = Read-FbUiState }
+            if (-not $state) { $state = New-FbUiState }
+            if ($ApplyPercent -ge 0) {
+                try { $state.ApplyPercent = [int][Math]::Max(0, [Math]::Min(100, $ApplyPercent)) } catch {}
+            }
+            Update-FbUiOverallPercent $state
         }
 
         'SpinWatch' {
+            if (Test-FbDeployWpfHostActive -Path $StateFile) { exit 0 }
             # Detached same-console poller: keep the active-step spinner moving
             # between TechInstall Step/Detail calls (those are separate processes).
             # Read-only on the state file - rewriting it raced Step/DISM and
@@ -836,16 +980,28 @@ try {
         default { if (-not $state) { $state = New-FbUiState } }
     }
 
+    if ($Action -eq 'SetApply') {
+        Write-FbUiState $state
+        exit 0
+    }
+
     if ($Action -ne 'SpinWatch') {
-        if ($doSplashReveal) {
-            Write-FbUiSplashHeader -Subtitle ([string]$state.Workflow) -IsDestage ([bool]$state.Dev) -Animate
-            $state.SplashDone = $true
+        if ($Action -eq 'Init') {
+            Update-FbUiOverallPercent $state
         }
 
         Write-FbUiState $state
-        Show-FbUiScreen $state
-        # Persist spin index advanced during the on-screen animation.
-        Write-FbUiState $state
+        $wpfOk = Ensure-FbWinPeUiHost -StateFilePath $StateFile -State $state
+        if ($wpfOk) {
+            Write-FbUiState $state
+        } else {
+            if ($doSplashReveal) {
+                Write-FbUiSplashHeader -Subtitle ([string]$state.Workflow) -IsDestage ([bool]$state.Dev) -Animate
+                $state.SplashDone = $true
+            }
+            Show-FbUiScreen $state
+            Write-FbUiState $state
+        }
     }
 } catch {
     try { Write-Host ("  [{0}] {1} {2}" -f $Action, $Label, $Text) } catch {}

@@ -805,10 +805,15 @@ function Get-FbImStatusKind {
 }
 
 function Test-FbImCbsRebootUnsafe {
-    # True only while CBS is actively committing boot files or WU is still
-    # downloading/installing. Do not treat 'Installed' or a owed reboot as unsafe:
-    # '(?i)download|install' matches Installed and greys Seal on every updated device.
+    # Hard CBS/boot-file commit only. Active WU download/install must NOT grey Seal —
+    # Manual seal stops the loop and runs the full exit pipeline. Do not treat
+    # 'Installed' as unsafe ('(?i)download|install' matches Installed).
+    # poqexec/dismhost alone are normal during package install — only count them
+    # when the loop is already in a reboot/CBS-commit phase.
+    # -IncludeActiveUpdates: optional diagnostic for status text only.
+    param([switch]$IncludeActiveUpdates)
     $reasons = New-Object System.Collections.Generic.List[string]
+    $inCbsCommit = $false
     try {
         if (Test-Path -LiteralPath $StatusFile) {
             $obj = Get-Content -LiteralPath $StatusFile -Raw -ErrorAction Stop | ConvertFrom-Json -ErrorAction Stop
@@ -817,31 +822,39 @@ function Test-FbImCbsRebootUnsafe {
             $hbFresh = [bool](Test-FbImHeartbeatFresh)
             # Stale phase=Rebooting after a completed reboot is not CBS-unsafe.
             if ($phase -match '(?i)^rebooting(\b|$)' -and $hbFresh) {
+                $inCbsCommit = $true
                 [void]$reasons.Add('Update loop is in the reboot/CBS-commit phase')
             }
             if ($msg -match '(?i)cbs pre-reboot|servicing to finish|ntoskrnl|waiting for shutdown') {
                 if ($hbFresh -or ($phase -match '(?i)^rebooting(\b|$)')) {
-                [void]$reasons.Add('Splash/loop reports boot-file commit or shutdown in progress')
+                    $inCbsCommit = $true
+                    [void]$reasons.Add('Splash/loop reports boot-file commit or shutdown in progress')
                 }
             }
-            foreach ($u in @($obj.updates)) {
-                if (-not $u) { continue }
-                $st = [string]$u.Status
-                if (Test-FbImWuRowInstalling -Status $st) {
-                    [void]$reasons.Add('Updates are still downloading or installing')
+            if ($IncludeActiveUpdates) {
+                foreach ($u in @($obj.updates)) {
+                    if (-not $u) { continue }
+                    $st = [string]$u.Status
+                    if (Test-FbImWuRowInstalling -Status $st) {
+                        [void]$reasons.Add('Updates are still downloading or installing')
+                        break
+                    }
+                }
+            }
+        }
+    } catch {}
+    # Servicing workers only reinforce an already-detected CBS commit phase.
+    # During ordinary WU install they must not grey Manual seal.
+    if ($inCbsCommit) {
+        try {
+            foreach ($p in @(Get-Process -Name 'poqexec','dismhost' -ErrorAction SilentlyContinue)) {
+                if ($p) {
+                    [void]$reasons.Add(('Servicing worker {0} is still running' -f $p.Name))
                     break
                 }
             }
-        }
-    } catch {}
-    try {
-        foreach ($p in @(Get-Process -Name 'poqexec','dismhost' -ErrorAction SilentlyContinue)) {
-            if ($p) {
-                [void]$reasons.Add(('Servicing worker {0} is still running' -f $p.Name))
-                break
-            }
-        }
-    } catch {}
+        } catch {}
+    }
     $unsafe = ($reasons.Count -gt 0)
     return [pscustomobject]@{
         Unsafe  = [bool]$unsafe
@@ -915,10 +928,13 @@ function Get-FbImDeviceStatus {
         $incompleteUpdates = $false
     }
 
-    $hwOkForSeal = (-not $gateFail) -and ($hwPassed -or $destage)
+    # Manual seal (Audit / destage): available during updates. Hardware pass is still
+    # required outside Audit unless destage. Hardware FAIL always blocks.
+    $hwOkForSeal = (-not $gateFail) -and ($hwPassed -or $destage -or $audit)
     $modeOkForSeal = $destage -or $audit -or $hwPassed
     # Seal markers written before sysprep must not block a retry while still in Audit.
     $sealFinished = [bool]($sealed -and (-not $audit))
+    # cbsUnsafe here is hard CBS only (not active WU install) — see Test-FbImCbsRebootUnsafe.
     $canSeal = $admin -and (-not $sealFinished) -and (-not $cbsUnsafe) -and $hwOkForSeal -and $modeOkForSeal
     $manualSealed = $false
     try { $manualSealed = [bool](Test-Path -LiteralPath $ManualSealMarker) } catch { $manualSealed = $false }
@@ -1022,8 +1038,8 @@ function Get-FbImDeviceStatus {
     if ($sealFinished) { $sealBlock = 'This device is already sealed.' }
     elseif (-not $admin) { $sealBlock = 'Not running as Administrator - open fb-im.cmd from the USB stick.' }
     elseif ($cbsUnsafe) { $sealBlock = 'Seal is blocked while Windows is committing boot files. Wait for the update loop to reboot.' }
-    elseif ($gateFail) { $sealBlock = 'Pass the hardware check before sealing.' }
-    elseif ((-not $hwPassed) -and (-not $destage)) { $sealBlock = 'Pass the hardware check before sealing.' }
+    elseif ($gateFail) { $sealBlock = 'Hardware check failed - fix hardware before sealing.' }
+    elseif ((-not $hwPassed) -and (-not $destage) -and (-not $audit)) { $sealBlock = 'Pass the hardware check before sealing (or seal from Audit / destage).' }
     elseif (-not $modeOkForSeal) { $sealBlock = 'Seal is available after the hardware check passes, in Audit mode, or on a destage stick.' }
 
     $facts = New-Object System.Collections.ArrayList
@@ -2173,28 +2189,119 @@ function Import-FbImSealCleanupHelpers {
         return $false
     }
     if (-not $ast) { return $false }
-    $wanted = @('Set-FbDefenderRealtime', 'Invoke-FbInlineMdmScrub')
+    # Required: Defender + MDM. Optional: ship reaper (STAGE 2 leftover backstop).
+    $required = @('Set-FbDefenderRealtime', 'Invoke-FbInlineMdmScrub')
+    $optional = @('Register-FbFinalShipReaper')
+    $wanted = @($required + $optional)
     $found = @{}
     foreach ($fn in $ast.FindAll({ $args[0] -is [System.Management.Automation.Language.FunctionDefinitionAst] }, $true)) {
         if ($wanted -contains $fn.Name -and -not $found.ContainsKey($fn.Name)) { $found[$fn.Name] = $fn.Extent.Text }
     }
-    foreach ($name in $wanted) {
+    foreach ($name in $required) {
         if (-not $found[$name]) { return $false }
     }
     foreach ($name in $wanted) {
-        try { Invoke-Expression $found[$name] } catch { return $false }
+        if (-not $found[$name]) { continue }
+        try { Invoke-Expression $found[$name] } catch {
+            if ($required -contains $name) { return $false }
+        }
     }
     return ((Get-Command -Name Set-FbDefenderRealtime -ErrorAction SilentlyContinue) -and
             (Get-Command -Name Invoke-FbInlineMdmScrub -ErrorAction SilentlyContinue))
 }
 
+function Complete-FbImSealTreeCleanup {
+    # KEEP IN SYNC: Tools\seal_command.txt steps 4-8 (log merge, ProgramData wipe,
+    # Setup tree MIR scrub keeping Logs, SetupComplete delete, README + manifest).
+    # Call AFTER Defender restore + MDM scrub + task/autostart teardown, BEFORE
+    # writing durable .firstbase-sealed (marker must survive ProgramData wipe).
+    $setupRoot = $FbRoot
+    $pdRoot = $FbPd
+    $logDir = Join-Path $setupRoot 'Logs'
+    $pdMerge = Join-Path $logDir 'ProgramData-FirstBase'
+    try {
+        if (-not (Test-Path -LiteralPath $logDir)) {
+            New-Item -ItemType Directory -Path $logDir -Force -ErrorAction SilentlyContinue | Out-Null
+        }
+    } catch {}
+
+    # Merge ProgramData logs into surviving Logs (exclude executables). Plain then /ZB.
+    if ((Test-Path -LiteralPath $pdRoot) -and (Test-Path -LiteralPath $logDir)) {
+        try {
+            New-Item -ItemType Directory -Path $pdMerge -Force -ErrorAction SilentlyContinue | Out-Null
+            $xf = @('*.ps1', '*.psm1', '*.psd1', '*.cmd', '*.bat', '*.vbs', '*.vbe', '*.js', '*.jse', '*.wsf', '*.wsh', '*.hta', '*.exe', '*.dll', '*.com', '*.scr', '*.msi', '*.lnk', '*.pif', '*.reg')
+            $rcArgs = @($pdRoot, $pdMerge, '/E', '/R:1', '/W:1', '/XJ', '/NFL', '/NDL', '/NJH', '/NJS', '/NP', '/XF') + $xf
+            & robocopy.exe @rcArgs | Out-Null
+            $rcArgsZb = @($pdRoot, $pdMerge, '/E', '/ZB', '/R:1', '/W:1', '/XJ', '/NFL', '/NDL', '/NJH', '/NJS', '/NP', '/XF') + $xf
+            & robocopy.exe @rcArgsZb | Out-Null
+        } catch {}
+    }
+
+    # Wipe ProgramData\FirstBase (recreate empty so seal markers can land after).
+    try {
+        if (Test-Path -LiteralPath $pdRoot) {
+            Remove-Item -LiteralPath $pdRoot -Recurse -Force -ErrorAction SilentlyContinue
+        }
+    } catch {}
+    try {
+        New-Item -ItemType Directory -Path $pdRoot -Force -ErrorAction SilentlyContinue | Out-Null
+    } catch {}
+
+    # SetupComplete must not survive into customer specialize.
+    if (Test-Path -LiteralPath $SetupCompleteCmd) {
+        try { Remove-Item -LiteralPath $SetupCompleteCmd -Force -ErrorAction SilentlyContinue } catch {}
+    }
+
+    # MIR empty folder onto Setup\FirstBase, keep Logs only (same as seal_command.txt).
+    if (Test-Path -LiteralPath $setupRoot) {
+        $empty = Join-Path $env:TEMP ('fb-empty-' + [guid]::NewGuid().ToString('N').Substring(0, 8))
+        try {
+            New-Item -ItemType Directory -Path $empty -Force | Out-Null
+            & robocopy.exe $empty $setupRoot /MIR /XD $logDir /R:1 /W:1 /NFL /NDL /NJH /NJS /NP | Out-Null
+        } catch {}
+        try { Remove-Item -LiteralPath $empty -Recurse -Force -ErrorAction SilentlyContinue } catch {}
+        try {
+            if (-not (Test-Path -LiteralPath $logDir)) {
+                New-Item -ItemType Directory -Path $logDir -Force -ErrorAction SilentlyContinue | Out-Null
+            }
+        } catch {}
+    }
+
+    # README + scrub manifest (operator evidence; seal_command parity).
+    try {
+        $readme = Join-Path $logDir 'README-FirstBase-Logs.txt'
+        $manifest = Join-Path $logDir 'reaper-scrub-manifest.txt'
+        $stamp = Get-Date -Format 'g'
+        @(
+            'FirstBase - preserved provisioning logs'
+            'Sealed via fb-im Manual seal (full exit pipeline).'
+            'C:\ProgramData\FirstBase scripts were deleted; logs were merged into ProgramData-FirstBase\'
+            'Durable .firstbase-sealed + .pipeline-completed were rewritten after that scrub.'
+            'Everything in C:\Windows\Setup\FirstBase was deleted EXCEPT this Logs folder.'
+            'This folder is inert and is safe to delete once the logs have been collected.'
+        ) | Set-Content -LiteralPath $readme -Encoding UTF8 -Force
+        $lines = New-Object System.Collections.Generic.List[string]
+        [void]$lines.Add(('FirstBase fb-im manual seal scrub manifest - {0}' -f $stamp))
+        [void]$lines.Add('Everything remaining under C:\Windows\Setup\FirstBase follows.')
+        if (Test-Path -LiteralPath $setupRoot) {
+            Get-ChildItem -LiteralPath $setupRoot -Recurse -Force -ErrorAction SilentlyContinue |
+                ForEach-Object { [void]$lines.Add($_.FullName) }
+        }
+        [void]$lines.Add('Executable-residue search - any line below this one is a defect.')
+        foreach ($pat in @('*.ps1', '*.cmd', '*.bat', '*.vbs', '*.exe', '*.dll')) {
+            Get-ChildItem -LiteralPath $setupRoot -Recurse -Force -Filter $pat -ErrorAction SilentlyContinue |
+                ForEach-Object { [void]$lines.Add($_.FullName) }
+        }
+        $lines | Set-Content -LiteralPath $manifest -Encoding UTF8 -Force
+    } catch {}
+}
+
 function Invoke-FbImSealToOobe {
-    # KEEP IN SYNC: Set-FbDefenderRealtime + Invoke-FbInlineMdmScrub in Invoke-WindowsUpdateLoop.ps1
-    # and Tools\seal_command.txt. This path MUST restore Defender realtime AND scrub MDM/exclusions
-    # before writing .firstbase-sealed. Do not copy-paste a third independent scrub.
-    # GATE: technician Seal from fb-im (Audit or destage after HW pass).
-    # CLEANUP: reuse loop helpers via AST import; ProgramData residue includes .ps1/.cmd/.bat/.vbs/.exe.
-    # SEAL: restore or MDM scrub HARD-fail must not write .firstbase-sealed and must not sysprep.
+    # KEEP IN SYNC: STAGE 2 seal in Invoke-FbOobeHandoff + Tools\seal_command.txt.
+    # Full exit: stop loop → USO/AU → Defender → MDM → task/autostart → drop overlay
+    # → tree scrub → durable markers → ship reaper → sysprep /oobe.
+    # GATE: technician Manual seal from fb-im (Audit / destage; HW fail still blocked in UI).
+    # SEAL: Defender restore or MDM scrub HARD-fail must not write .firstbase-sealed / sysprep.
     param(
         [ValidateSet('Restart', 'Shutdown')]
         [string]$PowerAction
@@ -2207,24 +2314,41 @@ function Invoke-FbImSealToOobe {
         return [pscustomobject]$result
     }
 
-    $cbsGate = $null
-    try { $cbsGate = Test-FbImCbsRebootUnsafe } catch { $cbsGate = $null }
-    if ($cbsGate -and [bool]$cbsGate.Unsafe) {
-        $result.Message = 'Seal blocked - Windows is still committing boot files'
-        $result.Detail = ('A forced restart now can cause 0xc000000f / missing ntoskrnl. Wait for the update loop to reboot. {0}' -f $cbsGate.Detail)
-        return [pscustomobject]$result
-    }
-
-    # Stop update loop if still running.
+    # Stop update loop first so Manual seal works during active WU. Then hard-CBS check.
     try {
         $loop = Get-FbLoopProcess
         if ($loop) {
             Stop-Process -Id $loop.ProcessId -Force -ErrorAction SilentlyContinue
-            Start-Sleep -Milliseconds 800
+            Start-Sleep -Milliseconds 1200
         }
     } catch {}
     if (Test-Path -LiteralPath $LockFile) {
         try { Remove-Item -LiteralPath $LockFile -Force -ErrorAction SilentlyContinue } catch {}
+    }
+    try {
+        $splashTeardown = 'C:\Windows\Setup\FirstBase\State\.splash-teardown'
+        if (-not (Test-Path -LiteralPath (Split-Path -Parent $splashTeardown))) {
+            New-Item -ItemType Directory -Path (Split-Path -Parent $splashTeardown) -Force -ErrorAction SilentlyContinue | Out-Null
+        }
+        Set-Content -LiteralPath $splashTeardown -Value ('fb-im manual seal {0}' -f (Get-Date -Format 'o')) -Encoding UTF8 -Force
+    } catch {}
+
+    # Best-effort drain of in-flight package workers after killing the loop.
+    # Hard block below is only reboot/CBS-commit phase (not ordinary WU install).
+    $drainDeadline = (Get-Date).AddSeconds(20)
+    while ((Get-Date) -lt $drainDeadline) {
+        $workers = @()
+        try { $workers = @(Get-Process -Name 'poqexec','dismhost' -ErrorAction SilentlyContinue) } catch { $workers = @() }
+        if ($workers.Count -eq 0) { break }
+        Start-Sleep -Milliseconds 500
+    }
+
+    $cbsGate = $null
+    try { $cbsGate = Test-FbImCbsRebootUnsafe } catch { $cbsGate = $null }
+    if ($cbsGate -and [bool]$cbsGate.Unsafe) {
+        $result.Message = 'Seal blocked - Windows is still committing boot files'
+        $result.Detail = ('A forced restart now can cause 0xc000000f / missing ntoskrnl. Wait for the reboot to finish. {0}' -f $cbsGate.Detail)
+        return [pscustomobject]$result
     }
 
     if (-not (Import-FbImSealCleanupHelpers)) {
@@ -2233,6 +2357,24 @@ function Invoke-FbImSealToOobe {
         return [pscustomobject]$result
     }
 
+    # 2292: same USO + WU AU steps as STAGE 2 (mandatory restart must not follow into OOBE).
+    try {
+        Stop-Service -Name 'usosvc' -Force -ErrorAction SilentlyContinue
+        Start-Sleep -Seconds 2
+        $usoRebootKey = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\WindowsUpdate\Orchestrator\reboot'
+        if (Test-Path -LiteralPath $usoRebootKey) {
+            Remove-Item -LiteralPath $usoRebootKey -Recurse -Force -ErrorAction SilentlyContinue
+        }
+    } catch {}
+    try {
+        $auKey = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate\AU'
+        if (-not (Test-Path -LiteralPath $auKey)) {
+            New-Item -Path $auKey -Force -ErrorAction SilentlyContinue | Out-Null
+        }
+        Set-ItemProperty -LiteralPath $auKey -Name 'NoAutoRebootWithLoggedOnUsers' -Value 1 -Type DWord -Force -ErrorAction SilentlyContinue
+        Set-ItemProperty -LiteralPath $auKey -Name 'NoAutoUpdate' -Value 1 -Type DWord -Force -ErrorAction SilentlyContinue
+    } catch {}
+
     $alreadySealed = $false
     try { $alreadySealed = [bool](Test-Path -LiteralPath $SealedMarker) } catch { $alreadySealed = $false }
 
@@ -2240,9 +2382,7 @@ function Invoke-FbImSealToOobe {
     $restoreOk = $false
     try { $restoreOk = [bool]$script:FbDefenderRealtimeLastOk } catch { $restoreOk = $false }
     if (-not $restoreOk) {
-        if ($alreadySealed) {
-            # Sysprep retry after a prior stamp — do not brick Audit.
-        } else {
+        if (-not $alreadySealed) {
             $result.Message = 'Seal blocked - Defender restore failed'
             $result.Detail = 'Real-time monitoring is still off. Device stays in Audit. Defender was not restored; .firstbase-sealed was not written.'
             return [pscustomobject]$result
@@ -2253,9 +2393,7 @@ function Invoke-FbImSealToOobe {
     try { $scrub = Invoke-FbInlineMdmScrub } catch { $scrub = $null }
     $scrubPass = [bool]($scrub -and ($scrub.Overall -eq 'PASS'))
     if (-not $scrubPass) {
-        if ($alreadySealed) {
-            # Already sealed — skip fail-closed so a sysprep retry can proceed.
-        } else {
+        if (-not $alreadySealed) {
             $ov = $(if ($scrub) { [string]$scrub.Overall } else { 'UNKNOWN' })
             $result.Message = 'Seal blocked - MDM scrub failed'
             $result.Detail = ('MDM/exclusion teardown overall={0}. Device stays in Audit. Inspect C:\ProgramData\FirstBase\Logs\WU-mdm-scrub.log. .firstbase-sealed was not written.' -f $ov)
@@ -2263,7 +2401,7 @@ function Invoke-FbImSealToOobe {
         }
     }
 
-    # Remove FirstBase scheduled tasks.
+    # Remove FirstBase scheduled tasks (seal_command.txt step 1).
     $taskNames = @(Get-FbFirstBaseTasks)
     foreach ($tn in $taskNames) {
         try {
@@ -2273,35 +2411,41 @@ function Invoke-FbImSealToOobe {
         try { & schtasks.exe /Delete /TN $tn /F 2>$null | Out-Null } catch {}
     }
 
-    # Remove FirstBase autostart values.
+    # Remove FirstBase autostart values (seal_command.txt step 2) + STAGE 2 sound surfaces.
     foreach ($key in @($RunOnceKey, $RunKey)) {
         try {
             $props = Get-ItemProperty -LiteralPath $key -ErrorAction Stop
             foreach ($p in $props.PSObject.Properties) {
                 if ($p.Name -like 'PS*') { continue }
-                if ($p.Name -match '(?i)firstbase') {
+                if ($p.Name -match '(?i)firstbase|OpenWindowsSoundSettingsDeferred') {
                     try { Remove-ItemProperty -LiteralPath $key -Name $p.Name -Force -ErrorAction SilentlyContinue } catch {}
                 }
             }
         } catch {}
     }
-
-    # Remove SetupComplete and runnable residue under Setup\FirstBase (keep Logs).
-    if (Test-Path -LiteralPath $SetupCompleteCmd) {
-        try { Remove-Item -LiteralPath $SetupCompleteCmd -Force -ErrorAction SilentlyContinue } catch {}
-    }
-    foreach ($path in @(Get-FbExecutableResidue)) {
-        try { Remove-Item -LiteralPath $path -Force -ErrorAction SilentlyContinue } catch {}
-    }
     try {
-        if (Test-Path -LiteralPath $FbPd) {
-            Get-ChildItem -LiteralPath $FbPd -Recurse -File -ErrorAction SilentlyContinue |
-                Where-Object { @('.ps1', '.cmd', '.bat', '.vbs', '.exe') -contains $_.Extension.ToLower() } |
-                ForEach-Object {
-                    try { Remove-Item -LiteralPath $_.FullName -Force -ErrorAction SilentlyContinue } catch {}
-                }
+        & reg.exe delete 'HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\RunOnceEx\0001' /v 'FirstBaseWuLoop' /f 2>$null | Out-Null
+    } catch {}
+    try {
+        & reg.exe delete 'HKLM\SOFTWARE\Microsoft\Active Setup\Installed Components\{A7B8C9D0-E1F2-4A5B-9C01-2234DEFERREDSOUND}' /f 2>$null | Out-Null
+    } catch {}
+    try {
+        Remove-Item -LiteralPath (Join-Path $env:ProgramData 'Microsoft\Windows\Start Menu\Programs\Startup\FirstBaseOobeSoundAtLogon.vbs') -Force -ErrorAction SilentlyContinue
+    } catch {}
+    try {
+        Set-ItemProperty -LiteralPath 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon' -Name 'Userinit' -Value 'C:\Windows\system32\userinit.exe,' -Force -ErrorAction SilentlyContinue
+    } catch {}
+
+    # 5.4.3: drop overlay so tree scrub is a full delete (no splash scripts into OOBE).
+    try {
+        $overlay = 'C:\ProgramData\FirstBase\FirstBase-Splash-Oobe-Overlay.mode'
+        if (Test-Path -LiteralPath $overlay) {
+            Remove-Item -LiteralPath $overlay -Force -ErrorAction SilentlyContinue
         }
     } catch {}
+
+    # Full tree scrub (logs merge + ProgramData wipe + Setup MIR keep Logs).
+    try { Complete-FbImSealTreeCleanup } catch {}
 
     $sysprepExe = Join-Path $env:SystemRoot 'System32\Sysprep\Sysprep.exe'
     if (-not (Test-Path -LiteralPath $sysprepExe)) {
@@ -2315,9 +2459,9 @@ function Invoke-FbImSealToOobe {
             New-Item -ItemType Directory -Path $FbPd -Force -ErrorAction SilentlyContinue | Out-Null
         }
         $stamp = Get-Date -Format 'o'
-        Set-Content -LiteralPath $PipelineMarker -Value ("Pipeline completed at {0} (fb-im seal)." -f $stamp) -Encoding UTF8 -Force -ErrorAction Stop
-        Set-Content -LiteralPath $SealedMarker -Value ("Sealed at {0} (fb-im seal); device ready for customer OOBE after sysprep /oobe." -f $stamp) -Encoding UTF8 -Force -ErrorAction Stop
-        Set-Content -LiteralPath $ArmSuppressed -Value ("Specialize arm suppressed at {0} (fb-im seal)" -f $stamp) -Encoding UTF8 -Force -ErrorAction Stop
+        Set-Content -LiteralPath $PipelineMarker -Value ("Pipeline completed at {0} (fb-im manual seal)." -f $stamp) -Encoding UTF8 -Force -ErrorAction Stop
+        Set-Content -LiteralPath $SealedMarker -Value ("Sealed at {0} (fb-im manual seal); device ready for customer OOBE after sysprep /oobe." -f $stamp) -Encoding UTF8 -Force -ErrorAction Stop
+        Set-Content -LiteralPath $ArmSuppressed -Value ("Specialize arm suppressed at {0} (fb-im manual seal)" -f $stamp) -Encoding UTF8 -Force -ErrorAction Stop
         if (-not (Test-Path -LiteralPath $SealedMarker)) { throw 'firstbase-sealed marker missing after write' }
     } catch {
         $result.Message = 'Seal blocked - could not write the sealed marker'
@@ -2325,16 +2469,21 @@ function Invoke-FbImSealToOobe {
         return [pscustomobject]$result
     }
 
+    try { Write-FbImManualSealMarker -PowerAction $PowerAction } catch {}
+
     # Scrub BEFORE sysprep (loop STEP 3b). Leaving AutoAdminLogon=Administrator
-    # (or a prior defaultuser0 stamp) makes OOBE autologon DefaultUser0's desktop.
+    # makes OOBE autologon DefaultUser0's desktop.
     Clear-FbImWinlogonAutologon
     try {
         Start-Process -FilePath 'net.exe' -ArgumentList @('user', 'Administrator', '/active:no') -WindowStyle Hidden -Wait -ErrorAction SilentlyContinue | Out-Null
     } catch {}
 
-    # Same command as the automated loop. /oobe reseals to customer OOBE.
-    # Do not fake AutoAdminLogon=defaultuser0. Do not fall back to shutdown.exe.
-    # ArgumentList items have no spaces (PS 5.1 Start-Process quoting).
+    # STAGE 2 leftover backstop (Temp reaper + specialize SetupComplete). Arm before sysprep.
+    if (Get-Command -Name Register-FbFinalShipReaper -ErrorAction SilentlyContinue) {
+        try { Register-FbFinalShipReaper } catch {}
+    }
+
+    # Same command as automated seal / seal_command.txt: sysprep /oobe /reboot|/shutdown /quiet.
     $powerFlag = if ($PowerAction -eq 'Shutdown') { '/shutdown' } else { '/reboot' }
     $sysprepExit = $null
     try {
@@ -2348,8 +2497,8 @@ function Invoke-FbImSealToOobe {
         } catch {}
         $result.Message = 'Sysprep did not start'
         $result.Detail = $_.Exception.Message
-                return [pscustomobject]$result
-            }
+        return [pscustomobject]$result
+    }
 
     if ($sysprepExit -ne 0) {
         try {
@@ -2360,12 +2509,10 @@ function Invoke-FbImSealToOobe {
         return [pscustomobject]$result
     }
 
-    try { Write-FbImManualSealMarker -PowerAction $PowerAction } catch {}
-
-        $result.Ok = $true
-    $result.Message = if ($PowerAction -eq 'Shutdown') { 'Sealed. Shutting down into customer OOBE.' } else { 'Sealed. Restarting into customer OOBE.' }
-    $result.Detail = 'Sysprep /oobe accepted. Next boot is the customer region/language screen, not DefaultUser0.'
-        return [pscustomobject]$result
+    $result.Ok = $true
+    $result.Message = if ($PowerAction -eq 'Shutdown') { 'Manual seal complete. Shutting down into customer OOBE.' } else { 'Manual seal complete. Restarting into customer OOBE.' }
+    $result.Detail = 'Full exit pipeline finished (no FirstBase leftovers). Next boot is the customer region/language screen, not DefaultUser0.'
+    return [pscustomobject]$result
 }
 
 function Get-FbImLogoB64 {
@@ -2669,9 +2816,10 @@ function Show-FbImWindow {
                     BorderBrush="#FFFFB74D" Visibility="Collapsed" IsEnabled="False"/>
             <Button Name="BtnPassHardware" Content="Pass hardware check" Style="{StaticResource PrimaryBtn}"
                     HorizontalAlignment="Stretch" MinHeight="34" Margin="0,6,0,0"/>
-          <Button Name="BtnSeal" Content="Seal device" Style="{StaticResource PrimaryBtn}"
+          <Button Name="BtnSeal" Content="Manual seal" Style="{StaticResource PrimaryBtn}"
                     HorizontalAlignment="Stretch" MinHeight="34" Margin="0,6,0,0"
-                  BorderBrush="#FFEF5350"/>
+                  BorderBrush="#FFEF5350"
+                  ToolTip="Stop updates if running, scrub FirstBase leftovers, sysprep /oobe to customer OOBE. Available during updates in Audit or destage."/>
         </StackPanel>
         </UniformGrid>
       </Grid>
@@ -2719,8 +2867,8 @@ function Show-FbImWindow {
             Visibility="Collapsed" VerticalAlignment="Center" HorizontalAlignment="Center"
             Width="520" MaxWidth="520">
       <StackPanel>
-        <TextBlock Text="Seal device" FontSize="20" FontWeight="Bold" Foreground="#FFE8F4FF" HorizontalAlignment="Center"/>
-        <TextBlock Text="Both options scrub FirstBase leftovers and run sysprep /oobe. Restart uses /reboot. Shutdown uses /shutdown. Next boot is customer OOBE, not DefaultUser0."
+        <TextBlock Text="Manual seal" FontSize="20" FontWeight="Bold" Foreground="#FFE8F4FF" HorizontalAlignment="Center"/>
+        <TextBlock Text="Stops the update loop if it is still running, restores Defender, scrubs MDM and FirstBase leftovers (same full exit as seal_command.txt), then sysprep /oobe. Restart uses /reboot. Shutdown uses /shutdown. Next boot is customer OOBE, not DefaultUser0."
                    FontSize="13" Foreground="#FF6B8CB0" TextWrapping="Wrap" TextAlignment="Center"
                    HorizontalAlignment="Center" Margin="0,10,0,20"/>
         <Button Name="BtnSealRestart" Content="Restart" Style="{StaticResource PrimaryBtn}"
@@ -3287,6 +3435,12 @@ function Show-FbImWindow {
         try { if ($st.PSObject.Properties.Name -contains 'CanSeal') { $canSeal = [bool]$st.CanSeal } } catch {}
         if ($btnSeal) {
             $btnSeal.IsEnabled = [bool]$canSeal
+            $sealTip = 'Stop updates if running, scrub FirstBase leftovers, sysprep /oobe to customer OOBE.'
+            try {
+                $block = [string]$st.SealBlock
+                if (-not $canSeal -and -not [string]::IsNullOrWhiteSpace($block)) { $sealTip = $block }
+            } catch {}
+            try { $btnSeal.ToolTip = $sealTip } catch {}
             if ($kind -eq 'Purple') {
                 $btnSeal.BorderBrush = $bc.ConvertFromString('#FFCE93D8')
             } else {

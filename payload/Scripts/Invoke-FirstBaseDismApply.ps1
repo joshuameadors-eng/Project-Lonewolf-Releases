@@ -297,6 +297,56 @@ $pctRx   = [regex]'(\d+\.?\d*)(?:\s*%|\s+percent)'
 $script:FbDismProgressRow = $null
 $script:FbDismSpin = @('|', '/', '-', '\')
 
+function Get-FbDeployUiStatePaths {
+    return @('X:\FirstBase-DeployUi.json', (Join-Path $env:TEMP 'FirstBase-DeployUi.json'))
+}
+
+function Test-FbDeployWpfHostActive {
+    foreach ($sf in (Get-FbDeployUiStatePaths)) {
+        if ([string]::IsNullOrWhiteSpace($sf)) { continue }
+        try {
+            if (-not (Test-Path -LiteralPath $sf)) { continue }
+            $st = Get-Content -LiteralPath $sf -Raw -ErrorAction Stop | ConvertFrom-Json -ErrorAction Stop
+            if ($st -and $st.PSObject.Properties['WpfHost'] -and $st.WpfHost) { return $true }
+        } catch {}
+    }
+    try {
+        $procs = @(Get-Process -Name 'LoneWolf.WinPeUi' -ErrorAction SilentlyContinue)
+        if ($procs.Count -gt 0) { return $true }
+    } catch {}
+    return $false
+}
+
+function Update-FbDeployUiApplyPercent {
+    param([int]$Pct)
+    $showPct = [math]::Max(0, [math]::Min(99, $Pct))
+    foreach ($sf in (Get-FbDeployUiStatePaths)) {
+        if ([string]::IsNullOrWhiteSpace($sf)) { continue }
+        try {
+            if (-not (Test-Path -LiteralPath $sf)) { continue }
+            $st = Get-Content -LiteralPath $sf -Raw -ErrorAction Stop | ConvertFrom-Json -ErrorAction Stop
+            if (-not $st) { continue }
+            $st.ApplyPercent = $showPct
+            $total = 0
+            if ($st.Steps) { $total = @($st.Steps).Count }
+            if ($total -gt 0) {
+                $done = 0
+                $activeFraction = 0.0
+                foreach ($s in @($st.Steps)) {
+                    switch ([string]$s.State) {
+                        'done' { $done++ }
+                        'active' { $activeFraction = $showPct / 100.0 }
+                    }
+                }
+                $overall = (($done + $activeFraction) / [double]$total) * 100.0
+                $st.OverallPercent = [int][Math]::Round([Math]::Max(0.0, [Math]::Min(100.0, $overall)), 0)
+            }
+            $st | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $sf -Encoding UTF8 -ErrorAction Stop
+            return
+        } catch {}
+    }
+}
+
 function Get-FbUiPlanEndRow {
     # Pin the apply bar under the deploy step list. CursorTop is unsafe: the
     # background SpinWatch parks on the active-step glyph (step 4) and would
@@ -319,6 +369,11 @@ function Write-ProgressLine {
     # Themed to Invoke-FbDeployUi: cyan active accents, dark gray idle fill, white %.
     # In-place only: never Clear-Host, SetCurrentConsoleFontEx, chcp, or mode con.
     $showPct = if ($Done) { 100 } elseif ($HasPct) { [math]::Max(0, [math]::Min(99, $Pct)) } else { 0 }
+    if (Test-FbDeployWpfHostActive) {
+        if ($Done) { Update-FbDeployUiApplyPercent -Pct 100 }
+        elseif ($HasPct) { Update-FbDeployUiApplyPercent -Pct $showPct }
+        return
+    }
     $parts = Get-PercentBar -Pct $showPct -Width 28
     $spin = $script:FbDismSpin[[int]($sw.Elapsed.Seconds % 4)]
     if ($Done) { $spin = '*' }

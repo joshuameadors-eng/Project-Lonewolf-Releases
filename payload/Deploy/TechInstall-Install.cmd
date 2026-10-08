@@ -23,6 +23,7 @@ set "FB_TECHINSTALL_REV=2026-08-24.2"
 :: -- Hand the screen to the PowerShell deploy UI --------------------------
 set "FB_WF_SUBTEXT=Install"
 set "FB_UI_PLAN=WinPE initialized;Disk preparation;Source + image resolved;Applying Windows image;Configuring boot + handoff;Finalizing + shutdown"
+if exist "%~dp0Launch-FbWinPeUiEarly.cmd" call "%~dp0Launch-FbWinPeUiEarly.cmd" "%~dp0"
 call :FB_UI_INIT
 
 :: -- STEP 1: Find source media BEFORE any disk operations ----------------

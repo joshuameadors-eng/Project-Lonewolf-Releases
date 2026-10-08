@@ -54,6 +54,8 @@ echo [%DATE% %TIME%] TechInstall started rev=%FB_TECHINSTALL_REV% script=%~f0 >>
 :: The labels below must stay in step order and match the FB_UI_PROGRESS calls.
 set "FB_WF_SUBTEXT=Updates"
 set "FB_UI_PLAN=WinPE initialized;Disk preparation;Source + image resolved;Applying Windows image;Staging post-install payload;Configuring boot + handoff;Finalizing + reboot"
+REM Fallback when boot.wim still has an older startnet (Quick Update without Rebuild).
+if exist "%~dp0Launch-FbWinPeUiEarly.cmd" call "%~dp0Launch-FbWinPeUiEarly.cmd" "%~dp0"
 call :FB_UI_INIT
 
 :: -- STEP 1: Find source media BEFORE any disk operations ----------------

@@ -21,6 +21,7 @@ set "LOG=X:\FirstBase-QuickInstall.log"
 :: -- Hand the screen to the PowerShell deploy UI (splash + steps in one surface) --
 set "FB_WF_SUBTEXT=No Updates"
 set "FB_UI_PLAN=WinPE ready - source media found;Preparing the target disk;Disk prepared - image source resolved;Applying the Windows image;Configuring boot + handoff;Done"
+if exist "%~dp0Launch-FbWinPeUiEarly.cmd" call "%~dp0Launch-FbWinPeUiEarly.cmd" "%~dp0"
 call :FB_UI_INIT
 
 echo [%DATE% %TIME%] FirstBase Quick Install started > "%LOG%" 2>nul

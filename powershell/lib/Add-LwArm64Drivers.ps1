@@ -4,19 +4,36 @@
 
 function Resolve-LwArm64DriverDir {
     param([string] $ShareRoot = '')
-    $base = $ShareRoot
-    if ([string]::IsNullOrWhiteSpace($base)) {
-        if (Get-Command -Name Get-LwHqShareRoot -ErrorAction SilentlyContinue) {
-            $base = Get-LwHqShareRoot
-        } else {
-            $base = '\\WIN-HQ5JDEACV3S\Images\FB Image Creation'
-        }
+    $candidates = New-Object System.Collections.Generic.List[string]
+    if (-not [string]::IsNullOrWhiteSpace($ShareRoot)) {
+        [void]$candidates.Add($ShareRoot)
     }
-    $root = Join-Path $base 'WinPE-Drivers'
-    if (-not (Test-Path -LiteralPath $root -PathType Container)) { return '' }
-    $inf = @(Get-ChildItem -LiteralPath $root -Recurse -Filter '*.inf' -File -ErrorAction SilentlyContinue | Select-Object -First 1)
-    if ($inf.Count -eq 0) { return '' }
-    return $root
+    $hq = ''
+    if (Get-Command -Name Get-LwHqShareRoot -ErrorAction SilentlyContinue) {
+        $hq = [string](Get-LwHqShareRoot)
+    } else {
+        $hq = '\\WIN-HQ5JDEACV3S\Images\FB Image Creation'
+    }
+    if (-not [string]::IsNullOrWhiteSpace($hq)) {
+        $hqTrim = $hq.TrimEnd('\')
+        $already = $false
+        foreach ($c in $candidates) {
+            if ($c.TrimEnd('\') -ieq $hqTrim) { $already = $true; break }
+        }
+        if (-not $already) { [void]$candidates.Add($hq) }
+    }
+    if ($candidates.Count -eq 0) { [void]$candidates.Add('\\WIN-HQ5JDEACV3S\Images\FB Image Creation') }
+
+    foreach ($base in $candidates) {
+        if ([string]::IsNullOrWhiteSpace($base)) { continue }
+        $root = Join-Path $base 'WinPE-Drivers'
+        if (-not (Test-Path -LiteralPath $root -PathType Container)) { continue }
+        # Destage UUP often has an empty WinPE-Drivers placeholder — require real .inf packages.
+        $inf = @(Get-ChildItem -LiteralPath $root -Recurse -Filter '*.inf' -File -ErrorAction SilentlyContinue | Select-Object -First 1)
+        if ($inf.Count -eq 0) { continue }
+        return $root
+    }
+    return ''
 }
 
 # Snapdragon Windows Updates and Snapdragon Quick Install only.
@@ -390,11 +407,18 @@ function Test-LwPreSplitHasArm64Drivers {
 function Get-LwBootWimInjectSentinel {
     param(
         [Parameter(Mandatory)][string] $StartnetPath,
-        [string] $DriverDir = ''
+        [string] $DriverDir = '',
+        [string] $WinPeUiExePath = ''
     )
     $hash = (Get-FileHash -LiteralPath $StartnetPath -Algorithm SHA256).Hash
     if (-not [string]::IsNullOrWhiteSpace($DriverDir)) {
-        return ($hash + '|arm64')
+        $hash = $hash + '|arm64'
+    }
+    if (-not [string]::IsNullOrWhiteSpace($WinPeUiExePath) -and (Test-Path -LiteralPath $WinPeUiExePath)) {
+        $uiHash = (Get-FileHash -LiteralPath $WinPeUiExePath -Algorithm SHA256).Hash
+        $hash = $hash + '|winpeui:' + $uiHash.Substring(0, 16)
+    } else {
+        $hash = $hash + '|winpeui:none'
     }
     return $hash
 }

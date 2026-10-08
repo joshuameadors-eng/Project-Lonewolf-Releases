@@ -93,6 +93,7 @@ function Get-FbBuildIdentity {
         Script        = ''
         ShareLauncher = ''
         ShareScript   = ''
+        ImageBuildDate = ''
         Source        = ''   # which signal decided Dev; '' when none was found
     }
 
@@ -139,6 +140,15 @@ function Get-FbBuildIdentity {
         $ssProp = $j.PSObject.Properties['shareScriptVersion']
         if ($slProp -and $slProp.Value) { $info.ShareLauncher = [string]$slProp.Value }
         if ($ssProp -and $ssProp.Value) { $info.ShareScript = [string]$ssProp.Value }
+        foreach ($dateKey in @('imageBuildDate', 'buildDate', 'wimBuildDate')) {
+            try {
+                $dp = $j.PSObject.Properties[$dateKey]
+                if ($dp -and $dp.Value) {
+                    $info.ImageBuildDate = [string]$dp.Value
+                    break
+                }
+            } catch {}
+        }
         break
     }
 

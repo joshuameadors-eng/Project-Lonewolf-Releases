@@ -15,18 +15,23 @@
       -KeepRoot  do not delete an existing sandbox first
       -List      print the scenarios and exit
 
-    Console scenarios open in their own window and stay open. WPF scenarios are
-    full-screen and topmost - close each one before judging the next.
+    Console scenarios open in their own window and stay open. WinPeUi deploy
+    scenarios open windowed for review; other WPF splashes stay full-screen.
 #>
 [CmdletBinding()]
 param(
     [string]   $Root = (Join-Path $env:TEMP 'FirstBaseDeployVisualTest'),
     [string[]] $Only,
     [switch]   $KeepRoot,
-    [switch]   $List
+    [switch]   $List,
+    [switch]   $UseWinPeUi
 )
 
 $ErrorActionPreference = 'Stop'
+
+if ($UseWinPeUi) {
+    $env:FB_WINPE_UI_WINDOWED = '1'
+}
 
 # src\payload\Tools\ -> src\payload\
 $PayloadRoot = Split-Path -Path $PSScriptRoot -Parent
@@ -38,10 +43,18 @@ $IdentitySrc = Join-Path $PayloadRoot 'FirstBaseBuildIdentity.ps1'
 $VersionSrc = Join-Path $PayloadRoot 'FirstBaseVersion.ps1'
 $Ps = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
 
+$winPeUiArch = if ($env:PROCESSOR_ARCHITECTURE -eq 'ARM64') { 'ARM64' } else { 'AMD64' }
+$winPeUiSrcRoot = Join-Path $PayloadRoot ("Deploy\WinPeUi\{0}" -f $winPeUiArch)
+$winPeUiExeSrc = Join-Path $winPeUiSrcRoot 'LoneWolf.WinPeUi.exe'
+if ($UseWinPeUi -and -not (Test-Path -LiteralPath $winPeUiExeSrc)) {
+    throw "WinPeUi exe missing at $winPeUiExeSrc - run: npm run winpe-ui:publish:host"
+}
+
+$deployKind = if ($UseWinPeUi) { 'wpf' } else { 'console' }
 $scenarios = @(
-    @{ Id = 'deploy-dev';      Kind = 'console'; Text = 'Deploy screen - destage, red chrome, no DEV tag' }
-    @{ Id = 'deploy-fail';     Kind = 'console'; Text = 'Deploy screen - failure at step 4 with log tail' }
-    @{ Id = 'deploy-release';  Kind = 'console'; Text = 'Deploy screen - release build (cyan text, blue wolf)' }
+    @{ Id = 'deploy-dev';      Kind = $deployKind; Text = 'Deploy screen - destage, red chrome, no DEV tag' }
+    @{ Id = 'deploy-fail';     Kind = $deployKind; Text = 'Deploy screen - failure at step 4 with log tail' }
+    @{ Id = 'deploy-release';  Kind = $deployKind; Text = 'Deploy screen - release build (cyan text, blue wolf)' }
     @{ Id = 'banner-dev';      Kind = 'console'; Text = 'Animated WinPE banner - destage: red text+wolf, no DEV tag' }
     @{ Id = 'splash-updates';  Kind = 'wpf';     Text = 'Updates splash - dev device, DEV pill SHOWN' }
     @{ Id = 'splash-release';  Kind = 'wpf';     Text = 'Updates splash - release device, NO DEV pill' }
@@ -82,7 +95,7 @@ function New-FbDir([string] $Path) {
 # footer from LW_VERSION.json in the PARENT of its own Deploy folder, exactly
 # as it does on a stick, so the sandbox has to reproduce that shape.
 function New-FbMockPayload {
-    param([string] $Path, [bool] $DevBuild, [string] $Launcher, [string] $Scripts)
+    param([string] $Path, [bool] $DevBuild, [string] $Launcher, [string] $Scripts, [string] $ImageDate = '2026-09-10')
 
     New-FbDir (Join-Path $Path 'Deploy')
     New-FbDir (Join-Path $Path 'WUPayload')
@@ -94,11 +107,19 @@ function New-FbMockPayload {
     Copy-Item -LiteralPath $IdentitySrc -Destination (Join-Path $Path 'Deploy\FirstBaseBuildIdentity.ps1') -Force
     Copy-Item -LiteralPath $IdentitySrc -Destination (Join-Path $Path 'WUPayload\FirstBaseBuildIdentity.ps1') -Force
 
+    if ($UseWinPeUi -and (Test-Path -LiteralPath $winPeUiSrcRoot)) {
+        $uiDst = Join-Path $Path ("Deploy\WinPeUi\{0}" -f $winPeUiArch)
+        New-FbDir $uiDst
+        Copy-Item -Path (Join-Path $winPeUiSrcRoot '*') -Destination $uiDst -Recurse -Force
+    }
+
     $stamp = [ordered]@{
         builtBy              = 'LoneWolfLauncher'
-        version              = $Launcher
+        version              = $Scripts
+        payloadVersion       = $Scripts
         launcherVersion      = $Launcher
         scriptVersion        = $Scripts
+        imageBuildDate       = $ImageDate
         destage              = $DevBuild
         channel              = $(if ($DevBuild) { 'destage' } else { $null })
         devBuild             = $DevBuild
@@ -145,11 +166,49 @@ function Start-FbTestWindow {
 # Drives the deploy UI through a scenario inside one child window, so the
 # operator sees the screen actually transition rather than a single frame.
 function New-FbDeployDriver {
-    param([string] $Name, [string] $PayloadRootPath, [string] $Mode)
+    param([string] $Name, [string] $PayloadRootPath, [string] $Mode, [bool] $Wpf = $false)
 
     $ui = Join-Path $PayloadRootPath 'Deploy\Invoke-FbDeployUi.ps1'
     $state = Join-Path $Root ($Name + '.json')
     $driver = Join-Path $Root ($Name + '-driver.ps1')
+    $waitLine = if ($Wpf) {
+        "Write-Host '  [visual test] WPF scenario complete - close the LoneWolf window when done.' -ForegroundColor DarkGray`nStart-Sleep -Seconds 45"
+    } else {
+        "Write-Host ''`nWrite-Host '  [visual test] scenario complete - close this window when done.' -ForegroundColor DarkGray`n`$null = `$host.UI.RawUI.ReadKey('NoEcho,IncludeKeyDown')"
+    }
+
+    $applyBlock = if ($Wpf) {
+@"
+        `$pcts = if ('$Mode' -eq 'fail') { @(8, 18, 27, 34) } else { @(8, 18, 32, 48, 62, 75, 88, 96) }
+        foreach (`$pct in `$pcts) {
+            Ui @{ Action = 'SetApply'; ApplyPercent = `$pct }
+            Start-Sleep -Milliseconds 320
+        }
+        if ('$Mode' -ne 'fail') {
+            Ui @{ Action = 'SetApply'; ApplyPercent = 100 }
+            Start-Sleep -Milliseconds 400
+        } else {
+            Start-Sleep -Milliseconds 250
+        }
+"@
+    } else {
+@"
+        `$row = [Console]::CursorTop
+        `$pcts = if ('$Mode' -eq 'fail') { @(8, 18, 27, 34) } else { @(8, 18, 32, 48, 62, 75, 88, 96) }
+        foreach (`$pct in `$pcts) {
+            Write-FbPreviewDismLine -Pct `$pct -Row `$row
+            Start-Sleep -Milliseconds 280
+        }
+        if ('$Mode' -ne 'fail') {
+            Write-FbPreviewDismLine -Pct 100 -Row `$row -Done
+            Write-Host ''
+            Start-Sleep -Milliseconds 400
+        } else {
+            Write-Host ''
+            Start-Sleep -Milliseconds 250
+        }
+"@
+    }
 
     $body = @"
 `$ui    = '$ui'
@@ -202,21 +261,7 @@ for (`$i = 1; `$i -le `$stopAt; `$i++) {
     Ui @{ Action = 'Step'; Step = `$i; Label = `$labels[`$i - 1] }
     Start-Sleep -Milliseconds 700
     if (`$i -eq 4) {
-        # Match themed Invoke-FirstBaseDismApply progress under the step list.
-        `$row = [Console]::CursorTop
-        `$pcts = if ('$Mode' -eq 'fail') { @(8, 18, 27, 34) } else { @(8, 18, 32, 48, 62, 75, 88, 96) }
-        foreach (`$pct in `$pcts) {
-            Write-FbPreviewDismLine -Pct `$pct -Row `$row
-            Start-Sleep -Milliseconds 280
-        }
-        if ('$Mode' -ne 'fail') {
-            Write-FbPreviewDismLine -Pct 100 -Row `$row -Done
-            Write-Host ''
-            Start-Sleep -Milliseconds 400
-        } else {
-            Write-Host ''
-            Start-Sleep -Milliseconds 250
-        }
+$applyBlock
     }
 }
 
@@ -235,9 +280,7 @@ if ('$Mode' -eq 'fail') {
     }
 }
 
-Write-Host ''
-Write-Host '  [visual test] scenario complete - close this window when done.' -ForegroundColor DarkGray
-`$null = `$host.UI.RawUI.ReadKey('NoEcho,IncludeKeyDown')
+$waitLine
 "@
     Set-Content -LiteralPath $driver -Value $body -Encoding UTF8
     return $driver
@@ -262,16 +305,16 @@ Write-Host ('  sandbox: ' + $Root) -ForegroundColor DarkGray
 Write-Host ''
 
 if (& $run 'deploy-dev') {
-    $d = New-FbDeployDriver -Name 'deploy-dev' -PayloadRootPath $devRoot -Mode 'success'
-    Start-FbTestWindow 'deploy-dev      (dev build, runs to completion)' @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $d)
+    $d = New-FbDeployDriver -Name 'deploy-dev' -PayloadRootPath $devRoot -Mode 'success' -Wpf:$UseWinPeUi
+    Start-FbTestWindow 'deploy-dev      (dev build, runs to completion)' @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-WindowStyle', 'Minimized', '-File', $d)
 }
 if (& $run 'deploy-fail') {
-    $d = New-FbDeployDriver -Name 'deploy-fail' -PayloadRootPath $devRoot -Mode 'fail'
-    Start-FbTestWindow 'deploy-fail     (fails at step 4, shows log tail)' @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $d)
+    $d = New-FbDeployDriver -Name 'deploy-fail' -PayloadRootPath $devRoot -Mode 'fail' -Wpf:$UseWinPeUi
+    Start-FbTestWindow 'deploy-fail     (fails at step 4, shows log tail)' @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-WindowStyle', 'Minimized', '-File', $d)
 }
 if (& $run 'deploy-release') {
-    $d = New-FbDeployDriver -Name 'deploy-release' -PayloadRootPath $releaseRoot -Mode 'success'
-    Start-FbTestWindow 'deploy-release  (release build, no DEV tag)' @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $d)
+    $d = New-FbDeployDriver -Name 'deploy-release' -PayloadRootPath $releaseRoot -Mode 'success' -Wpf:$UseWinPeUi
+    Start-FbTestWindow 'deploy-release  (release build, no DEV tag)' @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-WindowStyle', 'Minimized', '-File', $d)
 }
 if (& $run 'banner-dev') {
     $banner = Join-Path $devRoot 'Deploy\Show-DeployBanner.ps1'
@@ -331,9 +374,9 @@ foreach ($h in @(
 
 Write-Host ''
 Write-Host '  Check on each window:' -ForegroundColor Cyan
-Write-Host '    deploy-dev      red banner text + red wolf; no DEV tag; step 4 themed Applying image bar (cyan/green)'
-Write-Host '    deploy-fail     step 4 partial themed bar then [!!] + log tail'
-Write-Host '    deploy-release  cyan banner text + blue wolf (official chrome)'
+Write-Host '    deploy-dev      red wolf/title; no DEV pill; Windows installation label; payload + Image date; overall %'
+Write-Host '    deploy-fail     partial apply % then failure screen with log tail'
+Write-Host '    deploy-release  cyan chrome; same meta row and overall progress bar'
 Write-Host '    banner-dev      Braille wolf renders red; framed title red; no DEV tag; red version footer'
 Write-Host '    splash-updates  DEV pill top-left, status line NOT blank, list card shows a checking state'
 Write-Host '    splash-release  NO DEV pill anywhere - this is the release regression being guarded'

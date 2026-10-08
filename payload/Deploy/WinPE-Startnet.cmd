@@ -8,7 +8,7 @@ title FirstBase - For Internal Use Only - WinPE
 ::  Intentionally QUIET: no banner or per-step console chatter (all status goes to %FBLOG%).
 ::  TechInstall.cmd renders its own progress; startnet only speaks on a fatal not-found.
 
-set "FB_STARTNET_REV=2026-09-25.1"
+set "FB_STARTNET_REV=2026-10-08.1"
 
 if /I "%~1"=="--scan-test" (
     set "FBTECH="
@@ -46,6 +46,10 @@ if defined TEMP if exist "%TEMP%\." set "FB_TMPD=%TEMP%"
 set "FBLOG=%FB_TMPD%\FirstBase-winpe.log"
 echo [%DATE% %TIME%] WinPE-Startnet.cmd started rev=%FB_STARTNET_REV% > "%FBLOG%" 2>nul
 echo [%DATE% %TIME%] SystemRoot=%SystemRoot% TEMP=%TEMP% FBLOG=%FBLOG% >> "%FBLOG%" 2>nul
+
+REM Paint WinPeUi from boot.wim (X:\FirstBase\WinPeUi) before wpeinit so the operator
+REM never sits on an empty PE console while networking/USB come up.
+call :FB_LAUNCH_WINPE_UI_X
 
 echo [%DATE% %TIME%] Running wpeinit... >> "%FBLOG%" 2>nul
 wpeinit >nul 2>&1
@@ -263,7 +267,37 @@ goto :eof
 :FOUND_TECH
 echo [%DATE% %TIME%] Found deploy entry point: !FBTECH! >> "%FBLOG%" 2>nul
 call :FB_PERSIST_FOR "!FBTECH!"
+REM USB fallback if boot.wim did not contain WinPeUi (older inject / missing publish).
+for %%P in ("!FBTECH!") do set "FB_DEPLOY_DIR=%%~dpP"
+if exist "!FB_DEPLOY_DIR!Launch-FbWinPeUiEarly.cmd" (
+    echo [%DATE% %TIME%] USB WinPeUi launch helper from !FB_DEPLOY_DIR! >> "%FBLOG%" 2>nul
+    call "!FB_DEPLOY_DIR!Launch-FbWinPeUiEarly.cmd" "!FB_DEPLOY_DIR!"
+    echo [%DATE% %TIME%] USB WinPeUi launch returned: !ERRORLEVEL! >> "%FBLOG%" 2>nul
+)
+call :FB_PERSIST_FOR "!FBTECH!"
 echo [%DATE% %TIME%] Launching: !FBTECH! >> "%FBLOG%" 2>nul
+call :FB_PERSIST_FOR "!FBTECH!"
 call "!FBTECH!"
 echo [%DATE% %TIME%] TechInstall.cmd returned: !ERRORLEVEL! >> "%FBLOG%" 2>nul
+call :FB_PERSIST_FOR "!FBTECH!"
 exit /b !ERRORLEVEL!
+
+:: -- FB_LAUNCH_WINPE_UI_X : start splash from boot.wim copy on X:\ ---------------
+:FB_LAUNCH_WINPE_UI_X
+set "FB_X_UI=X:\FirstBase\WinPeUi"
+set "FB_X_EXE=!FB_X_UI!\LoneWolf.WinPeUi.exe"
+if not exist "!FB_X_EXE!" (
+    echo [%DATE% %TIME%] WinPeUi not in boot.wim at !FB_X_EXE! - will try USB later >> "%FBLOG%" 2>nul
+    goto :eof
+)
+set "FB_UI_FLAG=X:\FirstBase-WinPeUi.started"
+if exist "!FB_UI_FLAG!" (
+    echo [%DATE% %TIME%] WinPeUi already flagged started >> "%FBLOG%" 2>nul
+    goto :eof
+)
+set "FB_UI_STATE=X:\FirstBase-DeployUi.json"
+> "!FB_UI_STATE!" echo {"Workflow":"","Dev":false,"PayloadVersion":"","ImageBuildDate":"","PhaseLabel":"Windows installation","OverallPercent":0,"WpfHost":true,"Steps":[],"Current":0,"Detail":"Starting...","Status":"running","Message":"","Spin":0,"SplashDone":false}
+echo [%DATE% %TIME%] Launching WinPeUi from boot.wim !FB_X_EXE! >> "%FBLOG%" 2>nul
+start "LoneWolfWinPeUi" /D "!FB_X_UI!" "LoneWolf.WinPeUi.exe" --state-file "!FB_UI_STATE!"
+echo started> "!FB_UI_FLAG!" 2>nul
+goto :eof

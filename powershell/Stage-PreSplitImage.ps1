@@ -114,6 +114,8 @@ param(
     [string] $SharePassword    = $(if (-not [string]::IsNullOrWhiteSpace($env:LONEWOLF_SHARE_PASSWORD)) { $env:LONEWOLF_SHARE_PASSWORD } else { 'mer*HWE0upt*rqe@dud' }),
     [string] $LocalProjectRoot = '',
     [switch] $DestageMedia,
+    [ValidateSet('local', 'share', 'googleDrive', '')]
+    [string] $MediaSource = '',
     [string] $PreSplitOutputRoot = '',
     [string] $IsoFallbackRoot = '',
     [string] $IsoPath          = '',
@@ -157,11 +159,15 @@ $bareArch = if ($wfUpper -match 'ARM') { 'ARM64' } else { 'AMD64' }
 $shareLayoutLib = Join-Path $PSScriptRoot 'lib\Resolve-LwShareLayout.ps1'
 if (Test-Path -LiteralPath $shareLayoutLib) { . $shareLayoutLib }
 
-# Destage is npm start: local UUP ISO in, local UUP PreSplit out (flat set folders).
-# Explicit -PreSplitOutputRoot from main.js still wins even if -DestageMedia failed to bind.
-$useDestageMedia = [bool]$DestageMedia -or -not [string]::IsNullOrWhiteSpace($PreSplitOutputRoot)
+$resolvedMediaSource = if ($DestageMedia) { 'local' } elseif (-not [string]::IsNullOrWhiteSpace($MediaSource)) { $MediaSource } else { '' }
+$useDestageLocalUup = $DestageMedia -or ($resolvedMediaSource -eq 'local') -or (
+    -not [string]::IsNullOrWhiteSpace($PreSplitOutputRoot) -and
+    $resolvedMediaSource -ne 'googleDrive' -and $resolvedMediaSource -ne 'share'
+)
+$useDestageMedia = $useDestageLocalUup -or ($resolvedMediaSource -eq 'googleDrive') -or ($resolvedMediaSource -eq 'share')
 $isLocal = (-not $useDestageMedia) -and (-not [string]::IsNullOrWhiteSpace($LocalProjectRoot))
-if ($useDestageMedia) {
+
+if ($useDestageLocalUup) {
     $null = Initialize-LwDestageUupDirs
     $uup = Get-LwDestageUupLayout
     $ProjectRoot  = $uup.Root
@@ -173,6 +179,13 @@ if ($useDestageMedia) {
     } else {
         $uup.PreSplitRoot
     }
+} elseif ($resolvedMediaSource -eq 'googleDrive' -or $resolvedMediaSource -eq 'share') {
+    $destageLayout = Resolve-LwDestageMediaLayout -ShareRoot $ShareRoot -MediaSource $resolvedMediaSource
+    $ProjectRoot = Join-Path $ShareRoot 'Remote'
+    $StagingRoot = $destageLayout.StagingRoot
+    $IsoRoot = $destageLayout.IsoRoot
+    $IsoFallbackRoot = ''
+    $PreSplitRoot = $destageLayout.PreSplitRoot
 } else {
     $shareLayout = Resolve-LwShareLayout -ShareRoot $ShareRoot -LocalProjectRoot $LocalProjectRoot
     if ($isLocal) {
@@ -185,7 +198,7 @@ if ($useDestageMedia) {
     $PreSplitRoot = $shareLayout.PreSplitRoot
 }
 $WriteRoot = $PreSplitRoot
-if ($useDestageMedia) {
+if ($useDestageLocalUup) {
     if ([string]::IsNullOrWhiteSpace($WriteRoot)) {
         EmitError 'destage: PreSplit output root is empty'; exit 1
     }
@@ -218,8 +231,12 @@ try {
 Emit @{ event='init'; stagingRoot=$StagingRoot; preSplitRoot=$WriteRoot; isoRoot=$IsoRoot; isoFallbackRoot=$IsoFallbackRoot; workflowType=$wfUpper; windowsEdition=$winEdition; local=$isLocal; destageMedia=$useDestageMedia; writeRoot=$WriteRoot }
 
 # --- Share auth / reachability -----------------------------------------------
-if ($useDestageMedia) {
-    EmitLog ('destage: ISO from local UUP {0} only (share ISO not read); flat PreSplit output {1} (AMD64 vs ARM64 by set folder name; share PreSplit writes forbidden)' -f $IsoRoot, $WriteRoot)
+if ($useDestageLocalUup) {
+    EmitLog ('destage local: ISO from UUP {0}; PreSplit output {1}' -f $IsoRoot, $WriteRoot)
+} elseif ($resolvedMediaSource -eq 'googleDrive') {
+    EmitLog ("destage Drive: ISO from '$IsoRoot'; PreSplit to '$WriteRoot' (install*.swm chunks via Split-LWImage)")
+} elseif ($resolvedMediaSource -eq 'share') {
+    EmitLog ("destage share: ISO from '$IsoRoot'; PreSplit to '$WriteRoot'")
 } elseif ($isLocal) {
     EmitLog "local mode: staging pre-split set into the LOCAL Remote\Staging tree (for upload to the share); share auth skipped"
     if (-not (Test-Path -LiteralPath $LocalProjectRoot)) {
@@ -291,7 +308,7 @@ if ($Force) {
     } else {
         EmitLog ('force re-stage at {0}' -f $Target)
     }
-} elseif ($useDestageMedia) {
+} elseif ($useDestageLocalUup) {
     $uupPre = [IO.Path]::GetFullPath((Get-LwDestageUupLayout).PreSplitRoot).TrimEnd('\')
     $tgtFull = $null
     try { $tgtFull = [IO.Path]::GetFullPath($Target).TrimEnd('\') } catch { }
@@ -331,6 +348,9 @@ if ($Force) {
         if ($chk.Valid -and $isoMatch) {
             if ($bareArch -eq 'ARM64' -and (Test-LwArm64DriversStamped -SetDir $Target)) {
                 EmitLog ('destage split: ARM64 set at {0} has drivers in the install image - re-staging a stock image' -f $Target)
+            } elseif ($resolvedMediaSource -eq 'googleDrive' -and (Get-Command -Name Test-LwPreSplitMediaPackage -ErrorAction SilentlyContinue) -and
+                -not (Test-LwPreSplitMediaPackage -SetDir $Target)) {
+                EmitLog ('destage split: Drive set at {0} is missing the ISO media tree - re-staging full package' -f $Target)
             } else {
                 EmitLog ('destage skip: local UUP {0} already has a valid matching set at {1} (share PreSplit not used; other arches ignored). Shift-click / -Force to re-stage.' -f $bareArch, $Target)
                 $skipStaged = $true
@@ -346,6 +366,9 @@ if ($Force) {
     if ($chk.Valid) {
         if ($bareArch -eq 'ARM64' -and (Test-LwArm64DriversStamped -SetDir $Target)) {
             EmitLog ('already-staged set at {0} has drivers in the install image - re-staging a stock image' -f $Target)
+        } elseif ($resolvedMediaSource -eq 'googleDrive' -and (Get-Command -Name Test-LwPreSplitMediaPackage -ErrorAction SilentlyContinue) -and
+            -not (Test-LwPreSplitMediaPackage -SetDir $Target)) {
+            EmitLog ('already-staged set at {0} is missing the ISO media tree - re-staging full package' -f $Target)
         } else {
             EmitLog ('already-staged: a valid pre-split set for {0} exists at {1} - nothing to do (pass -Force to re-stage)' -f $isoItem.Name, $Target)
             $skipStaged = $true
@@ -442,8 +465,32 @@ try {
     New-Item -ItemType Directory -Force -Path $WriteRoot | Out-Null
     $tmpTarget = "$Target.tmp-" + [guid]::NewGuid().ToString('N').Substring(0, 8)
     New-Item -ItemType Directory -Force -Path $tmpTarget | Out-Null
+    $chunkDest = $tmpTarget
+    if ($resolvedMediaSource -eq 'googleDrive') {
+        $chunkDest = Join-Path $tmpTarget 'sources'
+        New-Item -ItemType Directory -Force -Path $chunkDest | Out-Null
+        EmitLog "stage-copy: mirroring ISO boot tree into PreSplit package (excluding monolithic install image)..."
+        $isoRootEntries = @(Get-ChildItem -LiteralPath $isoDrive -Force -ErrorAction SilentlyContinue |
+            Where-Object { $_.Name -ine 'sources' -and
+                           -not (-not $_.PSIsContainer -and $_.Name -match '\.(wim|esd|swm)$') })
+        $rootTotal = [math]::Max(1, $isoRootEntries.Count)
+        $rootIdx = 0
+        foreach ($isoEntry in $isoRootEntries) {
+            $rootIdx++
+            EmitProgress 'stage-copy' ([int](40 * $rootIdx / $rootTotal))
+            if ($isoEntry.PSIsContainer) {
+                Copy-Item -LiteralPath $isoEntry.FullName -Destination $tmpTarget -Recurse -Force -ErrorAction Stop
+            } else {
+                Copy-Item -LiteralPath $isoEntry.FullName -Destination $tmpTarget -Force -ErrorAction Stop
+            }
+        }
+        & robocopy.exe $isoSources $chunkDest /E /XF 'install.wim' 'install.esd' /R:2 /W:5 /NP /NJH /NJS | Out-Null
+        $rcIsoSrc = $LASTEXITCODE
+        if ($rcIsoSrc -gt 7) { throw "robocopy failed (exit $rcIsoSrc) copying ISO sources (minus install image) to '$chunkDest'" }
+        EmitProgress 'stage-copy' 50
+    }
     $robPatterns = @('install*.swm', 'install.wim', 'install.esd')
-    & robocopy.exe $scratchSources $tmpTarget @robPatterns /R:2 /W:5 /NP /NJH /NJS | Out-Null
+    & robocopy.exe $scratchSources $chunkDest @robPatterns /R:2 /W:5 /NP /NJH /NJS | Out-Null
     $rc = $LASTEXITCODE
     if ($rc -gt 7) { throw "robocopy failed (exit $rc) copying the .swm set to '$tmpTarget'" }
     EmitProgress 'stage-copy' 100
@@ -488,6 +535,7 @@ try {
         }
         producedByLauncherVersion = $launcherVersion
         arm64Drivers              = $false
+        mediaPackage              = $(if ($resolvedMediaSource -eq 'googleDrive') { $true } else { $false })
         createdUtc                = $nowUtc
         updatedUtc                = $nowUtc
     }
@@ -529,8 +577,10 @@ try {
         "staged 1 file ($($chunkFiles[0].Name), $chunkGb GB, under 512 MB), sourceKind=$sourceKind"
     }
     EmitLog "staged pre-split set at $Target ($doneMsg, imageVersion=$imageVersion)"
-    if ($useDestageMedia) {
+    if ($useDestageLocalUup) {
         EmitLog "destage: Rebuild from npm start reads this local UUP PreSplit set (packaged builds still use share PreSplit)"
+    } elseif ($resolvedMediaSource -eq 'googleDrive') {
+        EmitLog "destage Drive: PreSplit set includes install*.swm under sources\; boot.wim is exported into the same sources folder by Stage-GoogleDriveMedia"
     } elseif ($isLocal) {
         EmitLog "local mode: upload '$WriteRoot' to the share to make this set available to network builds"
     }

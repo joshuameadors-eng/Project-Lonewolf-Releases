@@ -414,6 +414,7 @@ function Get-LWPreSplitScanDirs {
         [Parameter(Mandatory)] [string] $Arch,
         [string] $Edition
     )
+    if ([string]::IsNullOrWhiteSpace($PreSplitRoot)) { return @() }
     $ed = Get-LWWindowsEdition $Edition
     $arch = Get-LWBareArch $Arch
     $dirs = New-Object System.Collections.Generic.List[string]
@@ -431,6 +432,7 @@ function Get-LWPreSplitCandidateDirs {
         [Parameter(Mandatory)] [string] $Arch,
         [string] $Edition
     )
+    if ([string]::IsNullOrWhiteSpace($PreSplitRoot)) { return @() }
     $ed = Get-LWWindowsEdition $Edition
     $arch = Get-LWBareArch $Arch
     $key = Get-LWPreSplitCurrentKey -Arch $arch -Edition $ed
@@ -522,6 +524,7 @@ function Write-LWPreSplitCurrentMarkers {
         [Parameter(Mandatory)] [string] $ImageVersion,
         [string] $UpdatedUtc
     )
+    if ([string]::IsNullOrWhiteSpace($PreSplitRoot)) { return }
     $ed = Get-LWWindowsEdition $Edition
     $arch = Get-LWBareArch $Arch
     if ([string]::IsNullOrWhiteSpace($UpdatedUtc)) {
@@ -622,6 +625,20 @@ function Get-LWPreSplitChunkLayoutReason {
     return 'pre-split set must be at least two install*.swm chunks, or one install.wim/esd under 512 MiB'
 }
 
+function Get-LWPreSplitChunkDir {
+    param(
+        [Parameter(Mandatory)] [string] $SetDir
+    )
+    if ([string]::IsNullOrWhiteSpace($SetDir)) { return $SetDir }
+    $sources = Join-Path $SetDir 'sources'
+    if (Test-Path -LiteralPath $sources -PathType Container) {
+        $hit = @(Get-ChildItem -LiteralPath $sources -File -ErrorAction SilentlyContinue |
+            Where-Object { $_.Name -match '^install(\d*)\.(swm|wim|esd)$' })
+        if ($hit.Count -gt 0) { return $sources }
+    }
+    return $SetDir
+}
+
 function Test-LWPreSplitSet {
     param(
         [Parameter(Mandatory)] [string] $SetDir,
@@ -632,6 +649,7 @@ function Test-LWPreSplitSet {
         if ([string]::IsNullOrWhiteSpace($SetDir) -or -not (Test-Path -LiteralPath $SetDir)) {
             $result.Reason = "set folder not found: $SetDir"; return $result
         }
+        $chunkDir = Get-LWPreSplitChunkDir -SetDir $SetDir
         $manifestPath = Join-Path $SetDir 'presplit-manifest.json'
         if (-not (Test-Path -LiteralPath $manifestPath)) {
             $result.Reason = "presplit-manifest.json missing in $SetDir"; return $result
@@ -650,7 +668,7 @@ function Test-LWPreSplitSet {
         foreach ($c in $chunks) {
             $name = [string]$c.name
             if ([string]::IsNullOrWhiteSpace($name)) { $result.Reason = 'manifest chunk with empty name'; return $result }
-            $chunkPath = Join-Path $SetDir $name
+            $chunkPath = Join-Path $chunkDir $name
             if (-not (Test-Path -LiteralPath $chunkPath)) { $result.Reason = "chunk missing: $name"; return $result }
             $actual   = (Get-Item -LiteralPath $chunkPath).Length
             $expected = [long]$c.sizeBytes
@@ -677,4 +695,33 @@ function Test-LWPreSplitSet {
         $result.Reason = "validation error: $($_.Exception.Message)"
         return $result
     }
+}
+
+function Test-LwPreSplitMediaPackage {
+    param(
+        [Parameter(Mandatory)] [string] $SetDir
+    )
+    if ([string]::IsNullOrWhiteSpace($SetDir) -or -not (Test-Path -LiteralPath $SetDir)) { return $false }
+    $chk = Test-LWPreSplitSet -SetDir $SetDir
+    if (-not $chk.Valid) { return $false }
+    $bootWim = Join-Path $SetDir 'sources\boot.wim'
+    if (-not (Test-Path -LiteralPath $bootWim)) { return $false }
+    $bootSdi = Join-Path $SetDir 'boot\boot.sdi'
+    $efiBoot = Join-Path $SetDir 'efi'
+    if (-not ((Test-Path -LiteralPath $bootSdi) -or (Test-Path -LiteralPath $efiBoot))) { return $false }
+    return $true
+}
+
+function Test-LwPreSplitBootInjected {
+    param(
+        [Parameter(Mandatory)] [string] $SetDir
+    )
+    if (-not (Test-LwPreSplitMediaPackage -SetDir $SetDir)) { return $false }
+    $sentinel = Join-Path $SetDir 'sources\boot.wim.lw-injected'
+    $bootWim = Join-Path $SetDir 'sources\boot.wim'
+    if (-not ((Test-Path -LiteralPath $sentinel) -and (Test-Path -LiteralPath $bootWim))) { return $false }
+    try {
+        if ((Get-Item -LiteralPath $sentinel).LastWriteTime -lt (Get-Item -LiteralPath $bootWim).LastWriteTime) { return $false }
+    } catch { return $false }
+    return $true
 }

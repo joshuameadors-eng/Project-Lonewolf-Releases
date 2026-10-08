@@ -38,7 +38,9 @@ param(
     [string]$WorkflowType     = 'AMD64',
     [string]$WindowsEdition   = 'Pro',  # Home | Pro. Presplit/ISO identity; not LoneWolf vs Quick Install.
     [string]$LocalProjectRoot = '',  # When non-empty: skip share auth and read from this local path instead
-    [switch]$DestageMedia            # npm start: local UUP ISO + local UUP PreSplit only
+    [switch]$DestageMedia,           # npm start local mediaSource: local UUP ISO + UUP PreSplit
+    [ValidateSet('local', 'share', 'googleDrive', '')]
+    [string]$MediaSource = ''        # npm start destage: local | share | googleDrive
 )
 
 $ErrorActionPreference = 'SilentlyContinue'
@@ -73,7 +75,9 @@ $wfUpper = $WorkflowType.ToUpper()
 $winEdition = 'Pro'
 if ($WindowsEdition -match '^(?i)home$') { $winEdition = 'Home' }
 
-if ([string]::IsNullOrWhiteSpace($LocalProjectRoot) -and -not $DestageMedia -and $ShareRoot -match '^\\\\') {
+$resolvedMediaSource = if ($DestageMedia) { 'local' } elseif (-not [string]::IsNullOrWhiteSpace($MediaSource)) { $MediaSource } else { '' }
+
+if ([string]::IsNullOrWhiteSpace($LocalProjectRoot) -and $resolvedMediaSource -ne 'local' -and -not $DestageMedia -and $ShareRoot -match '^\\\\') {
     $shareHost = 'WIN-HQ5JDEACV3S'
     if ($ShareRoot -match '^\\\\([^\\]+)\\') { $shareHost = $Matches[1] }
     Connect-ShareCredentials -ShareHost $shareHost -User $ShareUser -Pass $SharePassword
@@ -81,14 +85,18 @@ if ([string]::IsNullOrWhiteSpace($LocalProjectRoot) -and -not $DestageMedia -and
 $shareLayoutLib = Join-Path $PSScriptRoot 'lib\Resolve-LwShareLayout.ps1'
 if (Test-Path -LiteralPath $shareLayoutLib) { . $shareLayoutLib }
 $isoFallbackRoot = ''
-if ($DestageMedia) {
-    # Destage Stage chip: local UUP ISO + local UUP PreSplit only (no share ISO).
-    $destageLayout = Resolve-LwDestageMediaLayout -ShareRoot $ShareRoot
+if ($DestageMedia -or (-not [string]::IsNullOrWhiteSpace($resolvedMediaSource))) {
+    $ms = if ($DestageMedia) { 'local' } else { $resolvedMediaSource }
+    $destageLayout = Resolve-LwDestageMediaLayout -ShareRoot $ShareRoot -MediaSource $ms
     $isoRoot     = $destageLayout.IsoRoot
     $isoFallbackRoot = ''
     $preSplitRootResolved = $destageLayout.PreSplitRoot
     $shareLayout = $destageLayout
-    $StagingRoot = $destageLayout.UupRoot
+    if ($ms -eq 'local') {
+        $StagingRoot = $destageLayout.UupRoot
+    } else {
+        $StagingRoot = $destageLayout.StagingRoot
+    }
 } else {
     $shareLayout = Resolve-LwShareLayout -ShareRoot $ShareRoot -LocalProjectRoot $LocalProjectRoot
     $StagingRoot = $shareLayout.StagingRoot
@@ -96,7 +104,12 @@ if ($DestageMedia) {
     $preSplitRootResolved = $shareLayout.PreSplitRoot
 }
 # WIM stays under Staging\<ARCH>\<ARCH>.wim (legacy Remote\Staging when that tree exists).
-$wimPath     = Join-Path $StagingRoot "$wfUpper\$wfUpper.wim"
+# Join-Path rejects an empty Path (drive-missing / Drive HTTP with no Desktop mount).
+$wimPath = if (-not [string]::IsNullOrWhiteSpace($StagingRoot)) {
+    Join-Path $StagingRoot "$wfUpper\$wfUpper.wim"
+} else {
+    ''
+}
 
 $output = [ordered]@{
     version         = 'unknown'
@@ -114,6 +127,8 @@ $output = [ordered]@{
     preSplitAvailable    = $false
     preSplitMatchesIso   = $false
     preSplitImageVersion = $null
+    preSplitMediaPackage = $false
+    preSplitBootInjected = $false
     isoMissingReason     = $null
     shareLayout          = [string]$shareLayout.Layout
     isoRoot              = $isoRoot
@@ -121,6 +136,7 @@ $output = [ordered]@{
     preSplitRoot         = $preSplitRootResolved
     wpeOcRoot            = [string]$shareLayout.WpeOcRoot
     destageMedia         = [bool]$DestageMedia
+    mediaSource          = [string]$resolvedMediaSource
 }
 
 # Product version and arch enablement come from this script's VERSION.json
@@ -161,10 +177,10 @@ try {
     # Primary: new layout Staging\AMD64\AMD64.wim
     # Fallback: old layout Staging\Windows *($wfUpper).wim
     $foundWim = $null
-    if (Test-Path -LiteralPath $wimPath) {
+    if (-not [string]::IsNullOrWhiteSpace($wimPath) -and (Test-Path -LiteralPath $wimPath)) {
         $foundWim = Get-Item -LiteralPath $wimPath -ErrorAction SilentlyContinue
     }
-    if (-not $foundWim) {
+    if (-not $foundWim -and -not [string]::IsNullOrWhiteSpace($StagingRoot)) {
         $oldPattern = "Windows *($wfUpper).wim"
         $foundWim = @(Get-ChildItem -LiteralPath $StagingRoot -File -Filter '*.wim' -ErrorAction SilentlyContinue |
             Where-Object { $_.Name -like $oldPattern } |
@@ -196,7 +212,7 @@ if (Test-Path -LiteralPath $splitLib) {
 $foundIso = $null
 try {
     if ($splitLibLoaded -and (Get-Command -Name Find-LWWindowsIso -ErrorAction SilentlyContinue)) {
-        $isoFindStaging = if ($DestageMedia) { $isoRoot } else { $StagingRoot }
+        $isoFindStaging = if ($DestageMedia -or $resolvedMediaSource -eq 'local') { $isoRoot } else { $StagingRoot }
         $isoFind = @{ StagingRoot = $isoFindStaging; IsoRoot = $isoRoot; Arch = $wfUpper; Edition = $winEdition }
         $foundIso = Find-LWWindowsIso @isoFind
     }
@@ -209,7 +225,7 @@ try {
         if ($output.architectures.Contains($wfUpper)) {
             $output.architectures[$wfUpper].wimBuildDate = $isoYmd
         }
-    } elseif ($winEdition -eq 'Home') {
+    } elseif ($winEdition -eq 'Home' -and $resolvedMediaSource -ne 'googleDrive') {
         $isoHint = $isoRoot
         $output.isoMissingReason = "No Windows Home ISO for $wfUpper in $isoHint. Place a *($wfUpper)*.iso with home in the name under ISO\ (do not use the Pro image)."
     }
@@ -220,20 +236,22 @@ try {
 # Install share the same set. Uses Test-LWPreSplitSet + Get-LWImageVersionId.
 try {
     if ($splitLibLoaded) {
+        $skipPreSplitScan = $resolvedMediaSource -eq 'googleDrive' -and [string]::IsNullOrWhiteSpace($preSplitRootResolved)
+        if (-not $skipPreSplitScan) {
         $preSplitRoot = $preSplitRootResolved
-        if ($DestageMedia) {
-            # Destage skip/current is local UUP PreSplit only — never share PreSplit.
+        if ($DestageMedia -or $resolvedMediaSource -eq 'local') {
+            # Destage local: UUP PreSplit only — never share PreSplit.
             if ([string]::IsNullOrWhiteSpace($preSplitRoot) -or $preSplitRoot -match '^\\\\') {
                 $preSplitRoot = (Get-LwDestageUupLayout).PreSplitRoot
             }
-        } elseif ([string]::IsNullOrWhiteSpace($preSplitRoot)) {
+        } elseif ([string]::IsNullOrWhiteSpace($preSplitRoot) -and -not [string]::IsNullOrWhiteSpace($StagingRoot)) {
             $preSplitRoot = Join-Path $StagingRoot 'PreSplit'
         }
         $psIso = $null
         if ($foundIso -and (Test-Path -LiteralPath $foundIso.FullName)) {
             $psIso = $foundIso
         } elseif ($output.isoFile) {
-            $isoSearchStaging = if ($DestageMedia) { $isoRoot } else { $StagingRoot }
+            $isoSearchStaging = if ($DestageMedia -or $resolvedMediaSource -eq 'local') { $isoRoot } else { $StagingRoot }
             $isoSearchDirs = @(Get-LWIsoSearchDirs -StagingRoot $isoSearchStaging -IsoRoot $isoRoot -Edition $winEdition)
             foreach ($dir in $isoSearchDirs) {
                 $p = Join-Path $dir $output.isoFile
@@ -285,19 +303,57 @@ try {
                 if ($match) {
                     $output.preSplitMatchesIso   = $true
                     $output.preSplitImageVersion = [string]$chk.Manifest.imageVersion
+                    if (Get-Command -Name Test-LwPreSplitMediaPackage -ErrorAction SilentlyContinue) {
+                        $output.preSplitMediaPackage = [bool](Test-LwPreSplitMediaPackage -SetDir $setDir)
+                    }
+                    if (Get-Command -Name Test-LwPreSplitBootInjected -ErrorAction SilentlyContinue) {
+                        $output.preSplitBootInjected = [bool](Test-LwPreSplitBootInjected -SetDir $setDir)
+                    }
+                    $wantMediaPkg = ($resolvedMediaSource -eq 'googleDrive' -or $resolvedMediaSource -eq 'share')
+                    if ($wantMediaPkg -and
+                        (-not $output.preSplitMediaPackage -or -not $output.preSplitBootInjected)) {
+                        $output.preSplitMatchesIso = $false
+                    }
                     break
                 }
             }
+            # Image Ready (share or googleDrive): full ISO tree under PreSplit\<set>\ - no .iso required.
+            $wantMediaPkg = ($resolvedMediaSource -eq 'googleDrive' -or $resolvedMediaSource -eq 'share')
+            if ($wantMediaPkg -and -not $output.preSplitMatchesIso -and
+                (Get-Command -Name Test-LwPreSplitMediaPackage -ErrorAction SilentlyContinue)) {
+                if (Test-LwPreSplitMediaPackage -SetDir $setDir) {
+                    if (-not $output.preSplitAvailable) {
+                        $output.preSplitAvailable    = $true
+                        $output.preSplitImageVersion = [string]$chk.Manifest.imageVersion
+                    }
+                    $output.preSplitMediaPackage = $true
+                    if (Get-Command -Name Test-LwPreSplitBootInjected -ErrorAction SilentlyContinue) {
+                        $output.preSplitBootInjected = [bool](Test-LwPreSplitBootInjected -SetDir $setDir)
+                    }
+                    if ($output.preSplitMediaPackage -and $output.preSplitBootInjected) {
+                        $output.preSplitMatchesIso = $true
+                        break
+                    }
+                }
+            }
+        }
         }
     }
 } catch { }
 
 # --- Build mode (WIM preferred over ISO) ------------------------------------
-# Home is ISO-only: a staged WIM is not SKU-aware, so never treat it as a Home source.
-if ($winEdition -eq 'Home' -and -not $output.isoAvailable) {
+# Home is ISO-only unless Image Ready package on share/Drive (no SKU-aware staged WIM).
+$mediaPkgImageReady = ($resolvedMediaSource -eq 'googleDrive' -or $resolvedMediaSource -eq 'share') -and
+    $output.preSplitMediaPackage -and $output.preSplitBootInjected
+if ($winEdition -eq 'Home' -and -not $output.isoAvailable -and -not $mediaPkgImageReady) {
     $output.buildMode = 'none'
+} elseif ($mediaPkgImageReady) {
+    $output.buildMode = 'wim'
 } else {
     $output.buildMode = if ($output.wimAvailable) { 'wim' } elseif ($output.isoAvailable) { 'iso' } else { 'none' }
+}
+if ($mediaPkgImageReady) {
+    $output.Remove('isoMissingReason')
 }
 
 # Remove null isoFile key if no ISO found (keeps JSON tidy)

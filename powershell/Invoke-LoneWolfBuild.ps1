@@ -3847,7 +3847,7 @@ try {
         }
     } elseif ([string]::IsNullOrWhiteSpace($LocalProjectRoot)) {
         if ($ShareRoot -match '^(?i)https?://') {
-            Emit @{ event='error'; disk=-1; message='A Google Drive folder URL is not a Windows filesystem ShareRoot. Use Google Drive for Desktop or the HQ UNC share.' }
+            Emit @{ event='error'; disk=-1; message='A Google Drive folder URL is not a Windows filesystem ShareRoot. Use local UUP or the HQ UNC share.' }
             exit 1
         }
         if ($ShareRoot -match '^\\\\') {
@@ -3912,7 +3912,7 @@ try {
             mediaPackage   = $true
             message        = 'Google Drive Image Ready package will download to the USB volume during build'
         }
-        EmitLog -Disk 0 -Msg 'googleDrive: Drive HTTP direct to USB enabled (Drive for Desktop not mounted)'
+        EmitLog -Disk 0 -Msg 'googleDrive: Drive HTTP direct to USB enabled (public folder over HTTPS)'
         # WinPE-OCs / WinPE-Drivers are already in the staged sources\boot.wim - do not
         # download them to %TEMP% before wipe/partition.
         $script:DriveHttpSupportRoot = ''

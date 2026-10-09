@@ -1,6 +1,6 @@
 {
     "launcherVersion":  "6.2.1",
-    "payloadVersion":  "6.2.40",
+    "payloadVersion":  "6.2.42",
     "channel":  "release",
     "source":  "github-public-source",
     "latestReleaseUrl":  "https://github.com/joshuameadors-eng/Project-Lonewolf-Releases/releases/latest",
@@ -35,14 +35,14 @@
                  "winpeUiZipBase":  "https://raw.githubusercontent.com/joshuameadors-eng/Project-Lonewolf-Releases/main/bin",
                  "manifest":  "https://raw.githubusercontent.com/joshuameadors-eng/Project-Lonewolf-Releases/main/latest.json"
              },
-    "portableSha256":  "e69c80c7fb880a5a2a4f60ebd49e5b8d6b3671156c069762f3c51bdbcfe335e3",
-    "portableSize":  73182777,
+    "portableSha256":  "17265ee18013e8a9322b2748a9393d9bdcc01482ed484471b4f82aeb9fcb3e3c",
+    "portableSize":  73182728,
     "changelog":  [
                       {
                           "version":  "6.2.1",
                           "date":  "2026-10-08",
                           "changes":  [
-                                          "Official release 6.2.1 â€” second RELEASE cut of the v6 line (RELEASE 1â†’2). Launcher 6.2.1; public payload 6.2.40.",
+                                          "Official release 6.2.1 â€” second RELEASE cut of the v6 line (RELEASE 1â†’2). Launcher 6.2.1; public payload 6.2.42.",
                                           "Added",
                                           "Halloween launcher theme (pumpkins on screen and the skeleton crossing)",
                                           "Google Drive media â€” stage ISOs over Drive HTTP without a Desktop/cache copy; Stage All runs AMD64/ARM64 Ã— Home/Pro",

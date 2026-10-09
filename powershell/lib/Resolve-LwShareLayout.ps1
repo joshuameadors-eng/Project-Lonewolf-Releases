@@ -28,11 +28,11 @@
   Destage mediaSource (main.js -MediaSource, npm start only):
     local       - UUP ISO + UUP PreSplit (legacy -DestageMedia)
     share       - HQ UNC ISO / PreSplit / WinPE-OCs
-    googleDrive - Drive for Desktop ShareRoot, or HTTPS direct onto USB during Rebuild
-                  when Desktop is not mounted (Image Ready package; no local cache)
-  Packaged production/Dev keep auto Drive-then-HQ / HTTPS-cache resolution.
+    googleDrive - Image Ready package over public HTTPS onto USB during Rebuild
+                  (no Drive for Desktop; no local ShareRoot cache)
+  Packaged production/Dev use the same googleDrive HTTPS path when mediaSource is Drive.
 
-  A Google Drive folder URL is never a filesystem ShareRoot (cache or Desktop path is).
+  A Google Drive folder URL is never a filesystem ShareRoot.
 #>
 
 function Get-LwHqShareRoot {
@@ -68,32 +68,11 @@ function Test-LwLooksLikeStagingRoot {
 }
 
 function Resolve-LwGoogleDriveDesktopRoot {
+    # Drive for Desktop is unused. Image Ready media is public HTTPS only.
     param(
         [string]$EnvRoot = $env:LONEWOLF_DRIVE_ROOT,
         [string]$HomeDir = $env:USERPROFILE
     )
-    $candidates = New-Object System.Collections.Generic.List[string]
-    if (-not [string]::IsNullOrWhiteSpace($EnvRoot) -and (Test-LwShareRootIsFilesystem $EnvRoot)) {
-        $candidates.Add($EnvRoot)
-    }
-    if (-not [string]::IsNullOrWhiteSpace($HomeDir)) {
-        $candidates.Add((Join-Path $HomeDir 'Google Drive'))
-        $candidates.Add((Join-Path $HomeDir 'My Drive'))
-        $candidates.Add((Join-Path $HomeDir 'Google Drive\My Drive'))
-    }
-    $candidates.Add('G:\My Drive')
-    $candidates.Add('G:\')
-
-    foreach ($c in $candidates) {
-        if (Test-LwLooksLikeStagingRoot $c) { return $c }
-        if (-not (Test-Path -LiteralPath $c -PathType Container)) { continue }
-        foreach ($child in @(Get-ChildItem -LiteralPath $c -Directory -ErrorAction SilentlyContinue)) {
-            if (Test-LwLooksLikeStagingRoot $child.FullName) { return $child.FullName }
-            foreach ($grand in @(Get-ChildItem -LiteralPath $child.FullName -Directory -ErrorAction SilentlyContinue)) {
-                if (Test-LwLooksLikeStagingRoot $grand.FullName) { return $grand.FullName }
-            }
-        }
-    }
     return $null
 }
 
@@ -106,12 +85,8 @@ function Resolve-LwDevShareRoot {
         return [pscustomobject]@{
             Kind       = 'rejected-url'
             ShareRoot  = $null
-            Reason     = 'A Google Drive folder URL is not a Windows filesystem ShareRoot. Use Google Drive for Desktop or the HQ UNC share.'
+            Reason     = 'A Google Drive folder URL is not a Windows filesystem ShareRoot. Use local UUP or the HQ UNC share.'
         }
-    }
-    $drive = Resolve-LwGoogleDriveDesktopRoot
-    if ($drive) {
-        return [pscustomobject]@{ Kind = 'drive-desktop'; ShareRoot = $drive }
     }
     return [pscustomobject]@{
         Kind      = 'hq-unc'
@@ -271,41 +246,38 @@ function Resolve-LwDestageMediaLayout {
     }
 
     if ($ms -eq 'googleDrive') {
+        # Producer: explicit ShareRoot that looks like staging (local UUP). Never Desktop.
+        # Consumer (HTTPS): empty ShareRoot → drive-missing; launcher probes Drive over HTTP.
         $drive = $ShareRoot
         $hqRoot = Get-LwHqShareRoot
-        # Never treat the HQ UNC default as a Google Drive ShareRoot.
         if (-not [string]::IsNullOrWhiteSpace($drive) -and $hqRoot -and
             ($drive.TrimEnd('\') -ieq $hqRoot.TrimEnd('\'))) {
             $drive = ''
         }
         if ([string]::IsNullOrWhiteSpace($drive) -or -not (Test-LwLooksLikeStagingRoot $drive)) {
-            $drive = Resolve-LwGoogleDriveDesktopRoot
-        }
-        if ([string]::IsNullOrWhiteSpace($drive)) {
             return [pscustomobject]@{
-                Layout          = 'destage-drive-missing'
+                Layout          = 'destage-drive-http'
                 StagingRoot     = ''
                 IsoRoot         = ''
                 IsoFallbackRoot = ''
                 PreSplitRoot    = ''
-                WpeOcRoot       = ''
+                WpeOcRoot       = (Resolve-LwWpeOcRoot -ShareRoot (Get-LwHqShareRoot) -LocalOcRoot '')
                 UupRoot         = ''
-                ShareLayout     = 'drive-missing'
+                ShareLayout     = 'drive-http'
                 MediaSource     = 'googleDrive'
                 BootInjectRoot  = ''
             }
         }
         $share = Resolve-LwShareLayout -ShareRoot $drive
-        # OCs always from HQ arch trees (Drive/UUP rarely ship WinPE-OCs\{ARCH}).
         $wpeOcRoot = Resolve-LwWpeOcRoot -ShareRoot (Get-LwHqShareRoot) -LocalOcRoot ''
         return [pscustomobject]@{
-            Layout          = 'destage-drive'
+            Layout          = 'destage-drive-uup'
             StagingRoot     = $share.StagingRoot
             IsoRoot         = $share.IsoRoot
             IsoFallbackRoot = ''
             PreSplitRoot    = $share.PreSplitRoot
             WpeOcRoot       = $wpeOcRoot
-            UupRoot         = ''
+            UupRoot         = $drive
             ShareLayout     = [string]$share.Layout
             MediaSource     = 'googleDrive'
             BootInjectRoot  = $share.PreSplitRoot

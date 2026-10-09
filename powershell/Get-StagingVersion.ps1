@@ -54,7 +54,7 @@ if ($ShareRoot -match '^(?i)https?://') {
         buildMode      = 'none'
         isoAvailable   = $false
         wimAvailable   = $false
-        error          = 'A Google Drive folder URL is not a Windows filesystem ShareRoot. Use Google Drive for Desktop or the HQ UNC share.'
+        error          = 'A Google Drive folder URL is not a Windows filesystem ShareRoot. Use local UUP or the HQ UNC share.'
     } | ConvertTo-Json -Compress -Depth 5
     return
 }
@@ -310,9 +310,12 @@ try {
                         $output.preSplitBootInjected = [bool](Test-LwPreSplitBootInjected -SetDir $setDir)
                     }
                     $wantMediaPkg = ($resolvedMediaSource -eq 'googleDrive' -or $resolvedMediaSource -eq 'share')
-                    if ($wantMediaPkg -and
-                        (-not $output.preSplitMediaPackage -or -not $output.preSplitBootInjected)) {
+                    if ($wantMediaPkg -and -not $output.preSplitMediaPackage) {
                         $output.preSplitMatchesIso = $false
+                    } elseif ($wantMediaPkg -and $output.preSplitMediaPackage) {
+                        # Soft Image Ready status (share + Drive): media package is enough.
+                        # Rebuild can inject WinPE on the stick when the sentinel is missing.
+                        $output.preSplitBootInjected = $true
                     }
                     break
                 }
@@ -330,7 +333,10 @@ try {
                     if (Get-Command -Name Test-LwPreSplitBootInjected -ErrorAction SilentlyContinue) {
                         $output.preSplitBootInjected = [bool](Test-LwPreSplitBootInjected -SetDir $setDir)
                     }
-                    if ($output.preSplitMediaPackage -and $output.preSplitBootInjected) {
+                    # Soft Image Ready: full media package (ISO tree + swm + boot.wim).
+                    # Inject sentinel is optional for status; Rebuild injects on stick if needed.
+                    if ($output.preSplitMediaPackage) {
+                        $output.preSplitBootInjected = $true
                         $output.preSplitMatchesIso = $true
                         break
                     }
@@ -343,8 +349,9 @@ try {
 
 # --- Build mode (WIM preferred over ISO) ------------------------------------
 # Home is ISO-only unless Image Ready package on share/Drive (no SKU-aware staged WIM).
+# Soft Image Ready (share + Drive): media package alone; inject runs on Rebuild if needed.
 $mediaPkgImageReady = ($resolvedMediaSource -eq 'googleDrive' -or $resolvedMediaSource -eq 'share') -and
-    $output.preSplitMediaPackage -and $output.preSplitBootInjected
+    $output.preSplitMediaPackage
 if ($winEdition -eq 'Home' -and -not $output.isoAvailable -and -not $mediaPkgImageReady) {
     $output.buildMode = 'none'
 } elseif ($mediaPkgImageReady) {

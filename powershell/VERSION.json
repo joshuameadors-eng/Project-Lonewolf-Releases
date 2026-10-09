@@ -2,7 +2,7 @@
     "_comment": "Product/payload version (version and payloadVersion) is independent of launcherVersion. npm start destage staging product version (chips, image dates, changelog, arch enablement) always comes from this file. Changelog entries are only for official RELEASE/MAJOR cuts pushed to the public main release feed (not per-DEV destage bumps). Packaged Dev and production changelog/update feeds use public GitHub latest.json (main) or latest-dev.json (packaged Dev). The ISO share and Drive VERSION.json must not host launcher exe, payload zip, or live version overlay.",
     "version": "6.2.42",
     "payloadVersion": "6.2.42",
-    "launcherVersion": "6.2.1",
+    "launcherVersion": "6.2.2",
     "launcherExeName": "LoneWolf-Launcher.exe",
     "dev": {
         "_comment": "npm start destage always versions from this checkout VERSION.json (local ISO, HQ UNC, or Drive HTTPS Image Ready). Packaged Dev uses the public dev branch / latest-dev.json. Packaged production uses main / latest.json. Google Drive media is HTTPS-only (no Drive for Desktop). A Drive folder URL is never ShareRoot. Do not publish exe/zip to Drive. Do not overlay Drive HTTPS VERSION.json on destage.",
@@ -26,10 +26,21 @@
     },
     "changelog": [
         {
+            "version": "6.2.2",
+            "date": "2026-10-09",
+            "changes": [
+                "Official release 6.2.2 — follow-up to 6.2.1 (launcher 6.2.2; public payload 6.2.42).",
+                "Changed",
+                "Google Drive media — HTTPS Image Ready only (no Drive for Desktop); soft Image Ready status from install*.swm / manifest",
+                "Media source — off-site or unreachable HQ share rolls over to Google Drive automatically; Builder shows Checking share… / Checking Drive…",
+                "Share Image Ready — full media package (ISO tree + boot.wim) is enough for status; Rebuild can inject WinPE on the stick when needed"
+            ]
+        },
+        {
             "version": "6.2.1",
             "date": "2026-10-08",
             "changes": [
-                "Official release 6.2.1 — second RELEASE cut of the v6 line (RELEASE 1→2). Launcher 6.2.1; public payload 6.2.42.",
+                "Official release 6.2.1 — second RELEASE cut of the v6 line (RELEASE 1→2). Launcher 6.2.1; public payload 6.2.40.",
                 "Added",
                 "Halloween launcher theme (pumpkins on screen and the skeleton crossing)",
                 "Google Drive media — stage ISOs over Drive HTTP without a Desktop/cache copy; Stage All runs AMD64/ARM64 × Home/Pro",

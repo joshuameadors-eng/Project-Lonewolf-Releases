@@ -1,5 +1,5 @@
 {
-    "launcherVersion":  "6.2.1",
+    "launcherVersion":  "6.2.2",
     "payloadVersion":  "6.2.42",
     "channel":  "release",
     "source":  "github-public-source",
@@ -35,14 +35,25 @@
                  "winpeUiZipBase":  "https://raw.githubusercontent.com/joshuameadors-eng/Project-Lonewolf-Releases/main/bin",
                  "manifest":  "https://raw.githubusercontent.com/joshuameadors-eng/Project-Lonewolf-Releases/main/latest.json"
              },
-    "portableSha256":  "17265ee18013e8a9322b2748a9393d9bdcc01482ed484471b4f82aeb9fcb3e3c",
-    "portableSize":  73182728,
+    "portableSha256":  "ad957ee92546f2fa5dc66169c85151a41f7a7f3ba7ab9b3eff541f90118fe847",
+    "portableSize":  73183711,
     "changelog":  [
+                      {
+                          "version":  "6.2.2",
+                          "date":  "2026-10-09",
+                          "changes":  [
+                                          "Official release 6.2.2 â€” follow-up to 6.2.1 (launcher 6.2.2; public payload 6.2.42).",
+                                          "Changed",
+                                          "Google Drive media â€” HTTPS Image Ready only (no Drive for Desktop); soft Image Ready status from install*.swm / manifest",
+                                          "Media source â€” off-site or unreachable HQ share rolls over to Google Drive automatically; Builder shows Checking shareâ€¦ / Checking Driveâ€¦",
+                                          "Share Image Ready â€” full media package (ISO tree + boot.wim) is enough for status; Rebuild can inject WinPE on the stick when needed"
+                                      ]
+                      },
                       {
                           "version":  "6.2.1",
                           "date":  "2026-10-08",
                           "changes":  [
-                                          "Official release 6.2.1 â€” second RELEASE cut of the v6 line (RELEASE 1â†’2). Launcher 6.2.1; public payload 6.2.42.",
+                                          "Official release 6.2.1 â€” second RELEASE cut of the v6 line (RELEASE 1â†’2). Launcher 6.2.1; public payload 6.2.40.",
                                           "Added",
                                           "Halloween launcher theme (pumpkins on screen and the skeleton crossing)",
                                           "Google Drive media â€” stage ISOs over Drive HTTP without a Desktop/cache copy; Stage All runs AMD64/ARM64 Ã— Home/Pro",

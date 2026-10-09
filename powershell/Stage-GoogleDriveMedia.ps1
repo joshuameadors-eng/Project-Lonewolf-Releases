@@ -9,7 +9,7 @@
     2. Export startnet / WinPeUi-injected boot.wim into the same set\sources
 
   Target layout comes from -MediaSource:
-    googleDrive - Drive Desktop / local UUP staging root
+    googleDrive - local UUP staging root (upload PreSplit to the shared Drive folder separately)
     share       - HQ share ISO\ + PreSplit\ (same package shape as Drive)
 
   USB Rebuild can copy the package without remounting the ISO.
@@ -60,16 +60,18 @@ if ($ms -eq 'share') {
         exit 1
     }
 } else {
-    # Prefer an explicit ShareRoot that already looks like staging (local UUP or Drive
-    # desktop). Only auto-detect Google Drive for Desktop when ShareRoot is empty.
+    # googleDrive packages are written under local UUP (or an explicit ShareRoot that
+    # already looks like staging). Drive for Desktop is not used.
     if (-not [string]::IsNullOrWhiteSpace($stagingRoot) -and (Get-Command -Name Test-LwLooksLikeStagingRoot -ErrorAction SilentlyContinue) -and
         (Test-LwLooksLikeStagingRoot -Path $stagingRoot)) {
         $usedLocalStagingRoot = $true
     } elseif ([string]::IsNullOrWhiteSpace($stagingRoot) -or -not (Test-Path -LiteralPath $stagingRoot)) {
-        $stagingRoot = Resolve-LwGoogleDriveDesktopRoot
+        if (Get-Command -Name Get-LwDestageUupLayout -ErrorAction SilentlyContinue) {
+            $stagingRoot = [string](Get-LwDestageUupLayout).Root
+        }
     }
-    if ([string]::IsNullOrWhiteSpace($stagingRoot)) {
-        Emit-StageDrive @{ event = 'error'; disk = -1; message = 'Staging root not found. Pass -ShareRoot (local UUP) or mount Google Drive / set LONEWOLF_DRIVE_ROOT.' }
+    if ([string]::IsNullOrWhiteSpace($stagingRoot) -or -not (Test-Path -LiteralPath $stagingRoot)) {
+        Emit-StageDrive @{ event = 'error'; disk = -1; message = 'Staging root not found. Pass -ShareRoot to local UUP (e.g. C:\Repos\Windows_Installation\UUP\25h2).' }
         exit 1
     }
 }

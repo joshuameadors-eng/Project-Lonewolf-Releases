@@ -94,6 +94,8 @@ function Get-FbBuildIdentity {
         ShareLauncher = ''
         ShareScript   = ''
         ImageBuildDate = ''
+        ImageVersion   = ''
+        WindowsEdition = ''
         Source        = ''   # which signal decided Dev; '' when none was found
     }
 
@@ -140,6 +142,18 @@ function Get-FbBuildIdentity {
         $ssProp = $j.PSObject.Properties['shareScriptVersion']
         if ($slProp -and $slProp.Value) { $info.ShareLauncher = [string]$slProp.Value }
         if ($ssProp -and $ssProp.Value) { $info.ShareScript = [string]$ssProp.Value }
+        try {
+            if ($j.PSObject.Properties['imageVersion'] -and $j.imageVersion) {
+                $info.ImageVersion = [string]$j.imageVersion
+            }
+        } catch {}
+        try {
+            if ($j.PSObject.Properties['windowsEdition'] -and $j.windowsEdition) {
+                $info.WindowsEdition = [string]$j.windowsEdition
+            } elseif ($j.PSObject.Properties['edition'] -and $j.edition) {
+                $info.WindowsEdition = [string]$j.edition
+            }
+        } catch {}
         foreach ($dateKey in @('imageBuildDate', 'buildDate', 'wimBuildDate')) {
             try {
                 $dp = $j.PSObject.Properties[$dateKey]
@@ -148,6 +162,13 @@ function Get-FbBuildIdentity {
                     break
                 }
             } catch {}
+        }
+        # Folder stamp fills the empty WinPE badge when imageBuildDate was omitted.
+        # Prefer an explicit imageBuildDate already on the stick (Rebuild writes the
+        # canonical staging day; Quick Update preserves it).
+        if ([string]::IsNullOrWhiteSpace($info.ImageBuildDate) -and $info.ImageVersion -match '(\d{8})T\d{6}Z$') {
+            $d = $Matches[1]
+            $info.ImageBuildDate = ('{0}-{1}-{2}' -f $d.Substring(0, 4), $d.Substring(4, 2), $d.Substring(6, 2))
         }
         break
     }
@@ -193,7 +214,10 @@ function Get-FbBuildIdentity {
         }
     }
 
-    return $info
+    # pscustomobject so callers can use .PSObject.Properties / note-property
+    # access. OrderedDictionary keys are NOT exposed as PSObject properties —
+    # that left the WinPE "Windows image" badge stuck on "—".
+    return [pscustomobject]$info
 }
 
 function Get-FbBuildIdentityForScript {

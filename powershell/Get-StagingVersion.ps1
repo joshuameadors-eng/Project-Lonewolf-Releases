@@ -233,7 +233,9 @@ try {
 
 # --- Pre-split staging availability ----------------------------------------
 # Identity = arch + Windows version (ISO slug) + Home/Pro. LoneWolf and Quick
-# Install share the same set. Uses Test-LWPreSplitSet + Get-LWImageVersionId.
+# Install share the same set. Match staged sets by source name+size (staging-UTC
+# folder stamps are not recomputed from ISO LastWriteTime).
+$preSplitRoot = $preSplitRootResolved
 try {
     if ($splitLibLoaded) {
         $skipPreSplitScan = $resolvedMediaSource -eq 'googleDrive' -and [string]::IsNullOrWhiteSpace($preSplitRootResolved)
@@ -258,9 +260,6 @@ try {
                 if (Test-Path -LiteralPath $p) { $psIso = Get-Item -LiteralPath $p; break }
             }
         }
-        $currentId = if ($psIso) { Get-LWImageVersionId -Iso $psIso -Edition $winEdition } else { $null }
-        $legacyId  = if ($psIso) { Get-LWImageVersionId -Iso $psIso } else { $null }
-
         $cands = @(Get-LWPreSplitCandidateDirs -PreSplitRoot $preSplitRoot -Arch $wfUpper -Edition $winEdition)
 
         foreach ($setDir in $cands) {
@@ -294,12 +293,15 @@ try {
                 $output.preSplitImageVersion = [string]$chk.Manifest.imageVersion
             }
             if ($psIso) {
-                $src = $chk.Manifest.source
-                $idOk = ([string]$chk.Manifest.imageVersion -eq $currentId) -or
-                        ($winEdition -eq 'Pro' -and [string]$chk.Manifest.imageVersion -eq $legacyId)
-                $match = $idOk -and
-                         ([string]$src.isoName -eq $psIso.Name) -and
-                         ([long]$src.isoSizeBytes -eq [long]$psIso.Length)
+                $match = $false
+                if (Get-Command -Name Test-LWPreSplitSourceMatchesIso -ErrorAction SilentlyContinue) {
+                    $match = [bool](Test-LWPreSplitSourceMatchesIso -Manifest $chk.Manifest -Iso $psIso)
+                } else {
+                    $src = $chk.Manifest.source
+                    $match = $src -and
+                             ([string]$src.isoName -eq $psIso.Name) -and
+                             ([long]$src.isoSizeBytes -eq [long]$psIso.Length)
+                }
                 if ($match) {
                     $output.preSplitMatchesIso   = $true
                     $output.preSplitImageVersion = [string]$chk.Manifest.imageVersion
@@ -346,6 +348,46 @@ try {
         }
     }
 } catch { }
+
+# Rebuild identity: remote version.json (or current.json) is SoT for available
+# Windows image versioning. Heals UUP ISO LastWrite stamps (2024-04-01) using
+# staging updatedUtc. Stick LW_VERSION.json is compared to preSplitImageVersion.
+$remoteSku = $null
+$remoteRoot = $preSplitRootResolved
+if (-not [string]::IsNullOrWhiteSpace($preSplitRoot)) { $remoteRoot = $preSplitRoot }
+elseif (-not [string]::IsNullOrWhiteSpace($output.preSplitRoot)) { $remoteRoot = [string]$output.preSplitRoot }
+if ($splitLibLoaded -and (Get-Command -Name Read-LWRemoteVersionSku -ErrorAction SilentlyContinue) -and
+    -not [string]::IsNullOrWhiteSpace($remoteRoot)) {
+    try {
+        $remoteSku = Read-LWRemoteVersionSku -PreSplitRoot $remoteRoot -Arch $wfUpper -Edition $winEdition
+    } catch { }
+}
+if ($remoteSku -and $remoteSku.imageVersion) {
+    $output.preSplitImageVersion = [string]$remoteSku.imageVersion
+    if ($remoteSku.imageBuildDate) {
+        $output.buildDate = [string]$remoteSku.imageBuildDate
+        if ($output.architectures.Contains($wfUpper)) {
+            $output.architectures[$wfUpper].wimBuildDate = [string]$remoteSku.imageBuildDate
+        }
+    }
+    $output.remoteVersionSource = [string]$remoteSku.source
+} elseif ($output.preSplitImageVersion -and (Get-Command -Name Get-LWCanonicalImageBuildDateYmd -ErrorAction SilentlyContinue)) {
+    $ivYmd = [string](Get-LWCanonicalImageBuildDateYmd -ImageVersion ([string]$output.preSplitImageVersion))
+    if ($ivYmd) {
+        $output.buildDate = $ivYmd
+        if ($output.architectures.Contains($wfUpper)) {
+            $output.architectures[$wfUpper].wimBuildDate = $ivYmd
+        }
+    }
+} elseif ($output.preSplitImageVersion -and (Get-Command -Name Get-LWImageVersionBuildDateYmd -ErrorAction SilentlyContinue)) {
+    $ivYmd = [string](Get-LWImageVersionBuildDateYmd -ImageVersion ([string]$output.preSplitImageVersion))
+    if ($ivYmd) {
+        $output.buildDate = $ivYmd
+        if ($output.architectures.Contains($wfUpper)) {
+            $output.architectures[$wfUpper].wimBuildDate = $ivYmd
+        }
+    }
+}
 
 # --- Build mode (WIM preferred over ISO) ------------------------------------
 # Home is ISO-only unless Image Ready package on share/Drive (no SKU-aware staged WIM).

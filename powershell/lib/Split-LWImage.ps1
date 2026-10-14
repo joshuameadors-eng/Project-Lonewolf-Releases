@@ -16,6 +16,7 @@
   Exposed functions:
     Split-LWImageForFat32   - port of the builder's original Split-LWInstallImageForFat32
     Get-LWImageVersionId    - stable image-version identity derived from a source ISO
+    Get-LWImageVersionBuildDateYmd / Get-LWCanonicalImageBuildDateYmd
     Get-LWWindowsEdition    - Home | Pro (default Pro)
     Get-LWBareArch          - AMD64/ARM64 with workflow prefixes stripped
     Find-LWWindowsIso       - newest ISO for arch + SKU (flat ISO\ with home/pro in the name;
@@ -24,7 +25,7 @@
                               has no matching file (destage UUP ISO folder).
     Get-LWPreSplitScanDirs  - PreSplit\ (new) then legacy PreSplit\<ARCH>\<SKU>\
                               (Pro also: PreSplit\<ARCH>\)
-    Get-LWPreSplitCandidateDirs / Write-LWPreSplitCurrentMarkers
+    Get-LWPreSplitCandidateDirs / Write-LWPreSplitCurrentMarkers / Write-LWRemoteVersionJson
 #>
 
 # ---------------------------------------------------------------------------
@@ -133,7 +134,16 @@ function Split-LWImageForFat32 {
                 $outFile = Join-Path $env:TEMP ("LW-Split-$g.out")
                 $errFile = Join-Path $env:TEMP ("LW-Split-$g.err")
                 try {
-                    $proc = Start-Process dism.exe -ArgumentList @('/Split-Image', "/ImageFile:$srcWim", "/SWMFile:$swm", "/FileSize:$spanMb", '/CheckIntegrity') -NoNewWindow -PassThru -RedirectStandardOutput $outFile -RedirectStandardError $errFile
+                    # Quote path values after the colon. Start-Process ArgumentList does not
+                    # reliably quote embedded spaces (e.g. "Project Keyes"), and DISM then
+                    # fails command-line validation ("could not recognize" / Error validating).
+                    $proc = Start-Process dism.exe -ArgumentList @(
+                        '/Split-Image',
+                        "/ImageFile:`"$srcWim`"",
+                        "/SWMFile:`"$swm`"",
+                        "/FileSize:$spanMb",
+                        '/CheckIntegrity'
+                    ) -NoNewWindow -PassThru -RedirectStandardOutput $outFile -RedirectStandardError $errFile
                     # Retain the process handle NOW. Without this reference .NET releases the
                     # handle when DISM exits and $proc.ExitCode comes back $null, which was
                     # misread as a failure ("failed (exit ):") even though DISM reported
@@ -218,7 +228,13 @@ function Split-LWImageForFat32 {
                     $outFile = Join-Path $env:TEMP ("LW-Split-$g.out")
                     $errFile = Join-Path $env:TEMP ("LW-Split-$g.err")
                     try {
-                        $proc = Start-Process dism.exe -ArgumentList @('/Split-Image', "/ImageFile:$tmpWim", "/SWMFile:$swm", "/FileSize:$spanMb", '/CheckIntegrity') -NoNewWindow -PassThru -RedirectStandardOutput $outFile -RedirectStandardError $errFile
+                        $proc = Start-Process dism.exe -ArgumentList @(
+                            '/Split-Image',
+                            "/ImageFile:`"$tmpWim`"",
+                            "/SWMFile:`"$swm`"",
+                            "/FileSize:$spanMb",
+                            '/CheckIntegrity'
+                        ) -NoNewWindow -PassThru -RedirectStandardOutput $outFile -RedirectStandardError $errFile
                         # Retain the handle so $proc.ExitCode is readable after exit (else $null
                         # -> false "failed (exit ):"). See the install.wim branch for detail.
                         $null = $proc.Handle
@@ -530,15 +546,19 @@ function Write-LWPreSplitCurrentMarkers {
     if ([string]::IsNullOrWhiteSpace($UpdatedUtc)) {
         $UpdatedUtc = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
     }
+    $imageBuildDate = [string](Get-LWCanonicalImageBuildDateYmd -ImageVersion $ImageVersion -UpdatedUtc $UpdatedUtc)
     $payload = [ordered]@{
-        imageVersion   = $ImageVersion
-        windowsEdition = $ed
-        arch           = $arch
-        updatedUtc     = $UpdatedUtc
+        imageVersion    = $ImageVersion
+        imageBuildDate  = $imageBuildDate
+        windowsEdition  = $ed
+        arch            = $arch
+        updatedUtc      = $UpdatedUtc
     }
+    $utf8 = [System.Text.UTF8Encoding]::new($false)
     if (-not [string]::IsNullOrWhiteSpace($SetDir) -and (Test-Path -LiteralPath $SetDir)) {
-        [System.IO.File]::WriteAllText((Join-Path $SetDir 'current'), ($payload | ConvertTo-Json -Compress),
-            [System.Text.UTF8Encoding]::new($false))
+        try {
+            [System.IO.File]::WriteAllText((Join-Path $SetDir 'current'), ($payload | ConvertTo-Json -Depth 6), $utf8)
+        } catch { }
     }
     $key = Get-LWPreSplitCurrentKey -Arch $arch -Edition $ed
     $rootPath = Join-Path $PreSplitRoot 'current.json'
@@ -555,26 +575,214 @@ function Write-LWPreSplitCurrentMarkers {
     if (-not (Test-Path -LiteralPath $PreSplitRoot)) {
         New-Item -ItemType Directory -Force -Path $PreSplitRoot | Out-Null
     }
-    [System.IO.File]::WriteAllText($rootPath, ($map | ConvertTo-Json -Depth 6),
+    try {
+        [System.IO.File]::WriteAllText($rootPath, ($map | ConvertTo-Json -Depth 6), $utf8)
+    } catch { }
+    # Remote SoT for available Windows image versioning (share / Drive upload).
+    try { Write-LWRemoteVersionJson -PreSplitRoot $PreSplitRoot } catch { }
+}
+
+# ---------------------------------------------------------------------------
+# Write-LWRemoteVersionJson / Read-LWRemoteVersionSku
+#   version.json beside current.json — per-SKU imageVersion + imageBuildDate.
+#   Canonical display/compare date heals UUP ISO LastWrite traps (2024-04-01)
+#   when updatedUtc / staging day is the real Image Ready day.
+# ---------------------------------------------------------------------------
+function Write-LWRemoteVersionJson {
+    param(
+        [Parameter(Mandatory)] [string] $PreSplitRoot
+    )
+    if ([string]::IsNullOrWhiteSpace($PreSplitRoot)) { return }
+    if (-not (Test-Path -LiteralPath $PreSplitRoot)) {
+        New-Item -ItemType Directory -Force -Path $PreSplitRoot | Out-Null
+    }
+    $currentPath = Join-Path $PreSplitRoot 'current.json'
+    $skus = [ordered]@{}
+    $newestUtc = ''
+    if (Test-Path -LiteralPath $currentPath) {
+        try {
+            $map = Get-Content -Raw -LiteralPath $currentPath -ErrorAction Stop | ConvertFrom-Json -ErrorAction Stop
+            foreach ($p in $map.PSObject.Properties) {
+                if ($p.Name -notmatch '^(AMD64|ARM64)-(Home|Pro)$') { continue }
+                $entry = $p.Value
+                $iv = ''
+                $ed = ''
+                $arch = ''
+                $upd = ''
+                $explicit = ''
+                if ($entry -is [string]) {
+                    $iv = [string]$entry
+                } elseif ($entry) {
+                    try { if ($entry.PSObject.Properties['imageVersion']) { $iv = [string]$entry.imageVersion } } catch { }
+                    try { if ($entry.PSObject.Properties['windowsEdition']) { $ed = [string]$entry.windowsEdition } } catch { }
+                    try { if ($entry.PSObject.Properties['arch']) { $arch = [string]$entry.arch } } catch { }
+                    try { if ($entry.PSObject.Properties['updatedUtc']) { $upd = [string]$entry.updatedUtc } } catch { }
+                    try { if ($entry.PSObject.Properties['imageBuildDate']) { $explicit = [string]$entry.imageBuildDate } } catch { }
+                }
+                if ([string]::IsNullOrWhiteSpace($iv)) { continue }
+                if (-not $arch -or -not $ed) {
+                    $parts = $p.Name -split '-', 2
+                    if (-not $arch) { $arch = $parts[0] }
+                    if (-not $ed) { $ed = $parts[1] }
+                }
+                $arch = Get-LWBareArch $arch
+                $ed = Get-LWWindowsEdition $ed
+                $ymd = [string](Get-LWCanonicalImageBuildDateYmd -ImageVersion $iv -UpdatedUtc $upd -ExplicitBuildDate $explicit)
+                $skus[$p.Name] = [ordered]@{
+                    arch           = $arch
+                    windowsEdition = $ed
+                    imageVersion   = $iv
+                    imageBuildDate = $ymd
+                    updatedUtc     = $upd
+                }
+                if ($upd -and ($upd -gt $newestUtc)) { $newestUtc = $upd }
+            }
+        } catch { }
+    }
+    if ([string]::IsNullOrWhiteSpace($newestUtc)) {
+        $newestUtc = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
+    }
+    $doc = [ordered]@{
+        schema     = 1
+        kind       = 'lonewolf-windows-image-version'
+        updatedUtc = $newestUtc
+        skus       = $skus
+    }
+    $outPath = Join-Path $PreSplitRoot 'version.json'
+    [System.IO.File]::WriteAllText($outPath, ($doc | ConvertTo-Json -Depth 8),
         [System.Text.UTF8Encoding]::new($false))
+}
+
+function Read-LWRemoteVersionSku {
+    param(
+        [Parameter(Mandatory)] [string] $PreSplitRoot,
+        [Parameter(Mandatory)] [string] $Arch,
+        [string] $Edition = 'Pro'
+    )
+    $key = Get-LWPreSplitCurrentKey -Arch $Arch -Edition $Edition
+    $verPath = Join-Path $PreSplitRoot 'version.json'
+    if (Test-Path -LiteralPath $verPath) {
+        try {
+            $doc = Get-Content -Raw -LiteralPath $verPath -ErrorAction Stop | ConvertFrom-Json -ErrorAction Stop
+            $skus = $null
+            if ($doc.PSObject.Properties['skus'] -and $doc.skus) { $skus = $doc.skus }
+            elseif ($doc.PSObject.Properties['imageVersions'] -and $doc.imageVersions) { $skus = $doc.imageVersions }
+            else { $skus = $doc }
+            if ($skus -and $skus.PSObject.Properties[$key]) {
+                $e = $skus.$key
+                $iv = ''
+                $ymd = ''
+                $upd = ''
+                if ($e -is [string]) { $iv = [string]$e }
+                else {
+                    try { if ($e.PSObject.Properties['imageVersion']) { $iv = [string]$e.imageVersion } } catch { }
+                    try { if ($e.PSObject.Properties['imageBuildDate']) { $ymd = [string]$e.imageBuildDate } } catch { }
+                    try { if ($e.PSObject.Properties['updatedUtc']) { $upd = [string]$e.updatedUtc } } catch { }
+                }
+                if ($iv) {
+                    if (-not $ymd) {
+                        $ymd = [string](Get-LWCanonicalImageBuildDateYmd -ImageVersion $iv -UpdatedUtc $upd)
+                    }
+                    return [pscustomobject]@{
+                        imageVersion   = $iv
+                        imageBuildDate = $ymd
+                        updatedUtc     = $upd
+                        source         = 'version.json'
+                    }
+                }
+            }
+        } catch { }
+    }
+    $curPath = Join-Path $PreSplitRoot 'current.json'
+    if (Test-Path -LiteralPath $curPath) {
+        try {
+            $map = Get-Content -Raw -LiteralPath $curPath -ErrorAction Stop | ConvertFrom-Json -ErrorAction Stop
+            if ($map.PSObject.Properties[$key] -and $map.$key) {
+                $e = $map.$key
+                $iv = ''
+                $upd = ''
+                $explicit = ''
+                if ($e -is [string]) { $iv = [string]$e }
+                else {
+                    try { if ($e.PSObject.Properties['imageVersion']) { $iv = [string]$e.imageVersion } } catch { }
+                    try { if ($e.PSObject.Properties['updatedUtc']) { $upd = [string]$e.updatedUtc } } catch { }
+                    try { if ($e.PSObject.Properties['imageBuildDate']) { $explicit = [string]$e.imageBuildDate } } catch { }
+                }
+                if ($iv) {
+                    $ymd = [string](Get-LWCanonicalImageBuildDateYmd -ImageVersion $iv -UpdatedUtc $upd -ExplicitBuildDate $explicit)
+                    return [pscustomobject]@{
+                        imageVersion   = $iv
+                        imageBuildDate = $ymd
+                        updatedUtc     = $upd
+                        source         = 'current.json'
+                    }
+                }
+            }
+        } catch { }
+    }
+    return $null
+}
+
+# ---------------------------------------------------------------------------
+# Test-LWPreSplitSourceMatchesIso
+#   True when a presplit-manifest.json source block matches this ISO / SkipISO
+#   folder by name + size. LastWrite is optional (UUP/SkipISO often preserves
+#   bogus media timestamps that must not drive identity).
+# ---------------------------------------------------------------------------
+function Test-LWPreSplitSourceMatchesIso {
+    param(
+        $Manifest,
+        [Parameter(Mandatory)] [System.IO.FileSystemInfo] $Iso,
+        [switch] $RequireLastWrite,
+        [int] $LastWriteToleranceSec = 2
+    )
+    if (-not $Manifest) { return $false }
+    $src = $null
+    try {
+        if ($Manifest.PSObject.Properties['source'] -and $Manifest.source) { $src = $Manifest.source }
+    } catch { }
+    if (-not $src) { return $false }
+    if ([string]$src.isoName -ne $Iso.Name) { return $false }
+    try {
+        if ([long]$src.isoSizeBytes -ne [long]$Iso.Length) { return $false }
+    } catch { return $false }
+    if (-not $RequireLastWrite) { return $true }
+    $mDate = $null
+    try {
+        $mDate = [datetime]::Parse([string]$src.isoLastWriteUtc, $null,
+            [System.Globalization.DateTimeStyles]::RoundtripKind)
+    } catch { return $false }
+    $delta = [math]::Abs(($mDate.ToUniversalTime() - $Iso.LastWriteTimeUtc).TotalSeconds)
+    return ($delta -le $LastWriteToleranceSec)
 }
 
 # ---------------------------------------------------------------------------
 # Get-LWImageVersionId
-#   Stable image-version identity for a source ISO, computed IDENTICALLY by the
-#   producer (manifest imageVersion + folder name) and the builder detection.
-#     slug  = ISO base filename w/o extension, lowercased, each run of
-#             [^a-z0-9]+ collapsed to '-', trimmed of leading/trailing '-'
+#   PreSplit / Image Ready folder identity:
+#     slug  = base filename (ISO w/o extension, or folder name) lowercased,
+#             each run of [^a-z0-9]+ collapsed to '-', trimmed of leading/trailing '-'
 #     sku   = home | pro (appended when not already in the slug)
-#     stamp = ISO LastWriteTimeUtc as 'yyyyMMddTHHmmssZ'
-#     id    = "<slug>-<sku>-<stamp>"
+#     stamp = staging UTC as 'yyyyMMddTHHmmssZ' (NOT ISO LastWriteTime — UUP/SkipISO
+#             media often carries preserved 2024-era timestamps that are not the
+#             rebuild day; trailing stamp drives the launcher pill + USB compare)
+#     id    = "<slug>-<stamp>"  (sku already in slug when present)
+#   Pass -StampUtc when minting a new set (producers use UtcNow). Matching an
+#   existing set uses Test-LWPreSplitSourceMatchesIso / current.json — do not
+#   recompute this id from LastWriteTime and expect string equality.
 # ---------------------------------------------------------------------------
 function Get-LWImageVersionId {
     param(
-        [Parameter(Mandatory)] [System.IO.FileInfo] $Iso,
-        [string] $Edition = ''
+        [Parameter(Mandatory)] [System.IO.FileSystemInfo] $Iso,
+        [string] $Edition = '',
+        [DateTime] $StampUtc = [DateTime]::MinValue
     )
-    $base = [System.IO.Path]::GetFileNameWithoutExtension($Iso.Name)
+    # ISO files: strip .iso. SkipISO media folders use the ISO basename (e.g.
+    # 25h2_home_10.12(amd64)) — do not treat ".12(amd64)" as an extension.
+    if ($Iso.PSIsContainer) {
+        $base = $Iso.Name
+    } else {
+        $base = [System.IO.Path]::GetFileNameWithoutExtension($Iso.Name)
+    }
     $slug = $base.ToLowerInvariant()
     $slug = [regex]::Replace($slug, '[^a-z0-9]+', '-')
     $slug = $slug.Trim('-')
@@ -582,8 +790,62 @@ function Get-LWImageVersionId {
         $ed = (Get-LWWindowsEdition $Edition).ToLowerInvariant()
         if ($slug -notmatch [regex]::Escape($ed)) { $slug = "$slug-$ed" }
     }
-    $stamp = $Iso.LastWriteTimeUtc.ToString("yyyyMMdd'T'HHmmss'Z'")
+    if ($StampUtc -eq [DateTime]::MinValue) {
+        $StampUtc = [DateTime]::UtcNow
+    } elseif ($StampUtc.Kind -eq [DateTimeKind]::Unspecified) {
+        $StampUtc = [DateTime]::SpecifyKind($StampUtc, [DateTimeKind]::Utc)
+    }
+    $stamp = $StampUtc.ToUniversalTime().ToString("yyyyMMdd'T'HHmmss'Z'")
     return "$slug-$stamp"
+}
+
+# Calendar date from a PreSplit folder / imageVersionId trailing stamp.
+# e.g. 25h2-home-9-22-amd64-20261005T164435Z → 2026-10-05
+function Get-LWImageVersionBuildDateYmd {
+    param([string] $ImageVersion)
+    if ([string]::IsNullOrWhiteSpace($ImageVersion)) { return '' }
+    if ($ImageVersion -match '(\d{8})T\d{6}Z$') {
+        $d = $Matches[1]
+        return ('{0}-{1}-{2}' -f $d.Substring(0, 4), $d.Substring(4, 2), $d.Substring(6, 2))
+    }
+    return ''
+}
+
+# Canonical Windows image calendar day for display / rebuild advice.
+# Prefers an explicit imageBuildDate, then the folder stamp — unless that stamp
+# is clearly a UUP/SkipISO preserved LastWrite (days before staging updatedUtc),
+# in which case the staging day wins (e.g. stamp 2024-04-01 + updatedUtc 2026-10-13
+# → 2026-10-13).
+function Get-LWCanonicalImageBuildDateYmd {
+    param(
+        [string] $ImageVersion,
+        [string] $UpdatedUtc = '',
+        [string] $ExplicitBuildDate = ''
+    )
+    if ($ExplicitBuildDate -match '^(\d{4}-\d{2}-\d{2})') {
+        return $Matches[1]
+    }
+    $stampYmd = [string](Get-LWImageVersionBuildDateYmd -ImageVersion $ImageVersion)
+    $updYmd = ''
+    if (-not [string]::IsNullOrWhiteSpace($UpdatedUtc)) {
+        try {
+            $dt = [datetime]::Parse([string]$UpdatedUtc, $null,
+                [System.Globalization.DateTimeStyles]::RoundtripKind)
+            $updYmd = $dt.ToUniversalTime().ToString('yyyy-MM-dd')
+        } catch {
+            if ($UpdatedUtc -match '^(\d{4}-\d{2}-\d{2})') { $updYmd = $Matches[1] }
+        }
+    }
+    if ($stampYmd -and $updYmd) {
+        try {
+            $stampDay = [datetime]::ParseExact($stampYmd, 'yyyy-MM-dd', $null)
+            $updDay = [datetime]::ParseExact($updYmd, 'yyyy-MM-dd', $null)
+            if ($stampDay -lt $updDay.AddDays(-2)) { return $updYmd }
+        } catch { }
+    }
+    if ($stampYmd) { return $stampYmd }
+    if ($updYmd) { return $updYmd }
+    return ''
 }
 
 # ---------------------------------------------------------------------------

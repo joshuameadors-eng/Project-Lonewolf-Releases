@@ -107,10 +107,11 @@ $FirstBaseScriptVersion = @{
 
     'FirstBaseHandoffSplash.ps1'        = '1.0.5'
 
-    'FirstBaseOpenSettingsAndFinish.ps1' = '1.1.13'
+    'FirstBaseOpenSettingsAndFinish.ps1' = '1.1.14'
 
     'FirstBaseHardwareCheck.ps1'        = '1.0.4'
     'Install-FbMicrosoftEdge.ps1'       = '1.0.1'
+    'Remove-FbProvisionedBloat.ps1'     = '1.1.0'
 
 
 

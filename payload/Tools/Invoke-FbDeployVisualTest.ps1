@@ -120,6 +120,8 @@ function New-FbMockPayload {
         launcherVersion      = $Launcher
         scriptVersion        = $Scripts
         imageBuildDate       = $ImageDate
+        imageVersion         = ("25h2-pro-test-amd64-" + (($ImageDate -replace '-', '') + "T120000Z"))
+        windowsEdition       = 'Pro'
         destage              = $DevBuild
         channel              = $(if ($DevBuild) { 'destage' } else { $null })
         devBuild             = $DevBuild

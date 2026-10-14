@@ -177,6 +177,18 @@ if not "!DISMEC!"=="0" (
 echo [%DATE% %TIME%] DISM apply succeeded. >> "%LOG%"
 title FirstBase Quick Install - For Internal Use Only
 
+:: -- STEP 5b: Offline provisioned AppX strip (Start Menu bloat) -----------
+set "PSBLOAT=!FB_PAYLOAD!\Scripts\Remove-FbProvisionedBloat.ps1"
+if not exist "!PSBLOAT!" if exist "%SRC%\Scripts\Remove-FbProvisionedBloat.ps1" set "PSBLOAT=%SRC%\Scripts\Remove-FbProvisionedBloat.ps1"
+if exist "!PSBLOAT!" if defined FB_PS (
+    call :FB_UI_PROGRESS 5 "Removing inbox apps + Start layout"
+    echo [%DATE% %TIME%] Offline AppX strip + Start layout: !PSBLOAT! >> "%LOG%"
+    "%FB_PS%" -NoLogo -NoProfile -ExecutionPolicy Bypass -File "!PSBLOAT!" -ImagePath "W:\" -LogPath "%LOG%"
+    echo [%DATE% %TIME%] Offline AppX strip exit=!ERRORLEVEL! >> "%LOG%"
+) else (
+    echo [%DATE% %TIME%] WARNING: Remove-FbProvisionedBloat.ps1 or PowerShell missing - skipping inbox AppX strip. >> "%LOG%"
+)
+
 :: -- STEP 6: offline unattend so the device boots to a clean OOBE ---------
 :: Direct DISM apply (no setup.exe) means there is no Windows Setup
 :: edition/disk menu to suppress; this offline unattend only tidies OOBE and

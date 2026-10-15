@@ -130,7 +130,9 @@ param(
     [switch] $Force,
     [int]    $FileSizeMb       = 3800,
     [switch] $DeepHash,
-    [string] $AppResourcesPath = ''
+    [string] $AppResourcesPath = '',
+    # Prefer a durable work root (e.g. UI export\.keyes-work) over %TEMP%.
+    [string] $ScratchRoot = ''
 )
 
 $ErrorActionPreference = 'Stop'
@@ -511,7 +513,19 @@ try {
     } catch { }
 
     # -- Split into a local scratch folder (never split straight to the share) --
-    $scratch        = Join-Path $env:TEMP ('LW-Stage-' + [guid]::NewGuid().ToString('N').Substring(0, 8))
+    $scratchBase = $env:TEMP
+    if (-not [string]::IsNullOrWhiteSpace($ScratchRoot)) {
+        try {
+            if (-not (Test-Path -LiteralPath $ScratchRoot)) {
+                New-Item -ItemType Directory -Path $ScratchRoot -Force | Out-Null
+            }
+            $scratchBase = (Get-Item -LiteralPath $ScratchRoot).FullName
+        } catch {
+            EmitLog ("stage-split: ScratchRoot unusable ($($_.Exception.Message)); using TEMP")
+            $scratchBase = $env:TEMP
+        }
+    }
+    $scratch        = Join-Path $scratchBase ('LW-Stage-' + [guid]::NewGuid().ToString('N').Substring(0, 8))
     $scratchSources = Join-Path $scratch 'sources'
     New-Item -ItemType Directory -Force -Path $scratchSources | Out-Null
     $splitSources = $isoSources

@@ -35,7 +35,9 @@ param(
     [string] $AppResourcesPath = '',
     [ValidateSet('local', 'share', 'googleDrive', '')]
     [string] $MediaSource = 'googleDrive',
-    [switch] $Force
+    [switch] $Force,
+    # Forwarded to Stage-PreSplitImage (avoid %TEMP% when UI export work root is set).
+    [string] $ScratchRoot = ''
 )
 
 $ErrorActionPreference = 'Stop'
@@ -126,31 +128,30 @@ if (-not $isoItem) {
     exit 1
 }
 
-# Stage-PreSplitImage mints staging-UTC stamps (or reuses a matching set).
-# Preview path here is best-effort for init logging only.
-$imageVersion = $null
+# Preview only — Stage-PreSplitImage mints its own UTC stamp. Resolve the real
+# set folder AFTER stage before exporting boot.wim into it.
+$previewVersion = $null
 if (-not $Force -and (Get-Command -Name Get-LWPreSplitCandidateDirs -ErrorAction SilentlyContinue) -and
     (Get-Command -Name Test-LWPreSplitSourceMatchesIso -ErrorAction SilentlyContinue)) {
     foreach ($cand in @(Get-LWPreSplitCandidateDirs -PreSplitRoot $destageLayout.PreSplitRoot -Arch $wfUpper -Edition $winEdition)) {
         $chk = Test-LWPreSplitSet -SetDir $cand
         if ($chk.Valid -and (Test-LWPreSplitSourceMatchesIso -Manifest $chk.Manifest -Iso $isoItem)) {
-            $imageVersion = [string]$chk.Manifest.imageVersion
-            if (-not $imageVersion) { $imageVersion = [string](Split-Path -Leaf $cand) }
+            $previewVersion = [string]$chk.Manifest.imageVersion
+            if (-not $previewVersion) { $previewVersion = [string](Split-Path -Leaf $cand) }
             break
         }
     }
 }
-if (-not $imageVersion) {
-    $imageVersion = Get-LWImageVersionId -Iso $isoItem -Edition $winEdition -StampUtc ([datetime]::UtcNow)
+if (-not $previewVersion) {
+    $previewVersion = Get-LWImageVersionId -Iso $isoItem -Edition $winEdition -StampUtc ([datetime]::UtcNow)
 }
-$preSplitSetDir = Join-Path $destageLayout.PreSplitRoot $imageVersion
 
 Emit-StageDrive @{
     event            = 'init'
     disk             = 0
     shareRoot        = $stagingRoot
     preSplitRoot     = $destageLayout.PreSplitRoot
-    preSplitSetDir   = $preSplitSetDir
+    preSplitSetDir   = (Join-Path $destageLayout.PreSplitRoot $previewVersion)
     workflowType     = $WorkflowType
     windowsEdition   = $WindowsEdition
     producer         = 'Stage-GoogleDriveMedia'
@@ -171,11 +172,63 @@ if ($AppResourcesPath) { $preArgs += '-AppResourcesPath', $AppResourcesPath }
 if ($useSourceDir) { $preArgs += '-SourceDir', $isoItem.FullName }
 elseif ($IsoPath) { $preArgs += '-IsoPath', $IsoPath }
 if ($Force) { $preArgs += '-Force' }
+if (-not [string]::IsNullOrWhiteSpace($ScratchRoot)) { $preArgs += '-ScratchRoot', $ScratchRoot }
 
 & powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $stagePs @preArgs
 if ($LASTEXITCODE -ne 0) {
     Emit-StageDrive @{ event = 'error'; disk = -1; message = "Pre-split staging failed (exit $LASTEXITCODE)" }
     exit $LASTEXITCODE
+}
+
+# Resolve the set Stage-PreSplitImage actually wrote (current.json / candidates).
+$preSplitSetDir = $null
+$imageVersion = $null
+$skuKey = '{0}-{1}' -f $wfUpper, $winEdition
+$currentJson = Join-Path $destageLayout.PreSplitRoot 'current.json'
+if (Test-Path -LiteralPath $currentJson) {
+    try {
+        $curDoc = Get-Content -Raw -LiteralPath $currentJson | ConvertFrom-Json
+        $leaf = $null
+        if ($curDoc.PSObject.Properties[$skuKey]) {
+            $entry = $curDoc.$skuKey
+            if ($entry -is [string]) { $leaf = [string]$entry }
+            elseif ($entry -and $entry.PSObject.Properties['imageVersion']) { $leaf = [string]$entry.imageVersion }
+        } elseif ($curDoc.PSObject.Properties['skus'] -and $curDoc.skus.PSObject.Properties[$skuKey]) {
+            $entry = $curDoc.skus.$skuKey
+            if ($entry -and $entry.PSObject.Properties['imageVersion']) { $leaf = [string]$entry.imageVersion }
+        }
+        if ($leaf) {
+            $cand = Join-Path $destageLayout.PreSplitRoot $leaf
+            if (Test-Path -LiteralPath $cand) {
+                $preSplitSetDir = $cand
+                $imageVersion = $leaf
+            }
+        }
+    } catch {}
+}
+if (-not $preSplitSetDir -and (Get-Command -Name Get-LWPreSplitCandidateDirs -ErrorAction SilentlyContinue)) {
+    foreach ($cand in @(Get-LWPreSplitCandidateDirs -PreSplitRoot $destageLayout.PreSplitRoot -Arch $wfUpper -Edition $winEdition)) {
+        $chk = Test-LWPreSplitSet -SetDir $cand
+        if (-not $chk.Valid) { continue }
+        if ($useSourceDir -and (Get-Command -Name Test-LWPreSplitSourceMatchesIso -ErrorAction SilentlyContinue)) {
+            if (-not (Test-LWPreSplitSourceMatchesIso -Manifest $chk.Manifest -Iso $isoItem)) { continue }
+        }
+        $preSplitSetDir = $cand
+        $imageVersion = [string]$chk.Manifest.imageVersion
+        if (-not $imageVersion) { $imageVersion = [string](Split-Path -Leaf $cand) }
+        break
+    }
+}
+if (-not $preSplitSetDir) {
+    Emit-StageDrive @{ event = 'error'; disk = -1; message = "Pre-split finished but no Image Ready set found under '$($destageLayout.PreSplitRoot)' for $skuKey" }
+    exit 1
+}
+
+Emit-StageDrive @{
+    event          = 'log'
+    disk           = 0
+    message        = ("Resolved Image Ready set for boot.wim export: " + $preSplitSetDir)
+    preSplitSetDir = $preSplitSetDir
 }
 
 Emit-StageDrive @{ event = 'phase'; disk = 0; phase = 'stage-drive-bootwim' }
@@ -199,6 +252,17 @@ if ($LASTEXITCODE -ne 0) {
     exit $LASTEXITCODE
 }
 
+$bootWimOut = Join-Path $preSplitSetDir 'sources\boot.wim'
+$swmHit = @(Get-ChildItem -LiteralPath (Join-Path $preSplitSetDir 'sources') -Filter 'install*.swm' -File -ErrorAction SilentlyContinue)
+if (-not (Test-Path -LiteralPath $bootWimOut) -or $swmHit.Count -lt 1) {
+    Emit-StageDrive @{
+        event   = 'error'
+        disk    = -1
+        message = "Image Ready package incomplete at $preSplitSetDir (need sources\boot.wim and install*.swm)"
+    }
+    exit 1
+}
+
 $doneWhere = if ($ms -eq 'share') {
     'HQ share PreSplit (Image Ready package)'
 } elseif ($usedLocalStagingRoot) {
@@ -206,5 +270,12 @@ $doneWhere = if ($ms -eq 'share') {
 } else {
     'Drive PreSplit'
 }
-Emit-StageDrive @{ event = 'done'; disk = 0; success = $true; message = "Image Ready staging complete ($doneWhere set $imageVersion)" }
+Emit-StageDrive @{
+    event          = 'done'
+    disk           = 0
+    success        = $true
+    preSplitSetDir = $preSplitSetDir
+    imageVersion   = $imageVersion
+    message        = "Image Ready staging complete ($doneWhere set $imageVersion)"
+}
 exit 0

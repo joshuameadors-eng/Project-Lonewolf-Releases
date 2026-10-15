@@ -7457,8 +7457,7 @@ function Set-UiUpdateStatus {
     if ([string]::IsNullOrWhiteSpace($Title))    { $Title = $UpdateId }
 
     try {
-        $osUi = Get-FbOsVersionIdentity
-        if ($osUi.Already25H2 -and (Test-FbIsRedundant25H2FeatureUpdate -Title $Title)) {
+        if (Test-FbIsRedundant25H2FeatureUpdate -Title $Title) {
             return
         }
     } catch {}
@@ -9054,9 +9053,10 @@ function Hide-FbOfferedUpdate {
 function Invoke-FbHideRedundant25H2FeatureUpdates {
     <#
     .SYNOPSIS
-        Drop already-installed 25H2 feature/enablement offers from a scan
-        list, hide them via WUA, and add them to GivenUp so STAGE 1 does
-        not treat them as residual. Quality/security updates are kept.
+        Drop same-version and N+1 feature/enablement offers (25H2 on 25H2,
+        26H2 on 25H2, etc.) from a scan list for this imaging pass only.
+        Hide via WUA and add to GivenUp. Quality/security updates are kept.
+        TargetReleaseVersion is cleared at seal so upgrades can install after.
     #>
     param(
         [Parameter(Mandatory)] [AllowNull()] [AllowEmptyCollection()] $Updates,
@@ -9064,9 +9064,8 @@ function Invoke-FbHideRedundant25H2FeatureUpdates {
     )
     $osId = $null
     try { $osId = Get-FbOsVersionIdentity } catch { $osId = $null }
-    if (-not $osId -or -not $osId.Already25H2) {
-        return @($Updates)
-    }
+    $osRelease = $null
+    try { $osRelease = Get-FbOsReleaseIdentity } catch { $osRelease = $null }
     $kept = @()
     foreach ($u in @($Updates)) {
         if (-not $u) { continue }
@@ -9076,13 +9075,15 @@ function Invoke-FbHideRedundant25H2FeatureUpdates {
         try { $kb = [string]$u.KB } catch {}
         $kbs = @()
         try { $kbs = @($u.KBArticleIDs) } catch {}
-        if (-not (Test-FbIsRedundant25H2FeatureUpdate -Title $title -KB $kb -KBArticleIDs $kbs)) {
+        if (-not (Test-FbIsRedundant25H2FeatureUpdate -Title $title -KB $kb -KBArticleIDs $kbs -Os $osRelease)) {
             $kept += $u
             continue
         }
         $uid = ''
         try { $uid = [string]$u.UpdateId } catch {}
-        Write-FbLog ("Scan-list hide 25H2 feature/enablement: Title='{0}' KB={1} Id={2} (OS build={3} DisplayVersion={4})" -f $title, $kb, $uid, $osId.CurrentBuild, $osId.DisplayVersion) 'WARN'
+        $dv = if ($osId) { $osId.DisplayVersion } else { '?' }
+        $bld = if ($osId) { $osId.CurrentBuild } else { 0 }
+        Write-FbLog ("Scan-list hide feature upgrade: Title='{0}' KB={1} Id={2} (OS build={3} DisplayVersion={4})" -f $title, $kb, $uid, $bld, $dv) 'WARN'
         if ($GivenUpSet -and -not [string]::IsNullOrWhiteSpace($uid)) {
             [void]$GivenUpSet.Add($uid)
             try {
@@ -14921,9 +14922,9 @@ function Invoke-FbOobeHandoff {
                         $fbScanKbs = @(); try { $fbScanKbs = @($fbScanU.KBArticleIDs) } catch {}
                         try {
                             $fbOs25 = Get-FbOsVersionIdentity
-                            if ($fbOs25.Already25H2 -and (Test-FbIsRedundant25H2FeatureUpdate -Title $fbScanTitle -KB $fbScanKb -KBArticleIDs $fbScanKbs)) {
+                            if (Test-FbIsRedundant25H2FeatureUpdate -Title $fbScanTitle -KB $fbScanKb -KBArticleIDs $fbScanKbs) {
                                 if (-not $givenUpIds.Contains($fbScanUid)) {
-                                    Write-FbLog ("OOBE handoff (STAGE 1 gate) Fix B: Skipping 25H2 feature/enablement '{0}' (OS already 25H2 build={1} DisplayVersion={2}). Adding to GivenUp." -f $fbScanTitle, $fbOs25.CurrentBuild, $fbOs25.DisplayVersion) 'WARN'
+                                    Write-FbLog ("OOBE handoff (STAGE 1 gate) Fix B: Skipping feature upgrade '{0}' (OS build={1} DisplayVersion={2}). Adding to GivenUp." -f $fbScanTitle, $fbOs25.CurrentBuild, $fbOs25.DisplayVersion) 'WARN'
                                     $fbScanKey = ''; try { $fbScanKey = [string](Get-FbRetryKey -Update $fbScanU) } catch {}
                                     [void]$givenUpIds.Add($fbScanUid)
                                     if (-not [string]::IsNullOrWhiteSpace($fbScanKey)) { [void]$givenUpIds.Add($fbScanKey) }
@@ -17814,13 +17815,13 @@ function Invoke-FbBucketApply {
             try { $bKb = [string]$u.KB } catch {}
             $bKbs = @()
             try { $bKbs = @($u.KBArticleIDs) } catch {}
-            if ($osBkt -and $osBkt.Already25H2 -and (Test-FbIsRedundant25H2FeatureUpdate -Title $bTitle -KB $bKb -KBArticleIDs $bKbs)) {
+            if (Test-FbIsRedundant25H2FeatureUpdate -Title $bTitle -KB $bKb -KBArticleIDs $bKbs) {
                 $skipRedundant25H2 = $true
                 if ($GivenUpSet) {
                     [void]$GivenUpSet.Add($uid)
                     if ($key) { [void]$GivenUpSet.Add($key) }
                 }
-                Write-FbLog ("[{0}] skipping already-installed 25H2 feature/enablement '{1}' ({2}); not shown in splash." -f $BucketName, $bTitle, $uid) 'WARN'
+                Write-FbLog ("[{0}] skipping feature upgrade '{1}' ({2}); not shown in splash." -f $BucketName, $bTitle, $uid) 'WARN'
             }
         } catch {}
         if ($skipRedundant25H2) {

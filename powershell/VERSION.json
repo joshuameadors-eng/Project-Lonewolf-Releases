@@ -1,7 +1,7 @@
 {
     "_comment": "Product/payload version (version and payloadVersion) is independent of launcherVersion. npm start destage staging product version (chips, image dates, changelog, arch enablement) always comes from this file. Changelog entries are only for official RELEASE/MAJOR cuts pushed to the public main release feed (not per-DEV destage bumps). Packaged Dev and production changelog/update feeds use public GitHub latest.json (main) or latest-dev.json (packaged Dev). The ISO share and Drive VERSION.json must not host launcher exe, payload zip, or live version overlay.",
-    "version": "6.2.51",
-    "payloadVersion": "6.2.51",
+    "version": "6.2.54",
+    "payloadVersion": "6.2.54",
     "launcherVersion": "6.2.3",
     "launcherExeName": "LoneWolf-Launcher.exe",
     "dev": {

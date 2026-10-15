@@ -315,9 +315,9 @@ try {
                     if ($wantMediaPkg -and -not $output.preSplitMediaPackage) {
                         $output.preSplitMatchesIso = $false
                     } elseif ($wantMediaPkg -and $output.preSplitMediaPackage) {
-                        # Soft Image Ready status (share + Drive): media package is enough.
-                        # Rebuild can inject WinPE on the stick when the sentinel is missing.
-                        $output.preSplitBootInjected = $true
+                        # Soft Image Ready: media package is enough for the chip / Rebuild path.
+                        # preSplitBootInjected stays honest (sentinel only) so UI can show inject state.
+                        $output.preSplitMatchesIso = $true
                     }
                     break
                 }
@@ -336,9 +336,8 @@ try {
                         $output.preSplitBootInjected = [bool](Test-LwPreSplitBootInjected -SetDir $setDir)
                     }
                     # Soft Image Ready: full media package (ISO tree + swm + boot.wim).
-                    # Inject sentinel is optional for status; Rebuild injects on stick if needed.
+                    # Sentinel is optional for package readiness; bootInjected stays honest.
                     if ($output.preSplitMediaPackage) {
-                        $output.preSplitBootInjected = $true
                         $output.preSplitMatchesIso = $true
                         break
                     }

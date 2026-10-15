@@ -262,6 +262,15 @@ if (-not (Test-Path -LiteralPath $bootWimOut) -or $swmHit.Count -lt 1) {
     }
     exit 1
 }
+if (-not (Get-Command -Name Test-LwPreSplitBootInjected -ErrorAction SilentlyContinue) -or
+    -not (Test-LwPreSplitBootInjected -SetDir $preSplitSetDir)) {
+    Emit-StageDrive @{
+        event   = 'error'
+        disk    = -1
+        message = "Image Ready package at $preSplitSetDir missing sources\boot.wim.lw-injected after boot.wim export. USB Rebuild would re-run DISM; refusing incomplete stage."
+    }
+    exit 1
+}
 
 $doneWhere = if ($ms -eq 'share') {
     'HQ share PreSplit (Image Ready package)'

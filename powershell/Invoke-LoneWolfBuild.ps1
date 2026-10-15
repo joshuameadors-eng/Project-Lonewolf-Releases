@@ -3091,10 +3091,19 @@ $workerDiskBlock = {
         if (-not $OverlayOnly -and $espRoot) {
             JPhase 'winpe-inject'
             $espBootWim  = Join-Path $espRoot 'sources\boot.wim'
-            # Drive HTTP Image Ready package already carries an injected boot.wim from Stage ISO.
+            # Drive HTTP: skip DISM only when the package carries a valid inject sentinel
+            # (Keyes / Stage ISO Image Ready). Soft Image Ready without sentinel still injects.
+            $_driveHttpAlreadyInjected = $false
             if ($driveHttpMediaOnVolume -and (Test-Path -LiteralPath $espBootWim)) {
+                $_httpSent = Join-Path (Join-Path $espRoot 'sources') 'boot.wim.lw-injected'
+                if ((Test-Path -LiteralPath $_httpSent) -and
+                    (Get-Item -LiteralPath $_httpSent).LastWriteTime -ge (Get-Item -LiteralPath $espBootWim).LastWriteTime) {
+                    $_driveHttpAlreadyInjected = $true
+                }
+            }
+            if ($_driveHttpAlreadyInjected) {
                 JProgress 'winpe-inject' 100
-                J @{ event='log'; disk=$DiskNumber; message='startnet-inject: Drive HTTP package boot.wim already injected (skipping per-disk DISM / WinPE-OCs)' }
+                J @{ event='log'; disk=$DiskNumber; message='startnet-inject: Drive HTTP package boot.wim already injected (sentinel OK; skipping per-disk DISM / WinPE-OCs)' }
             } else {
             # Prefer StartnetForInjection (ContentRoot\Deploy\WinPE-Startnet.cmd) so ISO /
             # direct-overlay builds work without a local OverlayCache stage. Fall back to
@@ -3873,7 +3882,25 @@ try {
             exit 1
         }
         $winPeUiSrcForInject = Resolve-LwWinPeUiPublishDir -ContentRootPath $ContentRoot -Arch $wfUpper
+        $winPeUiExeForSentinel = Join-Path $winPeUiSrcForInject 'LoneWolf.WinPeUi.exe'
         Invoke-StartnetInjection -BootWimPath $bootWimPath -StartnetCmdPath $startnetSrc -WpeOcPath $wpeOcStaging -Arm64UsbDriverDir $arm64UsbDriverDir -WinPeUiSrcDir $winPeUiSrcForInject
+        # Image Ready packages must carry boot.wim.lw-injected so USB Rebuild can skip
+        # per-disk DISM. Invoke-StartnetInjection does not write the sentinel itself.
+        $espSentinel = Join-Path $espCache 'sources\boot.wim.lw-injected'
+        $injectedHash = if (Get-Command -Name Get-LwBootWimInjectSentinel -ErrorAction SilentlyContinue) {
+            Get-LwBootWimInjectSentinel -StartnetPath $startnetSrc -DriverDir $arm64UsbDriverDir -WinPeUiExePath $winPeUiExeForSentinel
+        } else {
+            (Get-FileHash -LiteralPath $startnetSrc -Algorithm SHA256 -ErrorAction SilentlyContinue).Hash
+        }
+        if ([string]::IsNullOrWhiteSpace($injectedHash)) {
+            Emit @{
+                event   = 'error'
+                disk    = -1
+                message = 'drive-staging: FATAL - could not compute boot.wim inject sentinel hash after DISM inject.'
+            }
+            exit 1
+        }
+        Set-Content -LiteralPath $espSentinel -Value $injectedHash -Encoding ascii -Force
         $destSources = ''
         if (-not [string]::IsNullOrWhiteSpace($ExportStagedBootWimSetDir)) {
             $destSources = Join-Path $ExportStagedBootWimSetDir 'sources'
@@ -3884,17 +3911,24 @@ try {
         }
         New-Item -ItemType Directory -Force -Path $destSources | Out-Null
         Copy-Item -LiteralPath $bootWimPath -Destination (Join-Path $destSources 'boot.wim') -Force
-        $espSentinel = Join-Path $espCache 'sources\boot.wim.lw-injected'
-        if (Test-Path -LiteralPath $espSentinel) {
-            Copy-Item -LiteralPath $espSentinel -Destination (Join-Path $destSources 'boot.wim.lw-injected') -Force
-        }
+        Copy-Item -LiteralPath $espSentinel -Destination (Join-Path $destSources 'boot.wim.lw-injected') -Force
         if (-not $useFolderSource) {
             try { Dismount-DiskImage -ImagePath $isoItem.FullName -ErrorAction SilentlyContinue | Out-Null } catch { }
             Remove-LwMountedIso -Path $isoItem.FullName
         }
+        if ((Get-Command -Name Test-LwPreSplitBootInjected -ErrorAction SilentlyContinue) -and
+            -not [string]::IsNullOrWhiteSpace($ExportStagedBootWimSetDir) -and
+            -not (Test-LwPreSplitBootInjected -SetDir $ExportStagedBootWimSetDir)) {
+            Emit @{
+                event   = 'error'
+                disk    = -1
+                message = ("drive-staging: FATAL - Image Ready set at '{0}' missing valid sources\boot.wim.lw-injected after export." -f $ExportStagedBootWimSetDir)
+            }
+            exit 1
+        }
         Invoke-LwTempOrphanSweep -Reason 'boot-export' -IncludeCache
-        EmitLog -Disk 0 -Msg "drive-staging: boot.wim exported to $destSources"
-        Emit @{ event = 'done'; disk = 0; success = $true; message = 'boot.wim export complete' }
+        EmitLog -Disk 0 -Msg ("drive-staging: injected boot.wim + sentinel exported to {0}" -f $destSources)
+        Emit @{ event = 'done'; disk = 0; success = $true; message = 'boot.wim export complete (injected + sentinel)' }
         exit 0
     }
 
@@ -4248,19 +4282,50 @@ try {
         $overlayCache = ''
     } elseif ($DriveHttpDirect) {
         # HTTP direct: media + boot files land on the stick; never Build-Cache / EspCache.
+        # Per-disk inject is skipped only when the downloaded package carries a valid sentinel.
         EmitLog -Disk 0 -Msg 'drive-http: skipping local ESP/overlay cache - package downloads onto USB (no LWCache staging)'
         $CacheRoot = ''
         $userProvidedCache = $false
         $espCache = ''
         $overlayCache = ''
-    } elseif (-not [string]::IsNullOrEmpty($isoDriveLetter)) {
-        # Architecture B / PreferIso: no ESP cache - workers copy boot files from the mounted
-        # ISO and inject WinPE per disk. Overlay maps ContentRoot to USB (no temp stage).
-        EmitLog -Disk 0 -Msg 'ISO mode: skipping ESP/overlay cache - boot files + overlay copy directly to USB (no LWCache staging)'
+    } elseif (-not [string]::IsNullOrEmpty($isoDriveLetter) -and
+              -not [string]::IsNullOrWhiteSpace($bootInjectSourcesDirForWorker)) {
+        # Image Ready / ISO folder already has injected boot.wim + sentinel — copy only.
+        EmitLog -Disk 0 -Msg 'ISO/media package: pre-injected boot.wim ready - skipping EspCache and per-disk DISM'
         $CacheRoot = ''
         $userProvidedCache = $false
         $espCache = ''
         $overlayCache = ''
+    } elseif (-not [string]::IsNullOrEmpty($isoDriveLetter)) {
+        # Media package or ISO folder without inject sentinel: inject ONCE into EspCache,
+        # then workers copy the template (multi-stick does not redo DISM per disk).
+        EmitLog -Disk 0 -Msg 'ISO/media package: no inject sentinel - building EspCache and injecting boot.wim once for all sticks'
+        if (-not $userProvidedCache -or [string]::IsNullOrWhiteSpace($CacheRoot)) {
+            $CacheRoot = Join-Path $env:TEMP ('LWCache_' + [guid]::NewGuid().ToString('N').Substring(0, 8))
+            $userProvidedCache = $false
+        }
+        $espCache     = Join-Path $CacheRoot 'esp'
+        $overlayCache = Join-Path $CacheRoot 'overlay'
+        Build-IsoCache -IsoDrive "$isoDriveLetter\"
+        $startnetSrc  = $startnetForInjection
+        $bootWimPath  = Join-Path $espCache 'sources\boot.wim'
+        $wpeOcStaging = Resolve-WpeOcArchRoot -BaseRoot $WpeOcSource -Arch $wfUpper
+        EmitLog -Disk 0 -Msg "startnet inject: resolved WinPE-OCs source for $wfUpper -> '$wpeOcStaging'"
+        $winPeUiSrcForInject = Resolve-LwWinPeUiPublishDir -ContentRootPath $ContentRoot -Arch $wfUpper
+        $winPeUiExeForSentinel = Join-Path $winPeUiSrcForInject 'LoneWolf.WinPeUi.exe'
+        Invoke-StartnetInjection -BootWimPath $bootWimPath -StartnetCmdPath $startnetSrc -WpeOcPath $wpeOcStaging -Arm64UsbDriverDir $arm64UsbDriverDir -WinPeUiSrcDir $winPeUiSrcForInject
+        $espSentinel = Join-Path $espCache 'sources\boot.wim.lw-injected'
+        $injectedHash = if (Get-Command -Name Get-LwBootWimInjectSentinel -ErrorAction SilentlyContinue) {
+            Get-LwBootWimInjectSentinel -StartnetPath $startnetSrc -DriverDir $arm64UsbDriverDir -WinPeUiExePath $winPeUiExeForSentinel
+        } else {
+            (Get-FileHash -LiteralPath $startnetSrc -Algorithm SHA256 -ErrorAction SilentlyContinue).Hash
+        }
+        if ($injectedHash) {
+            Set-Content -LiteralPath $espSentinel -Value $injectedHash -Encoding ascii -Force -ErrorAction SilentlyContinue
+        }
+        $script:LwBootInjectSourcesDir = Join-Path $espCache 'sources'
+        $bootInjectSourcesDirForWorker = $script:LwBootInjectSourcesDir
+        EmitLog -Disk 0 -Msg ("ISO/media package: EspCache inject complete at '{0}' - workers copy template and skip per-disk DISM" -f $bootInjectSourcesDirForWorker)
     } else {
         # Non-ISO staged-WIM / MEDIA-CREATOR: EspCache holds the injected boot.wim template
         # so each USB gets a fast copy instead of per-disk DISM inject. Allocate CacheRoot

@@ -328,6 +328,8 @@ if not exist "%FB_LOGDIR%" mkdir "%FB_LOGDIR%" >nul 2>&1
 if not exist "%FB_PROGRAMDATA_DIR%" mkdir "%FB_PROGRAMDATA_DIR%" >nul 2>&1
 :: Hidden+System on ProgramData\FirstBase flags AV (not a normal Windows folder).
 attrib -H -S "%FB_PROGRAMDATA_DIR%" >nul 2>&1
+:: Hide the specialize console. SetupComplete still runs to completion for RunSynchronous.
+call :HIDE_SPECIALIZE_CONSOLE
 :: 2213x OOBE overlay marker MUST NOT be written on the post-sysprep specialize
 :: pass (Bug U fence 1 -> :DONE). Writing it before the fence left the file
 :: populated even when all arming was skipped, enabling Show-UpdateProgress
@@ -955,7 +957,7 @@ if "%FB_SELFTEST_MODE%"=="1" (
     call :LOG "SELF-TEST: skipped schtasks /Create %FB_SPLASH_WATCHER_TASK% (would invoke /TR=powershell -File %FB_SPLASH_WATCHER_PS%)"
 ) else (
     call :LOG "[ARM] CMD: schtasks /Create /TN %FB_SPLASH_WATCHER_TASK% /SC ONSTART /DELAY 0000:05 /RU SYSTEM /RL HIGHEST /F /TR powershell -File %FB_SPLASH_WATCHER_PS%"
-    schtasks /Create /TN "%FB_SPLASH_WATCHER_TASK%" /SC ONSTART /DELAY 0000:05 /RU SYSTEM /RL HIGHEST /F /TR "%FB_PS% -NoProfile -NonInteractive -ExecutionPolicy Bypass -WindowStyle Hidden -File \"%FB_SPLASH_WATCHER_PS%\"" >> "%FB_LOG%" 2>&1 <nul
+    schtasks /Create /TN "%FB_SPLASH_WATCHER_TASK%" /SC ONSTART /DELAY 0000:00 /RU SYSTEM /RL HIGHEST /F /TR "%FB_PS% -NoProfile -NonInteractive -ExecutionPolicy Bypass -WindowStyle Hidden -File \"%FB_SPLASH_WATCHER_PS%\"" >> "%FB_LOG%" 2>&1 <nul
     set "FB_ARM_EC=!ERRORLEVEL!"
     if !FB_ARM_EC! neq 0 (
         call :LOG "WARN: [ARM] Failed to create %FB_SPLASH_WATCHER_TASK% (errorlevel=!FB_ARM_EC!) - falling back to backup splash layers only"
@@ -985,6 +987,9 @@ if "%FB_SELFTEST_MODE%"=="1" (
     )
 )
 :SKIP_SPLASH_WATCHER_BOOT2
+
+:: Audit shell: splash (then explorer) before the desktop paints. Reverted pre-sysprep.
+call :ARM_AUDIT_SPLASH_COVER
 
 :SKIP_SPLASH
 
@@ -2171,6 +2176,38 @@ reg add "%WL_KEY%" /v "ForceAutoLogon"     /t REG_SZ    /d "1"             /f >>
 :: scrub restores 1 before the customer image is sealed.
 reg add "HKLM\SYSTEM\CurrentControlSet\Control\Lsa" /v "LimitBlankPasswordUse" /t REG_DWORD /d 0 /f >> "%FB_LOG%" 2>&1 <nul
 echo [%DATE% %TIME%]   AutoAdminLogon=1, DefaultUserName=!FB_AUDIT_USER!, DefaultDomainName=%COMPUTERNAME%, blank DefaultPassword, AutoLogonCount=5, ForceAutoLogon=1 >> "%FB_LOG%"
+exit /b 0
+
+:HIDE_SPECIALIZE_CONSOLE
+:: SW_HIDE the current console so specialize prep is not a visible cmd window.
+:: FB_PS is not set yet at the early call site; use the system powershell path.
+"%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -NonInteractive -ExecutionPolicy Bypass -WindowStyle Hidden -Command "Add-Type -Name FbHideCon -Namespace FbSc -MemberDefinition '[DllImport(\"kernel32.dll\")] public static extern System.IntPtr GetConsoleWindow(); [DllImport(\"user32.dll\")] public static extern bool ShowWindow(System.IntPtr h,int n);'; $h=[FbSc.FbHideCon]::GetConsoleWindow(); if ($h -ne [IntPtr]::Zero) { [void][FbSc.FbHideCon]::ShowWindow($h,0) }" >nul 2>&1 <nul
+exit /b 0
+
+:ARM_AUDIT_SPLASH_COVER
+set "FB_SPLASH_SHELL=%FB_ROOT%\FirstBaseSplashShell.cmd"
+set "FB_HANDOFF_PS=%FB_ROOT%\FirstBaseHandoffSplash.ps1"
+set "FB_SHELL_MARKER=%FB_PROGRAMDATA_DIR%\.audit-splash-shell-armed"
+if not exist "%FB_SPLASH_SHELL%" (
+    call :LOG "WARN: FirstBaseSplashShell.cmd missing; Audit shell stays explorer.exe"
+    exit /b 0
+)
+if "%FB_SELFTEST_MODE%"=="1" (
+    call :LOG "SELF-TEST: skipped Audit splash shell + handoff Run"
+    exit /b 0
+)
+reg add "HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon" /v "Shell" /t REG_SZ /d "cmd.exe /c \"%FB_SPLASH_SHELL%\"" /f >> "%FB_LOG%" 2>&1 <nul
+if errorlevel 1 (
+    call :LOG "WARN: failed to set Winlogon Shell to FirstBaseSplashShell.cmd"
+) else (
+    call :LOG "OK: Winlogon Shell=FirstBaseSplashShell.cmd (splash then explorer; reverted at seal)"
+    echo audit-splash-shell>"%FB_SHELL_MARKER%"
+)
+if exist "%FB_HANDOFF_PS%" (
+    reg add "%FB_RUN_KEY%" /v "FirstBaseAuditHandoff" /t REG_SZ /d "\"%FB_PS%\" -NoProfile -NonInteractive -ExecutionPolicy Bypass -WindowStyle Hidden -File \"%FB_HANDOFF_PS%\" -Phase preparing-handoff" /f >> "%FB_LOG%" 2>&1 <nul
+    call :LOG "OK: HKLM Run FirstBaseAuditHandoff armed (exits if WU splash is already up)"
+)
+> "%FB_ROOT%\splash-suppression.cfg" echo FIRSTBASE_SPLASH_SHELL=1
 exit /b 0
 
 :LOG

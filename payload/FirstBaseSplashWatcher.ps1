@@ -116,7 +116,7 @@ $TimeoutSeconds = 20 * 60
 # before firing /Run. Driver install sometimes restarts explorer.exe
 # transiently within the first few seconds of logon; the stabilization
 # window lets the FINAL Explorer settle before we hand it the splash.
-$StabilizationSeconds = 3
+$StabilizationSeconds = 0
 
 function Write-FbWatcherLog {
     param([string]$Level, [string]$Message)

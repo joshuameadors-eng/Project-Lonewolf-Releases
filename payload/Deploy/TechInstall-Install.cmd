@@ -292,6 +292,18 @@ if not "!DISMEC!"=="0" (
 )
 echo [%DATE% %TIME%] DISM apply succeeded. >> "%LOG%"
 
+:: -- STEP 7b: Offline provisioned AppX strip (Start Menu bloat) ------------
+set "PSBLOAT=!FB_PAYLOAD!\Scripts\Remove-FbProvisionedBloat.ps1"
+if not exist "!PSBLOAT!" if exist "%SRC%\Scripts\Remove-FbProvisionedBloat.ps1" set "PSBLOAT=%SRC%\Scripts\Remove-FbProvisionedBloat.ps1"
+if exist "!PSBLOAT!" if defined FB_PS (
+    call :FB_UI_PROGRESS 5 "Removing inbox apps + Start layout"
+    echo [%DATE% %TIME%] Offline AppX strip + Start layout: !PSBLOAT! >> "%LOG%"
+    "%FB_PS%" -NoLogo -NoProfile -ExecutionPolicy Bypass -File "!PSBLOAT!" -ImagePath "W:\" -LogPath "%LOG%"
+    echo [%DATE% %TIME%] Offline AppX strip exit=!ERRORLEVEL! >> "%LOG%"
+) else (
+    echo [%DATE% %TIME%] WARNING: Remove-FbProvisionedBloat.ps1 or PowerShell missing - skipping inbox AppX strip. >> "%LOG%"
+)
+
 :: -- STEP 8: Offline unattend only (no SetupScripts / no post-install tools) -
 set "FB_UNATTEND="
 if exist "!FB_PAYLOAD!\Autounattend.xml" set "FB_UNATTEND=!FB_PAYLOAD!\Autounattend.xml"

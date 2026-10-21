@@ -166,6 +166,7 @@ function Get-LoneWolfInfo {
         lwShareScriptVersion = $null
         lwImageBuildDate = $null
         lwWimBuildDate = $null
+        lwImageVersion = $null
         lwBuiltAt = $null
         lwArch = $null
         lwArchLabel = $null
@@ -298,6 +299,11 @@ function Get-LoneWolfInfo {
                             $lwInfo.lwWindowsEdition = [string]$lwJson.edition
                         }
                     } catch {}
+                    try {
+                        if ($lwJson.PSObject.Properties['imageVersion'] -and $lwJson.imageVersion) {
+                            $lwInfo.lwImageVersion = [string]$lwJson.imageVersion
+                        }
+                    } catch {}
                     # Destage/DEV visuals follow the npm start stamp only (destage / channel=destage / legacy
                     # devBuild). Do not infer DEV from version-ahead: packaged Launcher Dev destage must look
                     # like a real packaged run.
@@ -358,6 +364,7 @@ try {
                 lwShareScriptVersion = $lwInfo.lwShareScriptVersion
                 lwImageBuildDate = $lwInfo.lwImageBuildDate
                 lwWimBuildDate = $lwInfo.lwWimBuildDate
+                lwImageVersion = $lwInfo.lwImageVersion
                 lwBuiltAt = $lwInfo.lwBuiltAt
                 lwArch         = $lwInfo.lwArch
                 lwArchLabel    = $lwInfo.lwArchLabel

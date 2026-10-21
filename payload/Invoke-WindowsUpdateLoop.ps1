@@ -7124,6 +7124,7 @@ function Save-UiState {
         message   = $rendered
         updatedAt = (Get-Date).ToString('o')
         lastBoot  = (Get-FbUiBootStamp)
+        bootTick  = (Get-FbBootTick)
         updates   = $items
     }
     # 2026.05.18.2213l Bug GG: route through Write-FbWuStatusSafe so the
@@ -7457,8 +7458,7 @@ function Set-UiUpdateStatus {
     if ([string]::IsNullOrWhiteSpace($Title))    { $Title = $UpdateId }
 
     try {
-        $osUi = Get-FbOsVersionIdentity
-        if ($osUi.Already25H2 -and (Test-FbIsRedundant25H2FeatureUpdate -Title $Title)) {
+        if (Test-FbIsRedundant25H2FeatureUpdate -Title $Title) {
             return
         }
     } catch {}
@@ -7540,8 +7540,51 @@ function Get-FbUiBootStamp {
     return [string]$script:FbUiBootStamp
 }
 
+function Get-FbTickCount64 {
+    # Windows PowerShell 5.1 has no [Environment]::TickCount64. kernel32
+    # GetTickCount64 is the same counter: it restarts on a real reboot and
+    # does not move when the clock is corrected.
+    try {
+        if (-not ('FbTickCount64' -as [type])) {
+            Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+public static class FbTickCount64 {
+    [DllImport("kernel32.dll")]
+    public static extern ulong GetTickCount64();
+}
+'@ -ErrorAction Stop
+        }
+        return [int64][FbTickCount64]::GetTickCount64()
+    } catch {
+        return $null
+    }
+}
+
+function Get-FbBootTick {
+    return (Get-FbTickCount64)
+}
+
+function Test-FbSameBootTick {
+    param($StatusObject)
+    $stampTick = $null
+    try {
+        if ($StatusObject -and ($StatusObject.PSObject.Properties.Name -contains 'bootTick') -and $null -ne $StatusObject.bootTick -and [string]$StatusObject.bootTick -ne '') {
+            $stampTick = [int64]$StatusObject.bootTick
+        }
+    } catch { $stampTick = $null }
+    if ($null -eq $stampTick) { return $null }
+    $curTick = Get-FbBootTick
+    if ($null -eq $curTick) { return $null }
+    # Tick only increases during a boot. A large step backward is a reboot.
+    if (($curTick + 15000) -lt $stampTick) { return $false }
+    return $true
+}
+
 function Test-FbUiStatusFromThisBoot {
     param($StatusObject)
+    $sameTick = Test-FbSameBootTick -StatusObject $StatusObject
+    if ($null -ne $sameTick) { return [bool]$sameTick }
     $current = Get-FbUiBootStamp
     # Same-boot relaunch must keep the live rows. Only a real boot change drops them.
     if ([string]::IsNullOrWhiteSpace($current)) { return $true }
@@ -9054,9 +9097,10 @@ function Hide-FbOfferedUpdate {
 function Invoke-FbHideRedundant25H2FeatureUpdates {
     <#
     .SYNOPSIS
-        Drop already-installed 25H2 feature/enablement offers from a scan
-        list, hide them via WUA, and add them to GivenUp so STAGE 1 does
-        not treat them as residual. Quality/security updates are kept.
+        Drop same-version and N+1 feature/enablement offers (25H2 on 25H2,
+        26H2 on 25H2, etc.) from a scan list for this imaging pass only.
+        Hide via WUA and add to GivenUp. Quality/security updates are kept.
+        TargetReleaseVersion is cleared at seal so upgrades can install after.
     #>
     param(
         [Parameter(Mandatory)] [AllowNull()] [AllowEmptyCollection()] $Updates,
@@ -9064,9 +9108,8 @@ function Invoke-FbHideRedundant25H2FeatureUpdates {
     )
     $osId = $null
     try { $osId = Get-FbOsVersionIdentity } catch { $osId = $null }
-    if (-not $osId -or -not $osId.Already25H2) {
-        return @($Updates)
-    }
+    $osRelease = $null
+    try { $osRelease = Get-FbOsReleaseIdentity } catch { $osRelease = $null }
     $kept = @()
     foreach ($u in @($Updates)) {
         if (-not $u) { continue }
@@ -9076,13 +9119,15 @@ function Invoke-FbHideRedundant25H2FeatureUpdates {
         try { $kb = [string]$u.KB } catch {}
         $kbs = @()
         try { $kbs = @($u.KBArticleIDs) } catch {}
-        if (-not (Test-FbIsRedundant25H2FeatureUpdate -Title $title -KB $kb -KBArticleIDs $kbs)) {
+        if (-not (Test-FbIsRedundant25H2FeatureUpdate -Title $title -KB $kb -KBArticleIDs $kbs -Os $osRelease)) {
             $kept += $u
             continue
         }
         $uid = ''
         try { $uid = [string]$u.UpdateId } catch {}
-        Write-FbLog ("Scan-list hide 25H2 feature/enablement: Title='{0}' KB={1} Id={2} (OS build={3} DisplayVersion={4})" -f $title, $kb, $uid, $osId.CurrentBuild, $osId.DisplayVersion) 'WARN'
+        $dv = if ($osId) { $osId.DisplayVersion } else { '?' }
+        $bld = if ($osId) { $osId.CurrentBuild } else { 0 }
+        Write-FbLog ("Scan-list hide feature upgrade: Title='{0}' KB={1} Id={2} (OS build={3} DisplayVersion={4})" -f $title, $kb, $uid, $bld, $dv) 'WARN'
         if ($GivenUpSet -and -not [string]::IsNullOrWhiteSpace($uid)) {
             [void]$GivenUpSet.Add($uid)
             try {
@@ -10899,6 +10944,45 @@ function Invoke-FbPreSysprepScrub {
         } catch {
             & $writeScrubLog 'WARN' ("STEP 3b probe hive={0} value={1} threw: {2}" -f $winlogonKey, $valueName, $_.Exception.Message)
         }
+    }
+
+    # Audit splash shell must not survive into customer OOBE.
+    try {
+        $shellNow = ''
+        try { $shellNow = [string](Get-ItemProperty -LiteralPath $winlogonKey -Name 'Shell' -ErrorAction SilentlyContinue).Shell } catch { $shellNow = '' }
+        if ($shellNow -match '(?i)FirstBaseSplashShell') {
+            Set-ItemProperty -LiteralPath $winlogonKey -Name 'Shell' -Value 'explorer.exe' -Type String -Force -ErrorAction Stop
+            & $writeScrubLog 'INFO' 'STEP 3b: restored Winlogon Shell to explorer.exe (Audit splash shell).'
+        }
+    } catch {
+        & $writeScrubLog 'WARN' ("STEP 3b: Winlogon Shell restore threw: {0}" -f $_.Exception.Message)
+    }
+    try {
+        $runKey = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run'
+        if (Get-ItemProperty -LiteralPath $runKey -Name 'FirstBaseAuditHandoff' -ErrorAction SilentlyContinue) {
+            Remove-ItemProperty -LiteralPath $runKey -Name 'FirstBaseAuditHandoff' -Force -ErrorAction SilentlyContinue
+            & $writeScrubLog 'INFO' 'STEP 3b: removed HKLM Run FirstBaseAuditHandoff.'
+        }
+    } catch {}
+    try {
+        $startMarker = 'C:\ProgramData\FirstBase\.start-menu-policy-armed'
+        if (Test-Path -LiteralPath $startMarker) {
+            Get-ChildItem -Path 'Registry::HKEY_USERS' -ErrorAction SilentlyContinue | ForEach-Object {
+                if ($_.PSChildName -match '_Classes$') { return }
+                $adv = Join-Path $_.PSPath 'Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced'
+                if (Test-Path -LiteralPath $adv) {
+                    Remove-ItemProperty -LiteralPath $adv -Name 'StartShownOnEnable' -ErrorAction SilentlyContinue
+                }
+            }
+            Remove-Item -LiteralPath $startMarker -Force -ErrorAction SilentlyContinue
+            & $writeScrubLog 'INFO' 'STEP 3b: cleared StartShownOnEnable on loaded user hives.'
+        }
+        $shellMarker = 'C:\ProgramData\FirstBase\.audit-splash-shell-armed'
+        if (Test-Path -LiteralPath $shellMarker) {
+            Remove-Item -LiteralPath $shellMarker -Force -ErrorAction SilentlyContinue
+        }
+    } catch {
+        & $writeScrubLog 'WARN' ("STEP 3b: Start policy revert threw: {0}" -f $_.Exception.Message)
     }
 
     # Re-disable the temporary audit admin. Rename Project Lonewolf back to
@@ -13576,16 +13660,33 @@ function Invoke-FbInlineMdmScrub {
         & $writeInline $(if ($fwOk) { 'INFO' } else { 'ERROR' }) ('FirstBase-Block-Autopilot firewall rule -> ' + $items['FirewallRule'])
     } catch { $items['FirewallRule'] = 'FAIL'; & $writeInline 'ERROR' ('Firewall EXC: ' + $_.Exception.Message) }
 
-    # 4) Defender exclusions (best-effort; not Autopilot-blocking)
+    # 4) Defender exclusions (HARD: live-verify the three FirstBase paths are gone)
+    $exclWant = @(
+        'C:\Windows\Setup\FirstBase',
+        'C:\ProgramData\FirstBase',
+        'C:\ProgramData\Microsoft\Windows\Start Menu\Programs\Startup'
+    )
     try {
-        foreach ($ex in @('C:\Windows\Setup\FirstBase', 'C:\ProgramData\FirstBase', 'C:\ProgramData\Microsoft\Windows\Start Menu\Programs\Startup')) {
+        foreach ($ex in $exclWant) {
             Remove-MpPreference -ExclusionPath $ex -ErrorAction SilentlyContinue
         }
-        $items['DefenderExclusions'] = 'DONE'
-        & $writeInline 'INFO' 'Defender exclusions removal attempted.'
-    } catch { $items['DefenderExclusions'] = 'WARN'; & $writeInline 'WARN' ('Defender EXC: ' + $_.Exception.Message) }
+        $left = @()
+        $pref = Get-MpPreference -ErrorAction Stop
+        foreach ($want in $exclWant) {
+            foreach ($have in @($pref.ExclusionPath)) {
+                if ([string]$have -and ([string]$have).TrimEnd('\') -eq $want) { $left += $want }
+            }
+        }
+        if ($left.Count -eq 0) {
+            $items['DefenderExclusions'] = 'PASS'
+            & $writeInline 'INFO' 'Defender exclusions verified removed.'
+        } else {
+            $items['DefenderExclusions'] = 'FAIL'
+            & $writeInline 'ERROR' ('Defender exclusions still present: ' + ($left -join ', '))
+        }
+    } catch { $items['DefenderExclusions'] = 'FAIL'; & $writeInline 'ERROR' ('Defender EXC: ' + $_.Exception.Message) }
 
-    # 5) WU AU suppression policy (best-effort; written pre-operator to protect the operator window)
+    # 5) WU AU suppression policy (HARD: NoAutoUpdate and NoAutoReboot must be absent)
     try {
         $au = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate\AU'
         if (Test-Path -LiteralPath $au) {
@@ -13598,9 +13699,21 @@ function Invoke-FbInlineMdmScrub {
             Remove-ItemProperty -LiteralPath $wuPol -Name 'TargetReleaseVersionInfo' -Force -ErrorAction SilentlyContinue
             Remove-ItemProperty -LiteralPath $wuPol -Name 'ProductVersion' -Force -ErrorAction SilentlyContinue
         }
-        $items['WuAuPolicy'] = 'DONE'
-        & $writeInline 'INFO' 'WU AU suppression policy removal attempted.'
-    } catch { $items['WuAuPolicy'] = 'WARN'; & $writeInline 'WARN' ('WU AU EXC: ' + $_.Exception.Message) }
+        $auLeft = @()
+        if (Test-Path -LiteralPath $au) {
+            $auProp = Get-ItemProperty -LiteralPath $au -ErrorAction SilentlyContinue
+            foreach ($n in @('NoAutoUpdate', 'NoAutoRebootWithLoggedOnUsers')) {
+                if ($auProp -and ($auProp.PSObject.Properties.Name -contains $n)) { $auLeft += $n }
+            }
+        }
+        if ($auLeft.Count -eq 0) {
+            $items['WuAuPolicy'] = 'PASS'
+            & $writeInline 'INFO' 'WU AU suppression policy verified removed.'
+        } else {
+            $items['WuAuPolicy'] = 'FAIL'
+            & $writeInline 'ERROR' ('WU AU policy still present: ' + ($auLeft -join ', '))
+        }
+    } catch { $items['WuAuPolicy'] = 'FAIL'; & $writeInline 'ERROR' ('WU AU EXC: ' + $_.Exception.Message) }
 
     # 6) Recovery BCD restore (best-effort)
     try {
@@ -13610,7 +13723,7 @@ function Invoke-FbInlineMdmScrub {
         & $writeInline 'INFO' 'BCD recovery settings restored.'
     } catch { $items['RecoveryBcd'] = 'WARN'; & $writeInline 'WARN' ('bcdedit EXC: ' + $_.Exception.Message) }
 
-    $hard = @($items['MdmKeys'], $items['DmEnrollmentSvc'], $items['FirewallRule'])
+    $hard = @($items['MdmKeys'], $items['DmEnrollmentSvc'], $items['FirewallRule'], $items['DefenderExclusions'], $items['WuAuPolicy'])
     $overall = $(if (@($hard | Where-Object { $_ -ne 'PASS' }).Count -eq 0) { 'PASS' } else { 'FAIL' })
     try {
         ([ordered]@{ overall = $overall; at = (Get-Date -Format 'o'); runAs = $who; mode = 'inline-administrator-session'; items = $items } | ConvertTo-Json -Depth 4) |
@@ -13966,16 +14079,33 @@ try {
     Write-Scrub $(if ($ok) { 'INFO' } else { 'ERROR' }) ('2296: FirstBase-Block-Autopilot firewall rule -> ' + $items['FirewallRule'])
 } catch { $items['FirewallRule'] = 'FAIL'; Write-Scrub 'ERROR' ('2296: Firewall EXC: ' + $_.Exception.Message) }
 
-# 4) Defender exclusions (best-effort; not Autopilot-blocking)
+# 4) Defender exclusions (HARD: live-verify the three FirstBase paths are gone)
+$exclWant2296 = @(
+    'C:\Windows\Setup\FirstBase',
+    'C:\ProgramData\FirstBase',
+    'C:\ProgramData\Microsoft\Windows\Start Menu\Programs\Startup'
+)
 try {
-    foreach ($ex in @('C:\Windows\Setup\FirstBase', 'C:\ProgramData\FirstBase', 'C:\ProgramData\Microsoft\Windows\Start Menu\Programs\Startup')) {
+    foreach ($ex in $exclWant2296) {
         Remove-MpPreference -ExclusionPath $ex -ErrorAction SilentlyContinue
     }
-    $items['DefenderExclusions'] = 'DONE'
-    Write-Scrub 'INFO' '2296: Defender exclusions removal attempted.'
-} catch { $items['DefenderExclusions'] = 'WARN'; Write-Scrub 'WARN' ('2296: Defender EXC: ' + $_.Exception.Message) }
+    $left2296 = @()
+    $pref2296 = Get-MpPreference -ErrorAction Stop
+    foreach ($want in $exclWant2296) {
+        foreach ($have in @($pref2296.ExclusionPath)) {
+            if ([string]$have -and ([string]$have).TrimEnd('\') -eq $want) { $left2296 += $want }
+        }
+    }
+    if ($left2296.Count -eq 0) {
+        $items['DefenderExclusions'] = 'PASS'
+        Write-Scrub 'INFO' '2296: Defender exclusions verified removed.'
+    } else {
+        $items['DefenderExclusions'] = 'FAIL'
+        Write-Scrub 'ERROR' ('2296: Defender exclusions still present: ' + ($left2296 -join ', '))
+    }
+} catch { $items['DefenderExclusions'] = 'FAIL'; Write-Scrub 'ERROR' ('2296: Defender EXC: ' + $_.Exception.Message) }
 
-# 5) WU AU suppression policy (best-effort)
+# 5) WU AU suppression policy (HARD: NoAutoUpdate and NoAutoReboot must be absent)
 try {
     $au = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate\AU'
     if (Test-Path -LiteralPath $au) {
@@ -13988,9 +14118,21 @@ try {
         Remove-ItemProperty -LiteralPath $wuPol -Name 'TargetReleaseVersionInfo' -Force -ErrorAction SilentlyContinue
         Remove-ItemProperty -LiteralPath $wuPol -Name 'ProductVersion' -Force -ErrorAction SilentlyContinue
     }
-    $items['WuAuPolicy'] = 'DONE'
-    Write-Scrub 'INFO' '2296: WU AU suppression policy removal attempted.'
-} catch { $items['WuAuPolicy'] = 'WARN'; Write-Scrub 'WARN' ('2296: WU AU EXC: ' + $_.Exception.Message) }
+    $auLeft2296 = @()
+    if (Test-Path -LiteralPath $au) {
+        $auProp2296 = Get-ItemProperty -LiteralPath $au -ErrorAction SilentlyContinue
+        foreach ($n in @('NoAutoUpdate', 'NoAutoRebootWithLoggedOnUsers')) {
+            if ($auProp2296 -and ($auProp2296.PSObject.Properties.Name -contains $n)) { $auLeft2296 += $n }
+        }
+    }
+    if ($auLeft2296.Count -eq 0) {
+        $items['WuAuPolicy'] = 'PASS'
+        Write-Scrub 'INFO' '2296: WU AU suppression policy verified removed.'
+    } else {
+        $items['WuAuPolicy'] = 'FAIL'
+        Write-Scrub 'ERROR' ('2296: WU AU policy still present: ' + ($auLeft2296 -join ', '))
+    }
+} catch { $items['WuAuPolicy'] = 'FAIL'; Write-Scrub 'ERROR' ('2296: WU AU EXC: ' + $_.Exception.Message) }
 
 # 6) Recovery BCD restore (best-effort)
 try {
@@ -14000,7 +14142,7 @@ try {
     Write-Scrub 'INFO' '2296: BCD recovery settings restored.'
 } catch { $items['RecoveryBcd'] = 'WARN'; Write-Scrub 'WARN' ('2296: bcdedit EXC: ' + $_.Exception.Message) }
 
-$hard = @($items['MdmKeys'], $items['DmEnrollmentSvc'], $items['FirewallRule'])
+$hard = @($items['MdmKeys'], $items['DmEnrollmentSvc'], $items['FirewallRule'], $items['DefenderExclusions'], $items['WuAuPolicy'])
 $overall = if (@($hard | Where-Object { $_ -ne 'PASS' }).Count -eq 0) { 'PASS' } else { 'FAIL' }
 $obj = [ordered]@{ overall = $overall; at = (Get-Date -Format 'o'); runAs = $who; items = $items }
 try { ($obj | ConvertTo-Json -Depth 4) | Set-Content -LiteralPath $resultPath -Encoding ASCII -Force } catch { Write-Scrub 'ERROR' ('2296: result write EXC: ' + $_.Exception.Message) }
@@ -14651,8 +14793,24 @@ function Invoke-FbOobeHandoff {
             $stage1Scan = @(Invoke-FbWuScan -TimeoutSeconds $RescanTimeoutSec)
             $stage1ScanOk = $true
         } catch {
-            Write-FbLog ("OOBE handoff (STAGE 1 gate): Invoke-FbWuScan threw: {0}; treating scan as INCONCLUSIVE. Refusing handoff and rebooting for another pass." -f $_.Exception.Message) 'ERROR'
             $stage1ScanOk = $false
+            Clear-FbVerifiedEmptyScan
+            if (Test-FbWuClockCertFailure -ErrorRecord $_) {
+                $script:FbLastScanCertFailure = $true
+                Write-FbLog ("OOBE handoff (STAGE 1 gate): scan failed 0x800B0101 ({0}). Syncing the clock and scanning once more. Not convergence." -f $_.Exception.Message) 'ERROR'
+                [void](Sync-FbSystemClock)
+                try {
+                    $stage1Scan = @(Invoke-FbWuScan -TimeoutSeconds $RescanTimeoutSec)
+                    $stage1ScanOk = $true
+                    $script:FbLastScanCertFailure = $false
+                } catch {
+                    Clear-FbVerifiedEmptyScan
+                    Write-FbLog ("OOBE handoff (STAGE 1 gate): scan still failed after clock sync: {0}. Hard fail. Not writing Updates-Complete." -f $_.Exception.Message) 'ERROR'
+                    $stage1ScanOk = $false
+                }
+            } else {
+                Write-FbLog ("OOBE handoff (STAGE 1 gate): Invoke-FbWuScan threw: {0}; treating scan as INCONCLUSIVE. Refusing handoff and rebooting for another pass." -f $_.Exception.Message) 'ERROR'
+            }
         }
 
         if ($stage1ScanOk) {
@@ -14921,9 +15079,9 @@ function Invoke-FbOobeHandoff {
                         $fbScanKbs = @(); try { $fbScanKbs = @($fbScanU.KBArticleIDs) } catch {}
                         try {
                             $fbOs25 = Get-FbOsVersionIdentity
-                            if ($fbOs25.Already25H2 -and (Test-FbIsRedundant25H2FeatureUpdate -Title $fbScanTitle -KB $fbScanKb -KBArticleIDs $fbScanKbs)) {
+                            if (Test-FbIsRedundant25H2FeatureUpdate -Title $fbScanTitle -KB $fbScanKb -KBArticleIDs $fbScanKbs) {
                                 if (-not $givenUpIds.Contains($fbScanUid)) {
-                                    Write-FbLog ("OOBE handoff (STAGE 1 gate) Fix B: Skipping 25H2 feature/enablement '{0}' (OS already 25H2 build={1} DisplayVersion={2}). Adding to GivenUp." -f $fbScanTitle, $fbOs25.CurrentBuild, $fbOs25.DisplayVersion) 'WARN'
+                                    Write-FbLog ("OOBE handoff (STAGE 1 gate) Fix B: Skipping feature upgrade '{0}' (OS build={1} DisplayVersion={2}). Adding to GivenUp." -f $fbScanTitle, $fbOs25.CurrentBuild, $fbOs25.DisplayVersion) 'WARN'
                                     $fbScanKey = ''; try { $fbScanKey = [string](Get-FbRetryKey -Update $fbScanU) } catch {}
                                     [void]$givenUpIds.Add($fbScanUid)
                                     if (-not [string]::IsNullOrWhiteSpace($fbScanKey)) { [void]$givenUpIds.Add($fbScanKey) }
@@ -15397,6 +15555,7 @@ function Invoke-FbOobeHandoff {
                 }
             } else {
                 Write-FbLog "OOBE handoff (STAGE 1 gate): zero-or-givenup convergence verified (residual=0). Proceeding with handoff." 'WARN'
+                Write-FbVerifiedEmptyScan -Reason 'stage1-residual-0'
                 $script:FbStage1VerifiedEmpty = $true
                 try { Set-FbDashboardLatchDiag -Stage 'oobe-handoff-gate' -Message 'STAGE 1 gate PASSED: zero-or-givenup convergence verified' } catch {}
             }
@@ -15836,8 +15995,8 @@ function Invoke-FbOobeHandoff {
         # STEP B — INLINE, verified, full-privilege MDM/Autopilot scrub + Defender
         # restore (SYSTEM, in-process). HARD failure must NOT stamp .firstbase-sealed.
         # KEEP IN SYNC / GATE / CLEANUP / SEAL: same restore+scrub as Invoke-FbImSealToOobe
-        # and Tools\seal_command.txt. Already-sealed skips the fail-closed block so a
-        # sysprep retry does not brick Audit. Already-clean scrub is Overall=PASS.
+        # and Tools\seal_command.txt. A prior .firstbase-sealed does not skip HARD
+        # fail. Defender restore and MDM scrub must both pass before sysprep.
         $fbSealedPath = Join-Path $FbProgramDataFirstBase '.firstbase-sealed'
         $fbAlreadySealed = $false
         try { $fbAlreadySealed = [bool](Test-Path -LiteralPath $fbSealedPath) } catch { $fbAlreadySealed = $false }
@@ -15847,13 +16006,9 @@ function Invoke-FbOobeHandoff {
         $fbDefenderRestoreOk = $false
         try { $fbDefenderRestoreOk = [bool]$script:FbDefenderRealtimeLastOk } catch { $fbDefenderRestoreOk = $false }
         if (-not $fbDefenderRestoreOk) {
-            if ($fbAlreadySealed) {
-                Write-FbLog '5038: Defender restore last-ok=false but .firstbase-sealed already present; continuing sysprep retry (do not brick Audit).' 'WARN'
-            } else {
-                Write-FbLog '5038: HARD FAIL Defender restore (Set-MpPreference/live preference). NOT writing .firstbase-sealed / .pipeline-completed. Device stays in Audit. Inspect defender-state.flag and retry Seal from fb-im.' 'ERROR'
-                try { Set-UiPhase -Phase 'HardwareGate' -Message 'Defender restore failed. Device is not sealed. Retry Seal from fb-im.' } catch {}
-                return
-            }
+            Write-FbLog '5038: HARD FAIL Defender restore (Set-MpPreference/live preference). Not continuing sysprep. Device stays in Audit. Inspect defender-state.flag and retry Seal from fb-im.' 'ERROR'
+            try { Set-UiPhase -Phase 'HardwareGate' -Message 'Defender restore failed. Device is not sealed. Retry Seal from fb-im.' } catch {}
+            return
         }
 
         Write-FbLog '5038: running INLINE MDM/Autopilot scrub + hardening restore (SYSTEM, in-process, verified) at operator settings-close.' 'WARN'
@@ -15869,13 +16024,9 @@ function Invoke-FbOobeHandoff {
         } else {
             $fb5038Ov = $(if ($fb5038Scrub) { [string]$fb5038Scrub.Overall } else { 'UNKNOWN' })
             Write-FbLog ('5038: ERROR INLINE MDM scrub overall={0}; one or more PRIVILEGED blocks may PERSIST into the shipped image. Inspect C:\ProgramData\FirstBase\Logs\WU-mdm-scrub.log and .mdm-scrub-result.' -f $fb5038Ov) 'ERROR'
-            if ($fbAlreadySealed) {
-                Write-FbLog '5038: MDM scrub HARD FAIL but .firstbase-sealed already present; continuing sysprep retry (do not brick Audit).' 'WARN'
-            } else {
-                Write-FbLog '5038: HARD FAIL MDM scrub. NOT writing .firstbase-sealed / .pipeline-completed. Device stays in Audit. Retry Seal from fb-im after inspecting WU-mdm-scrub.log.' 'ERROR'
-                try { Set-UiPhase -Phase 'HardwareGate' -Message 'MDM scrub failed. Device is not sealed. Retry Seal from fb-im.' } catch {}
-                return
-            }
+            Write-FbLog '5038: HARD FAIL MDM scrub. Not continuing sysprep. Device stays in Audit. Retry Seal from fb-im after inspecting WU-mdm-scrub.log.' 'ERROR'
+            try { Set-UiPhase -Phase 'HardwareGate' -Message 'MDM scrub failed. Device is not sealed. Retry Seal from fb-im.' } catch {}
+            return
         }
 
         # STEP C — record pipeline sealed + disarm the (now-unused) defaultuser0
@@ -16150,6 +16301,129 @@ function Invoke-FbOobeHandoff {
 #     } catch {}
 #     # Box bugchecks within ~1 second of the first csrss exit.
 # }
+
+$script:FbLastScanCertFailure = $false
+
+function Test-FbWuClockCertFailure {
+    param($ErrorRecord)
+    $parts = New-Object System.Collections.Generic.List[string]
+    $node = $ErrorRecord
+    for ($i = 0; $i -lt 6 -and $node; $i++) {
+        try { [void]$parts.Add([string]$node) } catch {}
+        $ex = $null
+        try {
+            if ($node -is [System.Management.Automation.ErrorRecord]) { $ex = $node.Exception }
+            elseif ($node -is [System.Exception]) { $ex = $node }
+        } catch { $ex = $null }
+        if (-not $ex) { break }
+        try { [void]$parts.Add([string]$ex.Message) } catch {}
+        try { [void]$parts.Add(('0x{0:X8}' -f ([int]$ex.HResult -band 0xFFFFFFFF))) } catch {}
+        try { [void]$parts.Add([string]([int]$ex.HResult)) } catch {}
+        try { $node = $ex.InnerException } catch { break }
+    }
+    $blob = ($parts -join ' ')
+    if ($blob -match '800B0101') { return $true }
+    if ($blob -match '-2146762495') { return $true }
+    return $false
+}
+
+function Get-FbVerifiedEmptyScanMarkerPath {
+    return (Join-Path $FbStateDir '.wu-verified-empty-scan')
+}
+
+function Clear-FbVerifiedEmptyScan {
+    try {
+        $marker = Get-FbVerifiedEmptyScanMarkerPath
+        if (Test-Path -LiteralPath $marker) {
+            Remove-Item -LiteralPath $marker -Force -ErrorAction SilentlyContinue
+        }
+    } catch {}
+}
+
+function Write-FbVerifiedEmptyScan {
+    param([string]$Reason = 'scan')
+    try {
+        if (-not (Test-Path -LiteralPath $FbStateDir)) {
+            New-Item -ItemType Directory -Path $FbStateDir -Force -ErrorAction SilentlyContinue | Out-Null
+        }
+        $line = ('verified-empty {0} {1}' -f (Get-Date).ToString('o'), $Reason)
+        Set-Content -LiteralPath (Get-FbVerifiedEmptyScanMarkerPath) -Value $line -Encoding ASCII -Force
+        Write-FbLog ("Verified empty Windows Update scan recorded ({0})." -f $Reason) 'INFO'
+    } catch {
+        Write-FbLog ("Verified empty scan marker write failed: {0}" -f $_.Exception.Message) 'WARN'
+    }
+}
+
+function Test-FbVerifiedEmptyScan {
+    try { return [bool](Test-Path -LiteralPath (Get-FbVerifiedEmptyScanMarkerPath)) } catch { return $false }
+}
+
+function Reset-FbPipelineClockBaseline {
+    param([string]$Reason)
+    $now = Get-Date
+    $stamp = $now.ToString('o')
+    $script:startTime = $stamp
+    try {
+        $marker = Join-Path $FbRoot 'wu-pipeline-started.utc'
+        Set-Content -LiteralPath $marker -Value $now.ToUniversalTime().ToString('o') -Encoding ASCII -Force
+    } catch {}
+    try {
+        if (Test-Path -LiteralPath $StateFile) {
+            $raw = Get-Content -LiteralPath $StateFile -Raw -ErrorAction Stop
+            $updated = [regex]::Replace($raw, '("StartTime"\s*:\s*")[^"]*"', ('${1}' + $stamp + '"'))
+            if ($updated -ne $raw) {
+                Set-Content -LiteralPath $StateFile -Value $updated -Encoding UTF8 -Force
+            }
+        }
+    } catch {
+        try { Write-FbLog ("Pipeline elapsed baseline state write failed: {0}" -f $_.Exception.Message) 'WARN' } catch {}
+    }
+    try { Write-FbLog ("TOTAL ELAPSED baseline reset to {0} ({1})." -f $stamp, $Reason) 'WARN' } catch {}
+}
+
+function Test-FbPipelineStartNeedsClockReset {
+    param([string]$StartStamp)
+    if ([string]::IsNullOrWhiteSpace($StartStamp)) { return $false }
+    $parsed = [datetime]::MinValue
+    if (-not [datetime]::TryParse($StartStamp, [ref]$parsed)) { return $false }
+    $ageDays = ((Get-Date) - $parsed).TotalDays
+    # A real imaging pass is hours, not days. A multi-day gap is the
+    # pre-correction clock still stored as the pipeline start.
+    return ($ageDays -gt 2 -or $ageDays -lt -1)
+}
+
+function Sync-FbSystemClock {
+    $before = Get-Date
+    Write-FbLog ("Clock sync: Windows Update returned 0x800B0101. Local time before sync {0}." -f $before.ToString('o')) 'WARN'
+    try { Set-UiPhase -Phase 'Scanning' -Message 'Setting the clock, then scanning Windows Update again...' } catch {}
+    $rc = 1
+    $resyncText = ''
+    try {
+        $svc = Get-Service -Name w32time -ErrorAction SilentlyContinue
+        if (-not $svc -or $svc.Status -ne 'Running') {
+            try { & sc.exe config w32time start= demand | Out-Null } catch {}
+            try { & net.exe start w32time | Out-Null } catch {}
+        }
+        try { & w32tm.exe /config /manualpeerlist:"time.windows.com,0x8 time.nist.gov,0x8" /syncfromflags:manual /update | Out-Null } catch {}
+        $resyncText = (& w32tm.exe /resync /force 2>&1 | Out-String)
+        $rc = $LASTEXITCODE
+    } catch {
+        Write-FbLog ("Clock sync threw: {0}" -f $_.Exception.Message) 'ERROR'
+        $rc = 1
+    }
+    $after = Get-Date
+    $moved = [math]::Abs(($after - $before).TotalSeconds)
+    $flat = (($resyncText -replace '\s+', ' ').Trim())
+    if ($rc -eq 0) {
+        Write-FbLog ("Clock sync succeeded. Local time {0} (moved {1:N0}s). {2}" -f $after.ToString('o'), $moved, $flat) 'INFO'
+        if ($moved -ge 21600 -or (Test-FbPipelineStartNeedsClockReset -StartStamp ([string]$script:startTime))) {
+            Reset-FbPipelineClockBaseline -Reason ('clock moved {0:N0}s' -f $moved)
+        }
+        return $true
+    }
+    Write-FbLog ("Clock sync failed (w32tm exit {0}). Local time {1}. {2}" -f $rc, $after.ToString('o'), $flat) 'ERROR'
+    return $false
+}
 
 function Test-InternetConnectivity {
     $targets = @(
@@ -17000,6 +17274,10 @@ try {
 $emptySweepCount = [int]$state.EmptySweepCount
 $failureCount    = [int]$state.FailureCount
 $startTime       = [string]$state.StartTime
+if (Test-FbPipelineStartNeedsClockReset -StartStamp $startTime) {
+    Reset-FbPipelineClockBaseline -Reason 'stored pipeline start is days off the current clock'
+    $startTime = [string]$script:startTime
+}
 $updateRetryMap  = @{}
 if ($state.UpdateRetry) { $updateRetryMap = $state.UpdateRetry }
 # 2026.05.12.1830-patient-shutdown-and-hresult-coverage: per-update
@@ -17179,10 +17457,16 @@ if ($script:UiUpdates.Count -eq 0) {
 }
 
 if ($FinalizeToOobe -and -not (Test-Path $CompleteMarker) -and (Test-FbStuckCompleteWithoutHandoff)) {
-    Write-FbLog 'Stuck complete-without-handoff: completion marker missing; writing marker so hardware gate can run.' 'WARN'
-    try {
-        Set-Content -Path $CompleteMarker -Value ("Completed at {0} (stuck-complete recovery)" -f (Get-Date -Format s)) -Encoding ASCII -Force
-    } catch {}
+    $stuckReal = 0
+    try { $stuckReal = [int](Load-State).RealInstallsTotal } catch { $stuckReal = 0 }
+    if ($stuckReal -le 0 -and -not (Test-FbVerifiedEmptyScan)) {
+        Write-FbLog 'Stuck-complete blocked: RealInstallsTotal=0 and there is no verified empty scan. Not writing FirstBase-Updates-Complete.flag.' 'ERROR'
+    } else {
+        Write-FbLog 'Stuck complete-without-handoff: completion marker missing; writing marker so hardware gate can run.' 'WARN'
+        try {
+            Set-Content -Path $CompleteMarker -Value ("Completed at {0} (stuck-complete recovery)" -f (Get-Date -Format s)) -Encoding ASCII -Force
+        } catch {}
+    }
 }
 
 if (Test-Path $CompleteMarker) {
@@ -17814,13 +18098,13 @@ function Invoke-FbBucketApply {
             try { $bKb = [string]$u.KB } catch {}
             $bKbs = @()
             try { $bKbs = @($u.KBArticleIDs) } catch {}
-            if ($osBkt -and $osBkt.Already25H2 -and (Test-FbIsRedundant25H2FeatureUpdate -Title $bTitle -KB $bKb -KBArticleIDs $bKbs)) {
+            if (Test-FbIsRedundant25H2FeatureUpdate -Title $bTitle -KB $bKb -KBArticleIDs $bKbs) {
                 $skipRedundant25H2 = $true
                 if ($GivenUpSet) {
                     [void]$GivenUpSet.Add($uid)
                     if ($key) { [void]$GivenUpSet.Add($key) }
                 }
-                Write-FbLog ("[{0}] skipping already-installed 25H2 feature/enablement '{1}' ({2}); not shown in splash." -f $BucketName, $bTitle, $uid) 'WARN'
+                Write-FbLog ("[{0}] skipping feature upgrade '{1}' ({2}); not shown in splash." -f $BucketName, $bTitle, $uid) 'WARN'
             }
         } catch {}
         if ($skipRedundant25H2) {
@@ -19629,6 +19913,7 @@ while ($iter -lt $maxIterations) {
             # the end-of-pass decision so PendingSysprep gets
             # latched and STAGE 1 fires. Do NOT break to the
             # legacy final-verification block.
+            Write-FbVerifiedEmptyScan -Reason ("pass-{0}" -f $iter)
             Write-FbLog ("[Pass {0}] Empty scan; routing to EndOfPassDecision for convergence handling." -f $iter) 'WARN'
             Invoke-FbWuEndOfPassDecision -PassIndex $iter -WorkQueue @() `
                 -RealInstallsAtPassStart $realInstallsAtPassStart `
@@ -19638,6 +19923,8 @@ while ($iter -lt $maxIterations) {
             # Defensive break in case it returns.
             break
         }
+
+        Clear-FbVerifiedEmptyScan
 
         # Classifier mix is log-only. This pass downloads and installs every
         # offered update in one cycle (no Critical-then-Driver skip).
@@ -19843,6 +20130,26 @@ while ($iter -lt $maxIterations) {
             }
         }
 
+        if (Test-FbWuClockCertFailure -ErrorRecord $_) {
+            $script:FbLastScanCertFailure = $true
+            Clear-FbVerifiedEmptyScan
+            Write-FbLog ("[Pass {0}] Scan failed 0x800B0101 ({1}). Syncing the clock and scanning again. This is not an empty scan." -f $iter, $_.Exception.Message) 'ERROR'
+            try { Set-UiPhase -Phase 'Scanning' -Message 'Windows Update rejected the system clock. Setting the time and scanning again...' } catch {}
+            [void](Sync-FbSystemClock)
+            $scanRetry++
+            if ($scanRetry -le 2) {
+                $iter--
+                continue
+            }
+            if ($rebootIterations -lt $MaxRebootIterations) {
+                Invoke-FbRebootWithFreshStateCheck -Reason '0x800B0101 after clock sync; rebooting for another scan'
+            }
+            Write-FbLog '0x800B0101 persisted at the reboot ceiling. Not writing Updates-Complete.' 'ERROR'
+            try { Set-UiPhase -Phase 'Verifying' -Message 'Windows Update rejected the system clock. Updates are not complete.' } catch {}
+            try { Stop-Transcript | Out-Null } catch {}
+            exit 1
+        }
+
         $runHadErrors = $true
         Write-FbLog "[Pass $iter] WU error: $($_.Exception.Message)" 'WARN'
         break
@@ -19873,6 +20180,12 @@ while (-not $finalCheckSucceeded) {
         if (-not (Test-InternetConnectivity)) {
             Write-FbLog "Final check failed because internet is unavailable. Soft waiting." 'WARN'
             continue
+        }
+        if (Test-FbWuClockCertFailure -ErrorRecord $_) {
+            $script:FbLastScanCertFailure = $true
+            Clear-FbVerifiedEmptyScan
+            Write-FbLog ("Final check failed 0x800B0101 ({0}). Syncing the clock and scanning again. This is not an empty scan." -f $_.Exception.Message) 'ERROR'
+            [void](Sync-FbSystemClock)
         }
         $finalRetry++
         Write-FbLog "Final check failed (retry $finalRetry/3): $($_.Exception.Message)" 'WARN'
@@ -19980,6 +20293,28 @@ if (Test-FbWuRebootRequired) {
     } else {
         Save-State -EmptySweepCount 0 -LastPass 'final-check-pending-reboot' -StartTime $startTime -FailureCount 0 -UpdateRetry $updateRetryMap -GivenUpUpdateIds @($givenUpSet) -BootCountByKey $bootCountByKey -BootCount $bootCount -ForceHiddenKeys @($forceHiddenSet) -RebootIterations $rebootIterations -SysprepRetryCount $sysprepRetryCount
         Invoke-FbRebootWithFreshStateCheck -Reason 'reboot pending after final check'
+    }
+}
+
+if ($finalCheckSucceeded -and $finalCount -eq 0) {
+    Write-FbVerifiedEmptyScan -Reason 'final-check'
+} elseif ($finalCheckSucceeded) {
+    Clear-FbVerifiedEmptyScan
+}
+
+if (-not $finalCheckSucceeded) {
+    $fbRealLeft = 0
+    try { $fbRealLeft = [int](Load-State).RealInstallsTotal } catch { $fbRealLeft = 0 }
+    if ($script:FbLastScanCertFailure -or ($fbRealLeft -le 0 -and -not (Test-FbVerifiedEmptyScan))) {
+        if ($script:FbLastScanCertFailure) {
+            Write-FbLog 'Final check failed 0x800B0101 after clock sync. Not treating the failed scan as an empty offer. Not writing Updates-Complete.' 'ERROR'
+            try { Set-UiPhase -Phase 'Verifying' -Message 'Windows Update rejected the system clock. Updates are not complete.' } catch {}
+        } else {
+            Write-FbLog ("Final check did not succeed. RealInstallsTotal={0} and there is no verified empty scan. Not writing Updates-Complete." -f $fbRealLeft) 'ERROR'
+            try { Set-UiPhase -Phase 'Verifying' -Message 'Windows Update did not finish a scan. Updates are not complete.' } catch {}
+        }
+        try { Stop-Transcript | Out-Null } catch {}
+        exit 1
     }
 }
 

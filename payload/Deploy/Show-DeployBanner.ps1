@@ -316,6 +316,9 @@ function Get-FbBannerBuildInfo {
         Script        = ''
         ShareLauncher = ''
         ShareScript   = ''
+        ImageBuildDate = ''
+        ImageVersion   = ''
+        WindowsEdition = ''
     }
     if (-not $PSScriptRoot) { return $info }
 
@@ -332,6 +335,9 @@ function Get-FbBannerBuildInfo {
             $info.Script        = [string]$resolved.Script
             $info.ShareLauncher = [string]$resolved.ShareLauncher
             $info.ShareScript   = [string]$resolved.ShareScript
+            if ($resolved.ImageBuildDate) { $info.ImageBuildDate = [string]$resolved.ImageBuildDate }
+            if ($resolved.ImageVersion) { $info.ImageVersion = [string]$resolved.ImageVersion }
+            if ($resolved.WindowsEdition) { $info.WindowsEdition = [string]$resolved.WindowsEdition }
         }
     } catch {}
 
@@ -455,6 +461,11 @@ Write-Host ''
 $verParts = @()
 if ($build.Launcher) { $verParts += ('launcher ' + $build.Launcher) }
 if ($build.Script)   { $verParts += ('scripts '  + $build.Script) }
+$imgParts = @()
+if ($build.WindowsEdition) { $imgParts += [string]$build.WindowsEdition }
+if ($build.ImageBuildDate) { $imgParts += [string]$build.ImageBuildDate }
+elseif ($build.ImageVersion) { $imgParts += [string]$build.ImageVersion }
+if ($imgParts.Count -gt 0) { $verParts += ('windows ' + ($imgParts -join ' | ')) }
 if ($verParts.Count -gt 0) {
     if ($isDestage) {
         $shareParts = @()

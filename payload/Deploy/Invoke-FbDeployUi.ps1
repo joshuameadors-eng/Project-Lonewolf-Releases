@@ -372,6 +372,8 @@ function Get-FbUiBuildInfo {
         Script         = ''
         PayloadVersion = ''
         ImageBuildDate = ''
+        ImageVersion   = ''
+        WindowsEdition = ''
     }
     if (-not $PSScriptRoot) { return $info }
 
@@ -387,9 +389,22 @@ function Get-FbUiBuildInfo {
             $info.Launcher = [string]$resolved.Launcher
             $info.Script   = [string]$resolved.Script
             if ($resolved.Script) { $info.PayloadVersion = [string]$resolved.Script }
-            if ($resolved.PSObject.Properties['ImageBuildDate'] -and $resolved.ImageBuildDate) {
-                $info.ImageBuildDate = [string]$resolved.ImageBuildDate
+            # Direct property access (Get-FbBuildIdentity returns pscustomobject).
+            # Do not gate on PSObject.Properties — that broke OrderedDictionary returns.
+            if ($resolved.ImageVersion) { $info.ImageVersion = [string]$resolved.ImageVersion }
+            if ($resolved.WindowsEdition) { $info.WindowsEdition = [string]$resolved.WindowsEdition }
+            if ($resolved.ImageBuildDate) { $info.ImageBuildDate = [string]$resolved.ImageBuildDate }
+            # WinPE badge: "Home | 2026-10-13" (fills the former empty "—" marker).
+            $parts = @()
+            if ($info.WindowsEdition) { $parts += [string]$info.WindowsEdition }
+            if ($info.ImageBuildDate) { $parts += [string]$info.ImageBuildDate }
+            elseif ($info.ImageVersion -match '(\d{8})T\d{6}Z$') {
+                $d = $Matches[1]
+                $parts += ('{0}-{1}-{2}' -f $d.Substring(0, 4), $d.Substring(4, 2), $d.Substring(6, 2))
+            } elseif ($info.ImageVersion) {
+                $parts += [string]$info.ImageVersion
             }
+            if ($parts.Count -gt 0) { $info.ImageBuildDate = ($parts -join ' | ') }
         }
     } catch {}
     return $info

@@ -672,6 +672,7 @@ function Get-FbImSecurityShipState {
         ExclusionsLeftover = $false
         MdmKeysLeftover    = $false
         DmEnrollmentBad    = $false
+        WuAuLeftover       = $false
         Reasons            = New-Object System.Collections.Generic.List[string]
     }
     $flagRaw = Get-FbImDefenderStateFlagRaw
@@ -748,18 +749,32 @@ function Get-FbImSecurityShipState {
         } catch {}
     }
 
+    try {
+        $au = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate\AU'
+        if (Test-Path -LiteralPath $au) {
+            $auProp = Get-ItemProperty -LiteralPath $au -ErrorAction SilentlyContinue
+            if ($auProp -and (
+                ($auProp.PSObject.Properties.Name -contains 'NoAutoUpdate') -or
+                ($auProp.PSObject.Properties.Name -contains 'NoAutoRebootWithLoggedOnUsers')
+            )) {
+                $result.WuAuLeftover = $true
+            }
+        }
+    } catch {}
+
     if ($result.DefenderOff) { [void]$result.Reasons.Add('Defender real-time is off') }
     if ($result.DefenderFlagBad) { [void]$result.Reasons.Add('Defender restore did not finish') }
     if ($result.DefenderQueryFail) { [void]$result.Reasons.Add('Defender status could not be read') }
     if ($result.ExclusionsLeftover) { [void]$result.Reasons.Add('Defender exclusions still present') }
     if ($result.MdmKeysLeftover) { [void]$result.Reasons.Add('MDM enrollment suppress still applied') }
     if ($result.DmEnrollmentBad) { [void]$result.Reasons.Add('MDM enrollment service is disabled') }
+    if ($result.WuAuLeftover) { [void]$result.Reasons.Add('Windows Update auto-update suppress still applied') }
     return [pscustomobject]$result
 }
 
 # KEEP IN SYNC: Get-FbImStatusKind / Get-FbImDeviceStatus / Invoke-FbImSealToOobe
 # GATE: green READY is not crypto-proof. It must include live AV + MDM/exclusion leftovers + ProgramData residue + HardwarePassed.
-# CLEANUP: leftover FirstBase audit exclusions / MDM keys / DmEnrollmentSvc Disabled / unrestored Defender are NOT READY.
+# CLEANUP: leftover FirstBase audit exclusions / MDM keys / DmEnrollmentSvc Disabled / WU AU suppress / unrestored Defender are NOT READY.
 # SEAL: green READY + SEALED means shippable. Unrecorded hardware is CHECK, never green.
 function Get-FbImStatusKind {
     param(
@@ -947,12 +962,18 @@ function Get-FbImDeviceStatus {
     $secReasons = @()
     if ($sec) {
         try { $secReasons = @($sec.Reasons) } catch { $secReasons = @() }
-        # Audit-window Defender disable / MDM suppress / exclusions are approved.
-        # After Audit (or whenever READY would otherwise go green), leftovers block READY.
-        if (-not $audit) {
+    }
+    # Audit-window Defender disable / MDM suppress / exclusions / WU AU are approved.
+    # After Audit, leftovers block READY. A failed security probe is leftover too.
+    if (-not $audit) {
+        if (-not $sec) {
+            $securityLeftover = $true
+            $secReasons = @('Security status could not be read')
+        } else {
             $securityLeftover = [bool](
                 $sec.DefenderOff -or $sec.DefenderFlagBad -or $sec.DefenderQueryFail -or
-                $sec.ExclusionsLeftover -or $sec.MdmKeysLeftover -or $sec.DmEnrollmentBad
+                $sec.ExclusionsLeftover -or $sec.MdmKeysLeftover -or $sec.DmEnrollmentBad -or
+                $sec.WuAuLeftover
             )
         }
     }
@@ -2147,8 +2168,9 @@ function Invoke-FbImPassHardwareCheck {
 
 function Import-FbImSealCleanupHelpers {
     # Reuse Set-FbDefenderRealtime + Invoke-FbInlineMdmScrub from the WU loop
-    # (no third independent scrub). ParseFile extracts those functions only —
-    # never dotsource the loop script (it would relaunch the update pipeline).
+    # (no third independent scrub). ParseFile extracts those functions only.
+    # Never dot-source the loop script (it would relaunch the update pipeline).
+    # The extract is written to a temp .ps1 and dot-sourced, then deleted.
     if ((Get-Command -Name Set-FbDefenderRealtime -ErrorAction SilentlyContinue) -and
         (Get-Command -Name Invoke-FbInlineMdmScrub -ErrorAction SilentlyContinue)) {
         return $true
@@ -2200,11 +2222,28 @@ function Import-FbImSealCleanupHelpers {
     foreach ($name in $required) {
         if (-not $found[$name]) { return $false }
     }
-    foreach ($name in $wanted) {
-        if (-not $found[$name]) { continue }
-        try { Invoke-Expression $found[$name] } catch {
-            if ($required -contains $name) { return $false }
+    $loadFrag = {
+        param([string[]]$Bodies)
+        $frag = Join-Path $env:TEMP ('fb-im-seal-helpers-' + [guid]::NewGuid().ToString('n') + '.ps1')
+        try {
+            $text = @(
+                $Bodies | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | ForEach-Object {
+                    $_ -replace '^function\s+', 'function script:'
+                }
+            ) -join "`r`n`r`n"
+            Set-Content -LiteralPath $frag -Value $text -Encoding UTF8
+            . $frag
+        } finally {
+            try { Remove-Item -LiteralPath $frag -Force -ErrorAction SilentlyContinue } catch {}
         }
+    }
+    try {
+        & $loadFrag @($required | ForEach-Object { $found[$_] })
+    } catch {
+        return $false
+    }
+    if ($found['Register-FbFinalShipReaper']) {
+        try { & $loadFrag @($found['Register-FbFinalShipReaper']) } catch {}
     }
     return ((Get-Command -Name Set-FbDefenderRealtime -ErrorAction SilentlyContinue) -and
             (Get-Command -Name Invoke-FbInlineMdmScrub -ErrorAction SilentlyContinue))
@@ -2375,30 +2414,23 @@ function Invoke-FbImSealToOobe {
         Set-ItemProperty -LiteralPath $auKey -Name 'NoAutoUpdate' -Value 1 -Type DWord -Force -ErrorAction SilentlyContinue
     } catch {}
 
-    $alreadySealed = $false
-    try { $alreadySealed = [bool](Test-Path -LiteralPath $SealedMarker) } catch { $alreadySealed = $false }
-
     Set-FbDefenderRealtime -Enabled $true -Reason 'fb-im-seal'
     $restoreOk = $false
     try { $restoreOk = [bool]$script:FbDefenderRealtimeLastOk } catch { $restoreOk = $false }
     if (-not $restoreOk) {
-        if (-not $alreadySealed) {
-            $result.Message = 'Seal blocked - Defender restore failed'
-            $result.Detail = 'Real-time monitoring is still off. Device stays in Audit. Defender was not restored; .firstbase-sealed was not written.'
-            return [pscustomobject]$result
-        }
+        $result.Message = 'Seal blocked - Defender restore failed'
+        $result.Detail = 'Real-time monitoring is still off. Device stays in Audit. Sysprep was not started.'
+        return [pscustomobject]$result
     }
 
     $scrub = $null
     try { $scrub = Invoke-FbInlineMdmScrub } catch { $scrub = $null }
     $scrubPass = [bool]($scrub -and ($scrub.Overall -eq 'PASS'))
     if (-not $scrubPass) {
-        if (-not $alreadySealed) {
-            $ov = $(if ($scrub) { [string]$scrub.Overall } else { 'UNKNOWN' })
-            $result.Message = 'Seal blocked - MDM scrub failed'
-            $result.Detail = ('MDM/exclusion teardown overall={0}. Device stays in Audit. Inspect C:\ProgramData\FirstBase\Logs\WU-mdm-scrub.log. .firstbase-sealed was not written.' -f $ov)
-            return [pscustomobject]$result
-        }
+        $ov = $(if ($scrub) { [string]$scrub.Overall } else { 'UNKNOWN' })
+        $result.Message = 'Seal blocked - MDM scrub failed'
+        $result.Detail = ('MDM/exclusion teardown overall={0}. Device stays in Audit. Sysprep was not started. Inspect C:\ProgramData\FirstBase\Logs\WU-mdm-scrub.log.' -f $ov)
+        return [pscustomobject]$result
     }
 
     # Remove FirstBase scheduled tasks (seal_command.txt step 1).

@@ -98,12 +98,11 @@ param(
     [Parameter(Mandatory)] [string]   $DiskNumbers,
     [string] $ShareRoot        = '\\WIN-HQ5JDEACV3S\Images\FB Image Creation',
     # KEEP IN SYNC: LONEWOLF_SHARE_USER / LONEWOLF_SHARE_PASSWORD env-first in
-    # main.js, Get-StagingVersion.ps1, Stage-PreSplitImage.ps1, ProvisioningConstants.cs.
-    # GATE: destage HQ UNC still works with the well-known default if env is unset.
-    # CLEANUP: do not rotate the live share password from this repo.
-    # SEAL: not a FirstBase seal path — destage credential only.
+    # main.js, Get-StagingVersion.ps1, Stage-PreSplitImage.ps1, ConnectDeploymentShare.
+    # GATE: HQ UNC connect fails closed when LONEWOLF_SHARE_PASSWORD is unset.
+    # Username defaults to Reflect. No share password is stored in this repo.
     [string] $ShareUser        = $(if (-not [string]::IsNullOrWhiteSpace($env:LONEWOLF_SHARE_USER)) { $env:LONEWOLF_SHARE_USER } else { 'Reflect' }),
-    [string] $SharePassword    = $(if (-not [string]::IsNullOrWhiteSpace($env:LONEWOLF_SHARE_PASSWORD)) { $env:LONEWOLF_SHARE_PASSWORD } else { 'mer*HWE0upt*rqe@dud' }),
+    [string] $SharePassword    = $(if (-not [string]::IsNullOrWhiteSpace($env:LONEWOLF_SHARE_PASSWORD)) { $env:LONEWOLF_SHARE_PASSWORD } else { '' }),
     [string] $CacheRoot,
     [string] $DataVolumeLabel  = 'LoneWolf',
     [string] $AppResourcesPath = '',
@@ -503,8 +502,12 @@ if (Test-Path -LiteralPath $DriveHttpLibPath) { . $DriveHttpLibPath }
 
 # Full Windows Updates (Intel/AMD and Snapdragon) parses the update loop.
 # Both Quick Install workflows and WIN-INSTALL skip that payload.
+# Image Ready boot.wim export (-ExportStagedBootWim*) only needs Deploy\WinPE-Startnet.cmd
+# under ContentRoot — not the multi-MB update loop (Keyes / Stage-GoogleDriveMedia producers).
+$exportOnlyBootWim = (-not [string]::IsNullOrWhiteSpace($ExportStagedBootWimSetDir)) -or
+    (-not [string]::IsNullOrWhiteSpace($ExportStagedBootWimRoot))
 $stageWuPayload = $false
-if (Get-Command -Name Test-LwStageWindowsUpdatePayload -ErrorAction SilentlyContinue) {
+if (-not $exportOnlyBootWim -and (Get-Command -Name Test-LwStageWindowsUpdatePayload -ErrorAction SilentlyContinue)) {
     $stageWuPayload = [bool](Test-LwStageWindowsUpdatePayload -WorkflowType $WorkflowType -QuickInstall ([bool]$QuickInstall) -NoPayload ([bool]$NoPayload))
 }
 if ($stageWuPayload) {
@@ -665,9 +668,6 @@ function Get-LWPreSplitSet {
             EmitLog -Disk 0 -Msg "presplit: no staged sets folder for $Arch $ed under '$PreSplitRoot' - on-the-fly split will be used"
             return $null
         }
-        $currentId = Get-LWImageVersionId -Iso $Iso -Edition $ed
-        $legacyId  = Get-LWImageVersionId -Iso $Iso
-
         $candidates = New-Object System.Collections.Generic.List[string]
         if (Get-Command -Name Get-LWPreSplitCandidateDirs -ErrorAction SilentlyContinue) {
             foreach ($c in @(Get-LWPreSplitCandidateDirs -PreSplitRoot $PreSplitRoot -Arch $Arch -Edition $ed)) {
@@ -753,37 +753,31 @@ function Get-LWPreSplitSet {
                 EmitLog -Disk 0 -Msg "presplit: set '$setDir' skipped (folder arch/SKU does not match $arch $ed)"
                 continue
             }
-            $src = $m.source
+            # Match by source name+size (and soft last-write). Do not recompute
+            # Get-LWImageVersionId for string equality — stamps are staging UTC.
             $reasons = @()
-            if ([string]$src.isoName -ne $Iso.Name) {
-                $reasons += "isoName '$([string]$src.isoName)' != '$($Iso.Name)'"
-            }
-            if ([long]$src.isoSizeBytes -ne [long]$Iso.Length) {
-                $reasons += "isoSizeBytes $([long]$src.isoSizeBytes) != $([long]$Iso.Length)"
-            }
-            $mDate = $null
-            try {
-                $mDate = [datetime]::Parse([string]$src.isoLastWriteUtc, $null,
-                    [System.Globalization.DateTimeStyles]::RoundtripKind)
-            } catch { }
-            if ($mDate) {
-                $delta = [math]::Abs(($mDate.ToUniversalTime() - $Iso.LastWriteTimeUtc).TotalSeconds)
-                if ($delta -gt 2) {
-                    $reasons += "isoLastWriteUtc '$([string]$src.isoLastWriteUtc)' != '$($Iso.LastWriteTimeUtc.ToString('o'))'"
+            if (-not (Get-Command -Name Test-LWPreSplitSourceMatchesIso -ErrorAction SilentlyContinue) -or
+                -not (Test-LWPreSplitSourceMatchesIso -Manifest $m -Iso $Iso)) {
+                $src = $m.source
+                if (-not $src) {
+                    $reasons += 'manifest has no source block'
+                } else {
+                    if ([string]$src.isoName -ne $Iso.Name) {
+                        $reasons += "isoName '$([string]$src.isoName)' != '$($Iso.Name)'"
+                    }
+                    if ([long]$src.isoSizeBytes -ne [long]$Iso.Length) {
+                        $reasons += "isoSizeBytes $([long]$src.isoSizeBytes) != $([long]$Iso.Length)"
+                    }
+                    if ($reasons.Count -eq 0) { $reasons += 'source identity mismatch' }
                 }
-            } else {
-                $reasons += "isoLastWriteUtc unparseable '$([string]$src.isoLastWriteUtc)'"
-            }
-            $idOk = ([string]$m.imageVersion -eq $currentId) -or
-                    ($ed -eq 'Pro' -and [string]$m.imageVersion -eq $legacyId)
-            if (-not $idOk) {
-                $reasons += "imageVersion '$([string]$m.imageVersion)' != '$currentId'"
             }
             if ($reasons.Count -gt 0) {
                 EmitLog -Disk 0 -Msg "presplit: set '$setDir' does not match current ISO - $([string]::Join('; ', $reasons))"
                 continue
             }
-            EmitLog -Disk 0 -Msg "presplit: MATCH - staged set '$setDir' (imageVersion=$currentId, edition=$ed); builds will fast-copy install*.swm and skip the on-the-fly split"
+            $matchIv = [string]$m.imageVersion
+            if (-not $matchIv) { $matchIv = $setLeaf }
+            EmitLog -Disk 0 -Msg "presplit: MATCH - staged set '$setDir' (imageVersion=$matchIv, edition=$ed); builds will fast-copy install*.swm and skip the on-the-fly split"
             return $setDir
         }
         EmitLog -Disk 0 -Msg "presplit: no staged set matched the current $ed ISO '$($Iso.Name)' - falling back to on-the-fly split"
@@ -810,6 +804,9 @@ $overlayCache = ''
 function Connect-Share {
     param([string]$ShareHost, [string]$User, [string]$Pass, [string]$ProbePath)
 
+    if ([string]::IsNullOrWhiteSpace($Pass)) {
+        throw 'HQ share password is not set. Set LONEWOLF_SHARE_PASSWORD before connecting to the deployment share.'
+    }
     $cmdkey = Join-Path $env:SystemRoot 'System32\cmdkey.exe'
     if (Test-Path -LiteralPath $cmdkey) {
         & $cmdkey /delete:$ShareHost 2>$null | Out-Null
@@ -1147,6 +1144,8 @@ function Build-Cache {
             @{ Src = (Join-Path $ContentRoot 'Deploy\Launch-FbWinPeUiEarly.cmd');             Dst = 'FirstBase\Deploy\Launch-FbWinPeUiEarly.cmd' },
             @{ Src = (Join-Path $ContentRoot 'FirstBaseBuildIdentity.ps1');                   Dst = 'FirstBase\Deploy\FirstBaseBuildIdentity.ps1' },
             @{ Src = (Join-Path $ContentRoot 'Scripts\Invoke-FirstBaseDismApply.ps1');        Dst = 'FirstBase\Scripts\Invoke-FirstBaseDismApply.ps1' },
+            @{ Src = (Join-Path $ContentRoot 'Scripts\Remove-FbProvisionedBloat.ps1');        Dst = 'FirstBase\Scripts\Remove-FbProvisionedBloat.ps1' },
+            @{ Src = (Join-Path $ContentRoot 'Scripts\LayoutModification.json');              Dst = 'FirstBase\Scripts\LayoutModification.json' },
             @{ Src = (Join-Path $ContentRoot (Get-LwUsbOverlayUnattendSource -QuickInstall ([bool]$QuickInstall))); Dst = 'FirstBase\Autounattend.xml' },
             @{ Src = (Join-Path $ContentRoot (Get-LwUsbOverlayUnattendSource -QuickInstall ([bool]$QuickInstall))); Dst = 'FirstBase\Policy\Autounattend.xml' },
             @{ Src = (Join-Path $ContentRoot 'SetupComplete.cmd');                            Dst = 'FirstBase\WUPayload\SetupComplete.cmd' },
@@ -1284,6 +1283,16 @@ function Build-Cache {
         if (Test-Path -LiteralPath $dismApplySrc) {
             New-Item -ItemType Directory -Force -Path (Join-Path $overlayCache 'FirstBase\Scripts') | Out-Null
             Copy-Item -LiteralPath $dismApplySrc -Destination (Join-Path $overlayCache 'FirstBase\Scripts\Invoke-FirstBaseDismApply.ps1') -Force
+        }
+        $bloatSrc = Join-Path $ContentRoot 'Scripts\Remove-FbProvisionedBloat.ps1'
+        if (Test-Path -LiteralPath $bloatSrc) {
+            New-Item -ItemType Directory -Force -Path (Join-Path $overlayCache 'FirstBase\Scripts') | Out-Null
+            Copy-Item -LiteralPath $bloatSrc -Destination (Join-Path $overlayCache 'FirstBase\Scripts\Remove-FbProvisionedBloat.ps1') -Force
+        }
+        $layoutSrc = Join-Path $ContentRoot 'Scripts\LayoutModification.json'
+        if (Test-Path -LiteralPath $layoutSrc) {
+            New-Item -ItemType Directory -Force -Path (Join-Path $overlayCache 'FirstBase\Scripts') | Out-Null
+            Copy-Item -LiteralPath $layoutSrc -Destination (Join-Path $overlayCache 'FirstBase\Scripts\LayoutModification.json') -Force
         }
         # fb-im front-end: cmd launcher stays at volume ROOT; PS backend + fb-dump backend under FirstBase\WUPayload\Tools\.
         $imCmdSrc = Join-Path $ContentRoot 'Tools\fb-im.cmd'
@@ -1401,6 +1410,8 @@ function Build-IsoCache {
             @{ Src = (Join-Path $ContentRoot 'Deploy\Launch-FbWinPeUiEarly.cmd');             Dst = 'FirstBase\Deploy\Launch-FbWinPeUiEarly.cmd' },
             @{ Src = (Join-Path $ContentRoot 'FirstBaseBuildIdentity.ps1');                   Dst = 'FirstBase\Deploy\FirstBaseBuildIdentity.ps1' },
             @{ Src = (Join-Path $ContentRoot 'Scripts\Invoke-FirstBaseDismApply.ps1');        Dst = 'FirstBase\Scripts\Invoke-FirstBaseDismApply.ps1' },
+            @{ Src = (Join-Path $ContentRoot 'Scripts\Remove-FbProvisionedBloat.ps1');        Dst = 'FirstBase\Scripts\Remove-FbProvisionedBloat.ps1' },
+            @{ Src = (Join-Path $ContentRoot 'Scripts\LayoutModification.json');              Dst = 'FirstBase\Scripts\LayoutModification.json' },
             @{ Src = (Join-Path $ContentRoot (Get-LwUsbOverlayUnattendSource -QuickInstall ([bool]$QuickInstall))); Dst = 'FirstBase\Autounattend.xml' },
             @{ Src = (Join-Path $ContentRoot (Get-LwUsbOverlayUnattendSource -QuickInstall ([bool]$QuickInstall))); Dst = 'FirstBase\Policy\Autounattend.xml' },
             @{ Src = (Join-Path $ContentRoot 'SetupComplete.cmd');                            Dst = 'FirstBase\WUPayload\SetupComplete.cmd' },
@@ -1538,6 +1549,16 @@ function Build-IsoCache {
         if (Test-Path -LiteralPath $dismApplySrc) {
             New-Item -ItemType Directory -Force -Path (Join-Path $overlayCache 'FirstBase\Scripts') | Out-Null
             Copy-Item -LiteralPath $dismApplySrc -Destination (Join-Path $overlayCache 'FirstBase\Scripts\Invoke-FirstBaseDismApply.ps1') -Force
+        }
+        $bloatSrc = Join-Path $ContentRoot 'Scripts\Remove-FbProvisionedBloat.ps1'
+        if (Test-Path -LiteralPath $bloatSrc) {
+            New-Item -ItemType Directory -Force -Path (Join-Path $overlayCache 'FirstBase\Scripts') | Out-Null
+            Copy-Item -LiteralPath $bloatSrc -Destination (Join-Path $overlayCache 'FirstBase\Scripts\Remove-FbProvisionedBloat.ps1') -Force
+        }
+        $layoutSrc = Join-Path $ContentRoot 'Scripts\LayoutModification.json'
+        if (Test-Path -LiteralPath $layoutSrc) {
+            New-Item -ItemType Directory -Force -Path (Join-Path $overlayCache 'FirstBase\Scripts') | Out-Null
+            Copy-Item -LiteralPath $layoutSrc -Destination (Join-Path $overlayCache 'FirstBase\Scripts\LayoutModification.json') -Force
         }
         # fb-im front-end: cmd launcher stays at volume ROOT; PS backend + fb-dump backend under FirstBase\WUPayload\Tools\.
         $imCmdSrc = Join-Path $ContentRoot 'Tools\fb-im.cmd'
@@ -1896,6 +1917,8 @@ $workerDiskBlock = {
         [string] $ShareLauncherVersion,
         [string] $ShareScriptVersion,
         [string] $ImageBuildDate,
+        # PreSplit / Image Ready folder identity (e.g. 25h2-home-9-22-amd64-20261005T164435Z).
+        [string] $ImageVersion,
         [string] $WindowsEdition,
         # Job runspaces cannot see script-scope Copy-LwRepoEdgeInstaller / $PSScriptRoot.
         # Resolved on the main thread (repo tools\ for destage, app-adjacent tools\ packaged).
@@ -3070,10 +3093,19 @@ $workerDiskBlock = {
         if (-not $OverlayOnly -and $espRoot) {
             JPhase 'winpe-inject'
             $espBootWim  = Join-Path $espRoot 'sources\boot.wim'
-            # Drive HTTP Image Ready package already carries an injected boot.wim from Stage ISO.
+            # Drive HTTP: skip DISM only when the package carries a valid inject sentinel
+            # (Keyes / Stage ISO Image Ready). Soft Image Ready without sentinel still injects.
+            $_driveHttpAlreadyInjected = $false
             if ($driveHttpMediaOnVolume -and (Test-Path -LiteralPath $espBootWim)) {
+                $_httpSent = Join-Path (Join-Path $espRoot 'sources') 'boot.wim.lw-injected'
+                if ((Test-Path -LiteralPath $_httpSent) -and
+                    (Get-Item -LiteralPath $_httpSent).LastWriteTime -ge (Get-Item -LiteralPath $espBootWim).LastWriteTime) {
+                    $_driveHttpAlreadyInjected = $true
+                }
+            }
+            if ($_driveHttpAlreadyInjected) {
                 JProgress 'winpe-inject' 100
-                J @{ event='log'; disk=$DiskNumber; message='startnet-inject: Drive HTTP package boot.wim already injected (skipping per-disk DISM / WinPE-OCs)' }
+                J @{ event='log'; disk=$DiskNumber; message='startnet-inject: Drive HTTP package boot.wim already injected (sentinel OK; skipping per-disk DISM / WinPE-OCs)' }
             } else {
             # Prefer StartnetForInjection (ContentRoot\Deploy\WinPE-Startnet.cmd) so ISO /
             # direct-overlay builds work without a local OverlayCache stage. Fall back to
@@ -3390,6 +3422,8 @@ $workerDiskBlock = {
                         @{ Src = (Join-Path $ContentRoot 'Deploy\Launch-FbWinPeUiEarly.cmd');             Dst = 'FirstBase\Deploy\Launch-FbWinPeUiEarly.cmd' },
             @{ Src = (Join-Path $ContentRoot 'FirstBaseBuildIdentity.ps1');                   Dst = 'FirstBase\Deploy\FirstBaseBuildIdentity.ps1' },
                         @{ Src = (Join-Path $ContentRoot 'Scripts\Invoke-FirstBaseDismApply.ps1');        Dst = 'FirstBase\Scripts\Invoke-FirstBaseDismApply.ps1' },
+            @{ Src = (Join-Path $ContentRoot 'Scripts\Remove-FbProvisionedBloat.ps1');        Dst = 'FirstBase\Scripts\Remove-FbProvisionedBloat.ps1' },
+            @{ Src = (Join-Path $ContentRoot 'Scripts\LayoutModification.json');              Dst = 'FirstBase\Scripts\LayoutModification.json' },
                         @{ Src = (Join-Path $ContentRoot (Get-LwUsbOverlayUnattendSource -QuickInstall ([bool]$QuickInstall))); Dst = 'FirstBase\Autounattend.xml' },
                         @{ Src = (Join-Path $ContentRoot (Get-LwUsbOverlayUnattendSource -QuickInstall ([bool]$QuickInstall))); Dst = 'FirstBase\Policy\Autounattend.xml' },
                         @{ Src = (Join-Path $ContentRoot 'SetupComplete.cmd');                            Dst = 'FirstBase\WUPayload\SetupComplete.cmd' },
@@ -3503,6 +3537,16 @@ $workerDiskBlock = {
                     if (Test-Path -LiteralPath $dismApplySrc) {
                         New-Item -ItemType Directory -Force -Path (Join-Path $partRoot 'FirstBase\Scripts') | Out-Null
                         Copy-Item -LiteralPath $dismApplySrc -Destination (Join-Path $partRoot 'FirstBase\Scripts\Invoke-FirstBaseDismApply.ps1') -Force
+                    }
+                    $bloatSrc = Join-Path $ContentRoot 'Scripts\Remove-FbProvisionedBloat.ps1'
+                    if (Test-Path -LiteralPath $bloatSrc) {
+                        New-Item -ItemType Directory -Force -Path (Join-Path $partRoot 'FirstBase\Scripts') | Out-Null
+                        Copy-Item -LiteralPath $bloatSrc -Destination (Join-Path $partRoot 'FirstBase\Scripts\Remove-FbProvisionedBloat.ps1') -Force
+                    }
+                    $layoutSrc = Join-Path $ContentRoot 'Scripts\LayoutModification.json'
+                    if (Test-Path -LiteralPath $layoutSrc) {
+                        New-Item -ItemType Directory -Force -Path (Join-Path $partRoot 'FirstBase\Scripts') | Out-Null
+                        Copy-Item -LiteralPath $layoutSrc -Destination (Join-Path $partRoot 'FirstBase\Scripts\LayoutModification.json') -Force
                     }
                     # fb-im front-end: cmd launcher stays at volume ROOT; PS backend + fb-dump backend under FirstBase\WUPayload\Tools\.
                     $imCmdSrc = Join-Path $ContentRoot 'Tools\fb-im.cmd'
@@ -3650,6 +3694,10 @@ $workerDiskBlock = {
                 $firstBaseDir = Join-Path $dataRoot 'FirstBase'
                 if (-not (Test-Path -LiteralPath $firstBaseDir)) { New-Item -ItemType Directory -Force -Path $firstBaseDir | Out-Null }
                 $stampImageDate = $ImageBuildDate
+                $stampImageVersion = $ImageVersion
+                if ([string]::IsNullOrWhiteSpace($stampImageVersion) -and -not [string]::IsNullOrWhiteSpace($PreSplitSetDir)) {
+                    try { $stampImageVersion = [string](Split-Path -Leaf $PreSplitSetDir) } catch { }
+                }
                 $stampWf = [string]$WorkflowType
                 if ($QuickInstall -and $stampWf -notmatch '^QUICK-INSTALL-') {
                     $stampWf = 'QUICK-INSTALL-' + $stampWf
@@ -3662,18 +3710,38 @@ $workerDiskBlock = {
                         $existingStampPath = Join-Path $dataRoot 'FirstBase\LW_VERSION.json'
                         if (Test-Path -LiteralPath $existingStampPath) {
                             $existingStamp = Get-Content -Raw -LiteralPath $existingStampPath | ConvertFrom-Json
+                            # Preserve stick image identity (never blank from empty remote).
                             if ($existingStamp.imageBuildDate) { $stampImageDate = [string]$existingStamp.imageBuildDate }
                             elseif ($existingStamp.wimBuildDate) { $stampImageDate = [string]$existingStamp.wimBuildDate }
+                            if ($existingStamp.imageVersion) { $stampImageVersion = [string]$existingStamp.imageVersion }
                             if ($existingStamp.workflowType) { $stampWf = [string]$existingStamp.workflowType }
                             if ($existingStamp.arch) { $stampArch = [string]$existingStamp.arch }
                             if ($existingStamp.archLabel) { $stampArchLabel = [string]$existingStamp.archLabel }
                             if ($existingStamp.windowsEdition) { $WindowsEdition = [string]$existingStamp.windowsEdition }
                             elseif ($existingStamp.edition) { $WindowsEdition = [string]$existingStamp.edition }
+                            # Same image on stick and staging: adopt canonical imageBuildDate
+                            # (heals UUP LastWrite 2024-04-01 without replacing the image).
+                            if ($stampImageVersion -and $ImageVersion -and
+                                ([string]$stampImageVersion -eq [string]$ImageVersion) -and
+                                -not [string]::IsNullOrWhiteSpace($ImageBuildDate)) {
+                                $stampImageDate = [string]$ImageBuildDate
+                            }
                         }
                     } catch { }
                 }
-                # Slim LW_VERSION.json: rewrite the file every destage (full or Quick Update)
-                # so leftover fat keys (launcherVersion, changelog, share xref) cannot linger.
+                # Folder stamp fills imageBuildDate when missing; heal LastWrite traps via
+                # Get-LWCanonicalImageBuildDateYmd when the helper is available.
+                if ([string]::IsNullOrWhiteSpace($stampImageDate) -and $stampImageVersion) {
+                    if (Get-Command -Name Get-LWCanonicalImageBuildDateYmd -ErrorAction SilentlyContinue) {
+                        $stampImageDate = [string](Get-LWCanonicalImageBuildDateYmd -ImageVersion $stampImageVersion)
+                    } elseif ($stampImageVersion -match '(\d{8})T\d{6}Z$') {
+                        $d = $Matches[1]
+                        $stampImageDate = ('{0}-{1}-{2}' -f $d.Substring(0, 4), $d.Substring(4, 2), $d.Substring(6, 2))
+                    }
+                }
+                # Slim LW_VERSION.json: rewrite every destage (full or Quick Update).
+                # Quick Update preserves imageVersion / imageBuildDate / windowsEdition above.
+                # Pretty-print so techs can read the stick stamp without minifying.
                 $payloadVer = if ($ScriptVersion) { [string]$ScriptVersion } else { [string]$StagingVersion }
                 $stampPath = Join-Path $dataRoot 'FirstBase\LW_VERSION.json'
                 $stamp = [ordered]@{
@@ -3684,6 +3752,7 @@ $workerDiskBlock = {
                     archLabel      = $stampArchLabel
                     windowsEdition = $(if ($WindowsEdition) { $WindowsEdition } else { 'Pro' })
                 }
+                if ($stampImageVersion) { $stamp.imageVersion = [string]$stampImageVersion }
                 if ($stampImageDate) { $stamp.imageBuildDate = [string]$stampImageDate }
                 if ($DevBuild) {
                     $stamp.destage = $true
@@ -3694,7 +3763,7 @@ $workerDiskBlock = {
                 if (Test-Path -LiteralPath $stampPath) {
                     Remove-Item -LiteralPath $stampPath -Force -ErrorAction SilentlyContinue
                 }
-                ($stamp | ConvertTo-Json -Compress) | Out-File -FilePath $stampPath -Encoding utf8 -Force
+                ($stamp | ConvertTo-Json -Depth 6) | Out-File -FilePath $stampPath -Encoding utf8 -Force
             } catch { }
         }
 
@@ -3755,6 +3824,14 @@ try {
             EmitLog -Disk 0 -Msg "drive-staging: ARM64 WinPE drivers from '$arm64UsbDriverDir' (injected into boot.wim indexes 1 and 2)"
         }
         $startnetSrc = Join-Path $ContentRoot 'Deploy\WinPE-Startnet.cmd'
+        if ([string]::IsNullOrWhiteSpace($ContentRoot) -or -not (Test-Path -LiteralPath $startnetSrc)) {
+            Emit @{
+                event   = 'error'
+                disk    = -1
+                message = "drive-staging: WinPE-Startnet.cmd not found at '$startnetSrc'. Pass -AppResourcesPath to the LoneWolf src (or packaged resources) folder that contains payload\Deploy\."
+            }
+            exit 1
+        }
         $isoItem = $null
         if (-not [string]::IsNullOrWhiteSpace($StagingIsoPath) -and (Test-Path -LiteralPath $StagingIsoPath)) {
             $isoItem = Get-Item -LiteralPath $StagingIsoPath
@@ -3768,11 +3845,23 @@ try {
         $exportCache = Join-Path $env:TEMP ('LWBootExport_' + [guid]::NewGuid().ToString('N').Substring(0, 8))
         $espCache = Join-Path $exportCache 'esp'
         $overlayCache = Join-Path $exportCache 'overlay'
-        $isoDiskImage = Mount-DiskImage -ImagePath $isoItem.FullName -PassThru -ErrorAction Stop
-        Add-LwMountedIso -Path $isoItem.FullName
-        $isoVol = ($isoDiskImage | Get-Volume | Where-Object { $_.DriveLetter }).DriveLetter
-        if (-not $isoVol) { throw 'drive-staging: mounted ISO has no drive letter' }
-        $isoDrive = "$isoVol`:\"
+        $useFolderSource = [bool]$isoItem.PSIsContainer
+        $isoDrive = ''
+        if ($useFolderSource) {
+            $isoDrive = $isoItem.FullName.TrimEnd('\') + '\'
+            $folderBootWim = Join-Path $isoDrive 'sources\boot.wim'
+            if (-not (Test-Path -LiteralPath $folderBootWim)) {
+                Emit @{ event = 'error'; disk = -1; message = "drive-staging: SourceDir '$($isoItem.FullName)' has no sources\boot.wim" }
+                exit 1
+            }
+            EmitLog -Disk 0 -Msg "drive-staging: using media folder '$($isoItem.FullName)' (no ISO mount)"
+        } else {
+            $isoDiskImage = Mount-DiskImage -ImagePath $isoItem.FullName -PassThru -ErrorAction Stop
+            Add-LwMountedIso -Path $isoItem.FullName
+            $isoVol = ($isoDiskImage | Get-Volume | Where-Object { $_.DriveLetter }).DriveLetter
+            if (-not $isoVol) { throw 'drive-staging: mounted ISO has no drive letter' }
+            $isoDrive = "$isoVol`:\"
+        }
         Build-IsoCache -IsoDrive $isoDrive
         $bootWimPath = Join-Path $espCache 'sources\boot.wim'
         # Prefer HQ WinPE-OCs\<ARCH> for Image Ready export when ShareRoot is local UUP
@@ -3795,7 +3884,25 @@ try {
             exit 1
         }
         $winPeUiSrcForInject = Resolve-LwWinPeUiPublishDir -ContentRootPath $ContentRoot -Arch $wfUpper
+        $winPeUiExeForSentinel = Join-Path $winPeUiSrcForInject 'LoneWolf.WinPeUi.exe'
         Invoke-StartnetInjection -BootWimPath $bootWimPath -StartnetCmdPath $startnetSrc -WpeOcPath $wpeOcStaging -Arm64UsbDriverDir $arm64UsbDriverDir -WinPeUiSrcDir $winPeUiSrcForInject
+        # Image Ready packages must carry boot.wim.lw-injected so USB Rebuild can skip
+        # per-disk DISM. Invoke-StartnetInjection does not write the sentinel itself.
+        $espSentinel = Join-Path $espCache 'sources\boot.wim.lw-injected'
+        $injectedHash = if (Get-Command -Name Get-LwBootWimInjectSentinel -ErrorAction SilentlyContinue) {
+            Get-LwBootWimInjectSentinel -StartnetPath $startnetSrc -DriverDir $arm64UsbDriverDir -WinPeUiExePath $winPeUiExeForSentinel
+        } else {
+            (Get-FileHash -LiteralPath $startnetSrc -Algorithm SHA256 -ErrorAction SilentlyContinue).Hash
+        }
+        if ([string]::IsNullOrWhiteSpace($injectedHash)) {
+            Emit @{
+                event   = 'error'
+                disk    = -1
+                message = 'drive-staging: FATAL - could not compute boot.wim inject sentinel hash after DISM inject.'
+            }
+            exit 1
+        }
+        Set-Content -LiteralPath $espSentinel -Value $injectedHash -Encoding ascii -Force
         $destSources = ''
         if (-not [string]::IsNullOrWhiteSpace($ExportStagedBootWimSetDir)) {
             $destSources = Join-Path $ExportStagedBootWimSetDir 'sources'
@@ -3806,15 +3913,24 @@ try {
         }
         New-Item -ItemType Directory -Force -Path $destSources | Out-Null
         Copy-Item -LiteralPath $bootWimPath -Destination (Join-Path $destSources 'boot.wim') -Force
-        $espSentinel = Join-Path $espCache 'sources\boot.wim.lw-injected'
-        if (Test-Path -LiteralPath $espSentinel) {
-            Copy-Item -LiteralPath $espSentinel -Destination (Join-Path $destSources 'boot.wim.lw-injected') -Force
+        Copy-Item -LiteralPath $espSentinel -Destination (Join-Path $destSources 'boot.wim.lw-injected') -Force
+        if (-not $useFolderSource) {
+            try { Dismount-DiskImage -ImagePath $isoItem.FullName -ErrorAction SilentlyContinue | Out-Null } catch { }
+            Remove-LwMountedIso -Path $isoItem.FullName
         }
-        try { Dismount-DiskImage -ImagePath $isoItem.FullName -ErrorAction SilentlyContinue | Out-Null } catch { }
-        Remove-LwMountedIso -Path $isoItem.FullName
+        if ((Get-Command -Name Test-LwPreSplitBootInjected -ErrorAction SilentlyContinue) -and
+            -not [string]::IsNullOrWhiteSpace($ExportStagedBootWimSetDir) -and
+            -not (Test-LwPreSplitBootInjected -SetDir $ExportStagedBootWimSetDir)) {
+            Emit @{
+                event   = 'error'
+                disk    = -1
+                message = ("drive-staging: FATAL - Image Ready set at '{0}' missing valid sources\boot.wim.lw-injected after export." -f $ExportStagedBootWimSetDir)
+            }
+            exit 1
+        }
         Invoke-LwTempOrphanSweep -Reason 'boot-export' -IncludeCache
-        EmitLog -Disk 0 -Msg "drive-staging: boot.wim exported to $destSources"
-        Emit @{ event = 'done'; disk = 0; success = $true; message = 'boot.wim export complete' }
+        EmitLog -Disk 0 -Msg ("drive-staging: injected boot.wim + sentinel exported to {0}" -f $destSources)
+        Emit @{ event = 'done'; disk = 0; success = $true; message = 'boot.wim export complete (injected + sentinel)' }
         exit 0
     }
 
@@ -3834,7 +3950,9 @@ try {
         } elseif ($ShareRoot -match '^\\\\') {
             $shareHost = 'WIN-HQ5JDEACV3S'
             if ($ShareRoot -match '^\\\\([^\\]+)\\') { $shareHost = $Matches[1] }
-            try { Connect-Share -ShareHost $shareHost -User $ShareUser -Pass $SharePassword -ProbePath $ShareRoot } catch { }
+            try { Connect-Share -ShareHost $shareHost -User $ShareUser -Pass $SharePassword -ProbePath $ShareRoot } catch {
+                EmitLog -Disk 0 -Msg ("destage: share connect skipped: {0}" -f $_.Exception.Message)
+            }
         }
         if (-not [string]::IsNullOrWhiteSpace($ShareRoot) -and (Test-Path -LiteralPath $ShareRoot)) {
             EmitLog -Disk 0 -Msg "destage: share reachable $ShareRoot"
@@ -4168,19 +4286,50 @@ try {
         $overlayCache = ''
     } elseif ($DriveHttpDirect) {
         # HTTP direct: media + boot files land on the stick; never Build-Cache / EspCache.
+        # Per-disk inject is skipped only when the downloaded package carries a valid sentinel.
         EmitLog -Disk 0 -Msg 'drive-http: skipping local ESP/overlay cache - package downloads onto USB (no LWCache staging)'
         $CacheRoot = ''
         $userProvidedCache = $false
         $espCache = ''
         $overlayCache = ''
-    } elseif (-not [string]::IsNullOrEmpty($isoDriveLetter)) {
-        # Architecture B / PreferIso: no ESP cache - workers copy boot files from the mounted
-        # ISO and inject WinPE per disk. Overlay maps ContentRoot to USB (no temp stage).
-        EmitLog -Disk 0 -Msg 'ISO mode: skipping ESP/overlay cache - boot files + overlay copy directly to USB (no LWCache staging)'
+    } elseif (-not [string]::IsNullOrEmpty($isoDriveLetter) -and
+              -not [string]::IsNullOrWhiteSpace($bootInjectSourcesDirForWorker)) {
+        # Image Ready / ISO folder already has injected boot.wim + sentinel — copy only.
+        EmitLog -Disk 0 -Msg 'ISO/media package: pre-injected boot.wim ready - skipping EspCache and per-disk DISM'
         $CacheRoot = ''
         $userProvidedCache = $false
         $espCache = ''
         $overlayCache = ''
+    } elseif (-not [string]::IsNullOrEmpty($isoDriveLetter)) {
+        # Media package or ISO folder without inject sentinel: inject ONCE into EspCache,
+        # then workers copy the template (multi-stick does not redo DISM per disk).
+        EmitLog -Disk 0 -Msg 'ISO/media package: no inject sentinel - building EspCache and injecting boot.wim once for all sticks'
+        if (-not $userProvidedCache -or [string]::IsNullOrWhiteSpace($CacheRoot)) {
+            $CacheRoot = Join-Path $env:TEMP ('LWCache_' + [guid]::NewGuid().ToString('N').Substring(0, 8))
+            $userProvidedCache = $false
+        }
+        $espCache     = Join-Path $CacheRoot 'esp'
+        $overlayCache = Join-Path $CacheRoot 'overlay'
+        Build-IsoCache -IsoDrive "$isoDriveLetter\"
+        $startnetSrc  = $startnetForInjection
+        $bootWimPath  = Join-Path $espCache 'sources\boot.wim'
+        $wpeOcStaging = Resolve-WpeOcArchRoot -BaseRoot $WpeOcSource -Arch $wfUpper
+        EmitLog -Disk 0 -Msg "startnet inject: resolved WinPE-OCs source for $wfUpper -> '$wpeOcStaging'"
+        $winPeUiSrcForInject = Resolve-LwWinPeUiPublishDir -ContentRootPath $ContentRoot -Arch $wfUpper
+        $winPeUiExeForSentinel = Join-Path $winPeUiSrcForInject 'LoneWolf.WinPeUi.exe'
+        Invoke-StartnetInjection -BootWimPath $bootWimPath -StartnetCmdPath $startnetSrc -WpeOcPath $wpeOcStaging -Arm64UsbDriverDir $arm64UsbDriverDir -WinPeUiSrcDir $winPeUiSrcForInject
+        $espSentinel = Join-Path $espCache 'sources\boot.wim.lw-injected'
+        $injectedHash = if (Get-Command -Name Get-LwBootWimInjectSentinel -ErrorAction SilentlyContinue) {
+            Get-LwBootWimInjectSentinel -StartnetPath $startnetSrc -DriverDir $arm64UsbDriverDir -WinPeUiExePath $winPeUiExeForSentinel
+        } else {
+            (Get-FileHash -LiteralPath $startnetSrc -Algorithm SHA256 -ErrorAction SilentlyContinue).Hash
+        }
+        if ($injectedHash) {
+            Set-Content -LiteralPath $espSentinel -Value $injectedHash -Encoding ascii -Force -ErrorAction SilentlyContinue
+        }
+        $script:LwBootInjectSourcesDir = Join-Path $espCache 'sources'
+        $bootInjectSourcesDirForWorker = $script:LwBootInjectSourcesDir
+        EmitLog -Disk 0 -Msg ("ISO/media package: EspCache inject complete at '{0}' - workers copy template and skip per-disk DISM" -f $bootInjectSourcesDirForWorker)
     } else {
         # Non-ISO staged-WIM / MEDIA-CREATOR: EspCache holds the injected boot.wim template
         # so each USB gets a fast copy instead of per-disk DISM inject. Allocate CacheRoot
@@ -4417,25 +4566,76 @@ try {
         }
     }
 
-    $imageBuildDate = ''
-    if (-not [string]::IsNullOrWhiteSpace($driveMediaPackageDir)) {
+    # Windows image identity = PreSplit / Image Ready folder name (imageVersionId).
+    # imageBuildDate is the calendar day from that stamp (legacy key for older readers).
+    $imageVersion = ''
+    if (-not [string]::IsNullOrWhiteSpace($PreSplitSetDir)) {
+        try { $imageVersion = [string](Split-Path -Leaf $PreSplitSetDir) } catch { }
         try {
-            $pkgManifest = Join-Path $driveMediaPackageDir 'presplit-manifest.json'
+            $pkgManifest = Join-Path $PreSplitSetDir 'presplit-manifest.json'
             if (Test-Path -LiteralPath $pkgManifest) {
-                $pm = Get-Content -Raw -LiteralPath $pkgManifest -ErrorAction Stop | ConvertFrom-Json -ErrorAction Stop
-                if ($pm.source -and $pm.source.isoLastWriteUtc) {
-                    $imageBuildDate = ([datetime]::Parse([string]$pm.source.isoLastWriteUtc, $null,
-                        [System.Globalization.DateTimeStyles]::RoundtripKind)).ToUniversalTime().ToString('yyyy-MM-dd')
+                $pmIv = Get-Content -Raw -LiteralPath $pkgManifest -ErrorAction Stop | ConvertFrom-Json -ErrorAction Stop
+                if ($pmIv.PSObject.Properties['imageVersion'] -and $pmIv.imageVersion) {
+                    $imageVersion = [string]$pmIv.imageVersion
                 }
             }
         } catch { }
-        if (-not $imageBuildDate) {
-            try { $imageBuildDate = (Get-Item -LiteralPath $driveMediaPackageDir).LastWriteTimeUtc.ToString('yyyy-MM-dd') } catch { }
-        }
-    } elseif ($isoItem) {
-        try { $imageBuildDate = $isoItem.LastWriteTimeUtc.ToString('yyyy-MM-dd') } catch { }
-    } elseif (-not $OverlayOnly -and -not [string]::IsNullOrWhiteSpace($StagingWim) -and (Test-Path -LiteralPath $StagingWim)) {
+    } elseif ($isoItem -and (Get-Command -Name Get-LWImageVersionId -ErrorAction SilentlyContinue)) {
+        try { $imageVersion = [string](Get-LWImageVersionId -Iso $isoItem -Edition $winEdition) } catch { }
+    } elseif (-not [string]::IsNullOrWhiteSpace($driveMediaPackageDir)) {
+        try { $imageVersion = [string](Split-Path -Leaf $driveMediaPackageDir) } catch { }
+    }
+
+    # Canonical imageBuildDate: remote version.json / set current / staging UTC day.
+    # Never trust raw ISO LastWrite alone (UUP media often carries 2024-04-01).
+    $imageBuildDate = ''
+    $imageUpdatedUtc = ''
+    $setDirForStamp = $(if (-not [string]::IsNullOrWhiteSpace($PreSplitSetDir)) { $PreSplitSetDir } else { $driveMediaPackageDir })
+    if (-not [string]::IsNullOrWhiteSpace($PreSplitRoot) -and (Get-Command -Name Read-LWRemoteVersionSku -ErrorAction SilentlyContinue)) {
+        try {
+            $remoteSku = Read-LWRemoteVersionSku -PreSplitRoot $PreSplitRoot -Arch $wfUpper -Edition $winEdition
+            if ($remoteSku) {
+                if (-not $imageVersion -and $remoteSku.imageVersion) { $imageVersion = [string]$remoteSku.imageVersion }
+                if ($remoteSku.imageBuildDate) { $imageBuildDate = [string]$remoteSku.imageBuildDate }
+                if ($remoteSku.updatedUtc) { $imageUpdatedUtc = [string]$remoteSku.updatedUtc }
+            }
+        } catch { }
+    }
+    if (-not [string]::IsNullOrWhiteSpace($setDirForStamp)) {
+        try {
+            foreach ($markerLeaf in @('current', 'presplit-manifest.json')) {
+                $markerPath = Join-Path $setDirForStamp $markerLeaf
+                if (-not (Test-Path -LiteralPath $markerPath)) { continue }
+                $mj = Get-Content -Raw -LiteralPath $markerPath -ErrorAction Stop | ConvertFrom-Json -ErrorAction Stop
+                if (-not $imageVersion -and $mj.PSObject.Properties['imageVersion'] -and $mj.imageVersion) {
+                    $imageVersion = [string]$mj.imageVersion
+                }
+                if (-not $imageUpdatedUtc) {
+                    if ($mj.PSObject.Properties['updatedUtc'] -and $mj.updatedUtc) {
+                        $imageUpdatedUtc = [string]$mj.updatedUtc
+                    } elseif ($mj.PSObject.Properties['createdUtc'] -and $mj.createdUtc) {
+                        $imageUpdatedUtc = [string]$mj.createdUtc
+                    }
+                }
+                if (-not $imageBuildDate -and $mj.PSObject.Properties['imageBuildDate'] -and $mj.imageBuildDate) {
+                    $imageBuildDate = [string]$mj.imageBuildDate
+                }
+            }
+        } catch { }
+    }
+    if ($imageVersion -and (Get-Command -Name Get-LWCanonicalImageBuildDateYmd -ErrorAction SilentlyContinue)) {
+        $healed = [string](Get-LWCanonicalImageBuildDateYmd -ImageVersion $imageVersion -UpdatedUtc $imageUpdatedUtc -ExplicitBuildDate $imageBuildDate)
+        if ($healed) { $imageBuildDate = $healed }
+    } elseif (-not $imageBuildDate -and $imageVersion -and (Get-Command -Name Get-LWImageVersionBuildDateYmd -ErrorAction SilentlyContinue)) {
+        $imageBuildDate = [string](Get-LWImageVersionBuildDateYmd -ImageVersion $imageVersion)
+    }
+    if (-not $imageBuildDate -and -not [string]::IsNullOrWhiteSpace($setDirForStamp)) {
+        try { $imageBuildDate = (Get-Item -LiteralPath $setDirForStamp).LastWriteTimeUtc.ToString('yyyy-MM-dd') } catch { }
+    } elseif (-not $imageBuildDate -and -not $OverlayOnly -and -not [string]::IsNullOrWhiteSpace($StagingWim) -and (Test-Path -LiteralPath $StagingWim)) {
         try { $imageBuildDate = (Get-Item -LiteralPath $StagingWim).LastWriteTimeUtc.ToString('yyyy-MM-dd') } catch { }
+    }
+    if ($imageVersion) {
+        EmitLog -Disk 0 -Msg ("image-identity: imageVersion={0} imageBuildDate={1} edition={2}" -f $imageVersion, $imageBuildDate, $winEdition)
     }
 
     $edgeToolsDir = Join-Path ([IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..'))) 'tools'
@@ -4480,6 +4680,7 @@ try {
                 $ShareLauncherVersion,
                 $ShareScriptVersion,
                 $imageBuildDate,
+                $imageVersion,
                 $winEdition,
                 $edgeToolsDir,
                 ([bool]($DevBuild -and $DestageSkipWu)),

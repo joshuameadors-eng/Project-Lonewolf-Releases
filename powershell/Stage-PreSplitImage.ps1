@@ -71,6 +71,13 @@
 .PARAMETER IsoPath
   Explicit source ISO. Default: newest *(<ARCH>)*.iso by LastWriteTime in
   Staging\ISO\ (filename must include home or pro and *(<ARCH>)*; legacy ISO\<SKU>\ still read).
+  Ignored when -SourceDir is set.
+
+.PARAMETER SourceDir
+  Explicit Windows install media folder (SkipISO / UUP convert output). When set
+  and the folder contains sources\install.wim or sources\install.esd, the ISO is
+  not mounted; that tree is used for split/copy. imageVersion slug comes from the
+  folder/ISO name + edition; trailing stamp is staging UTC (Get-LWImageVersionId).
 
 .PARAMETER WindowsEdition
   Home or Pro. Selects ISO by filename token (home/pro) and writes a PreSplit\<imageVersion>\ folder.
@@ -110,8 +117,9 @@ param(
 
     [string] $ShareRoot        = '\\WIN-HQ5JDEACV3S\Images\FB Image Creation',
     # KEEP IN SYNC: LONEWOLF_SHARE_USER / LONEWOLF_SHARE_PASSWORD env-first (see Invoke-LoneWolfBuild.ps1).
+    # GATE: share staging fails closed when LONEWOLF_SHARE_PASSWORD is unset.
     [string] $ShareUser        = $(if (-not [string]::IsNullOrWhiteSpace($env:LONEWOLF_SHARE_USER)) { $env:LONEWOLF_SHARE_USER } else { 'Reflect' }),
-    [string] $SharePassword    = $(if (-not [string]::IsNullOrWhiteSpace($env:LONEWOLF_SHARE_PASSWORD)) { $env:LONEWOLF_SHARE_PASSWORD } else { 'mer*HWE0upt*rqe@dud' }),
+    [string] $SharePassword    = $(if (-not [string]::IsNullOrWhiteSpace($env:LONEWOLF_SHARE_PASSWORD)) { $env:LONEWOLF_SHARE_PASSWORD } else { '' }),
     [string] $LocalProjectRoot = '',
     [switch] $DestageMedia,
     [ValidateSet('local', 'share', 'googleDrive', '')]
@@ -119,10 +127,13 @@ param(
     [string] $PreSplitOutputRoot = '',
     [string] $IsoFallbackRoot = '',
     [string] $IsoPath          = '',
+    [string] $SourceDir        = '',
     [switch] $Force,
     [int]    $FileSizeMb       = 3800,
     [switch] $DeepHash,
-    [string] $AppResourcesPath = ''
+    [string] $AppResourcesPath = '',
+    # Prefer a durable work root (e.g. UI export\.keyes-work) over %TEMP%.
+    [string] $ScratchRoot = ''
 )
 
 $ErrorActionPreference = 'Stop'
@@ -143,6 +154,9 @@ function EmitDone     { param([bool]$Success, [string]$Msg)
 # --- Share authentication (mirrors Get-StagingVersion.ps1) --------------------
 function Connect-ShareCredentials {
     param([string]$ShareHost, [string]$User, [string]$Pass)
+    if ([string]::IsNullOrWhiteSpace($Pass)) {
+        throw 'HQ share password is not set. Set LONEWOLF_SHARE_PASSWORD before connecting to the deployment share.'
+    }
     try {
         $cmdkey = Join-Path $env:SystemRoot 'System32\cmdkey.exe'
         if (Test-Path -LiteralPath $cmdkey) {
@@ -247,6 +261,9 @@ if ($useDestageLocalUup) {
         EmitError 'A Google Drive folder URL is not a Windows filesystem ShareRoot. Use local UUP or the HQ UNC share.'; exit 1
     }
     if ($ShareRoot -match '^\\\\') {
+        if ([string]::IsNullOrWhiteSpace($SharePassword)) {
+            EmitError 'HQ share password is not set. Set LONEWOLF_SHARE_PASSWORD.'; exit 1
+        }
         $shareHost = 'WIN-HQ5JDEACV3S'
         if ($ShareRoot -match '^\\\\([^\\]+)\\') { $shareHost = $Matches[1] }
         Connect-ShareCredentials -ShareHost $shareHost -User $ShareUser -Pass $SharePassword
@@ -265,10 +282,31 @@ if (-not (Test-Path -LiteralPath $SplitLibPath)) {
 $Arm64DriverLibPath = Join-Path $PSScriptRoot 'lib\Add-LwArm64Drivers.ps1'
 if (Test-Path -LiteralPath $Arm64DriverLibPath) { . $Arm64DriverLibPath }
 
-# --- Select source ISO --------------------------------------------------------
+# --- Select source ISO or SkipISO media folder --------------------------------
 EmitPhase 'stage-mount'
 $isoItem = $null
-if (-not [string]::IsNullOrWhiteSpace($IsoPath)) {
+$useSourceDir = $false
+$sourceMediaRoot = ''
+if (-not [string]::IsNullOrWhiteSpace($SourceDir)) {
+    if (-not (Test-Path -LiteralPath $SourceDir)) { EmitError "SourceDir not found: $SourceDir"; exit 1 }
+    $srcDirItem = Get-Item -LiteralPath $SourceDir
+    if (-not $srcDirItem.PSIsContainer) { EmitError "SourceDir is not a directory: $SourceDir"; exit 1 }
+    $sourceMediaRoot = $srcDirItem.FullName.TrimEnd('\') + '\'
+    $srcWimPath = Join-Path $sourceMediaRoot 'sources\install.wim'
+    $srcEsdPath = Join-Path $sourceMediaRoot 'sources\install.esd'
+    if (-not (Test-Path -LiteralPath $srcWimPath) -and -not (Test-Path -LiteralPath $srcEsdPath)) {
+        EmitError "SourceDir '$($srcDirItem.FullName)' has no sources\install.wim or sources\install.esd"; exit 1
+    }
+    if (-not (Test-LWIsoMatchesEdition -FullName $srcDirItem.FullName -Edition $winEdition)) {
+        EmitError "SourceDir '$($srcDirItem.Name)' is not a $winEdition media folder (arch $wfUpper)"; exit 1
+    }
+    $installForSize = if (Test-Path -LiteralPath $srcWimPath) { $srcWimPath } else { $srcEsdPath }
+    $isoItem = $srcDirItem
+    # DirectoryInfo has no Length; use install image size for skip/manifest parity with ISO.
+    $isoItem | Add-Member -NotePropertyName Length -NotePropertyValue ([long](Get-Item -LiteralPath $installForSize).Length) -Force
+    $useSourceDir = $true
+    EmitLog ('using SourceDir media tree {0}' -f $srcDirItem.FullName)
+} elseif (-not [string]::IsNullOrWhiteSpace($IsoPath)) {
     if (-not (Test-Path -LiteralPath $IsoPath)) { EmitError "IsoPath not found: $IsoPath"; exit 1 }
     $isoItem = Get-Item -LiteralPath $IsoPath
     if (-not (Test-LWIsoMatchesEdition -FullName $isoItem.FullName -Edition $winEdition)) {
@@ -292,10 +330,38 @@ if (-not [string]::IsNullOrWhiteSpace($IsoPath)) {
 }
 
 # --- Compute image-version identity + target ----------------------------------
-$imageVersion = Get-LWImageVersionId -Iso $isoItem -Edition $winEdition
-$Target       = Join-Path $WriteRoot $imageVersion
-$isoSizeGb    = [math]::Round($isoItem.Length / 1GB, 2)
-EmitLog ('pre-split: iso={0} ({1} GB) edition={2} imageVersion={3}' -f $isoItem.FullName, $isoSizeGb, $winEdition, $imageVersion)
+# Trailing stamp is staging UTC (not ISO LastWriteTime). Reuse an existing set
+# that matches this source by name+size so skip/current does not mint a new
+# folder on every check.
+$imageVersion = $null
+$Target = $null
+if (-not $Force -and (Get-Command -Name Get-LWPreSplitCandidateDirs -ErrorAction SilentlyContinue) -and
+    (Get-Command -Name Test-LWPreSplitSourceMatchesIso -ErrorAction SilentlyContinue)) {
+    foreach ($cand in @(Get-LWPreSplitCandidateDirs -PreSplitRoot $WriteRoot -Arch $bareArch -Edition $winEdition)) {
+        $chkExist = Test-LWPreSplitSet -SetDir $cand
+        if (-not $chkExist.Valid -or -not $chkExist.Manifest) { continue }
+        if (-not (Test-LWPreSplitSourceMatchesIso -Manifest $chkExist.Manifest -Iso $isoItem)) { continue }
+        $manArchExist = $null
+        try {
+            if ($chkExist.Manifest.PSObject.Properties['arch'] -and $chkExist.Manifest.arch) {
+                $manArchExist = Get-LWBareArch ([string]$chkExist.Manifest.arch)
+            }
+        } catch { }
+        if ($manArchExist -and $manArchExist -ne $bareArch) { continue }
+        $imageVersion = [string]$chkExist.Manifest.imageVersion
+        if ([string]::IsNullOrWhiteSpace($imageVersion)) { $imageVersion = [string](Split-Path -Leaf $cand) }
+        $Target = $cand
+        EmitLog ('pre-split: reusing existing set {0} (source name+size match)' -f $imageVersion)
+        break
+    }
+}
+if ([string]::IsNullOrWhiteSpace($imageVersion)) {
+    $imageVersion = Get-LWImageVersionId -Iso $isoItem -Edition $winEdition -StampUtc ([datetime]::UtcNow)
+    $Target = Join-Path $WriteRoot $imageVersion
+}
+$isoSizeGb    = [math]::Round([long]$isoItem.Length / 1GB, 2)
+$sourceLabel  = if ($useSourceDir) { 'sourceDir' } else { 'iso' }
+EmitLog ('pre-split: {0}={1} ({2} GB) edition={3} imageVersion={4}' -f $sourceLabel, $isoItem.FullName, $isoSizeGb, $winEdition, $imageVersion)
 EmitLog ('pre-split: output root={0} target={1}' -f $WriteRoot, $Target)
 
 # --- Skip vs write ------------------------------------------------------------
@@ -381,6 +447,27 @@ if ($Force) {
 }
 
 if ($skipStaged) {
+    # Refresh current.json / version.json even when SWMs are skipped so remote
+    # SoT carries canonical imageBuildDate (heals UUP LastWrite folder stamps).
+    try {
+        $nowUtcSkip = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
+        $updSkip = $nowUtcSkip
+        try {
+            $manPath = Join-Path $Target 'presplit-manifest.json'
+            if (Test-Path -LiteralPath $manPath) {
+                $manSkip = Get-Content -Raw -LiteralPath $manPath -ErrorAction Stop | ConvertFrom-Json -ErrorAction Stop
+                if ($manSkip.PSObject.Properties['updatedUtc'] -and $manSkip.updatedUtc) {
+                    $updSkip = [string]$manSkip.updatedUtc
+                } elseif ($manSkip.PSObject.Properties['createdUtc'] -and $manSkip.createdUtc) {
+                    $updSkip = [string]$manSkip.createdUtc
+                }
+            }
+        } catch { }
+        if (Get-Command -Name Write-LWPreSplitCurrentMarkers -ErrorAction SilentlyContinue) {
+            Write-LWPreSplitCurrentMarkers -PreSplitRoot $WriteRoot -SetDir $Target -Arch $wfUpper -Edition $winEdition -ImageVersion $imageVersion -UpdatedUtc $updSkip
+            EmitLog "refreshed current.json / version.json markers (imageVersion=$imageVersion)"
+        }
+    } catch { }
     EmitDone $true 'already-staged'
     exit 0
 }
@@ -390,22 +477,28 @@ $scratch   = ''
 $tmpTarget = ''
 $mounted   = $false
 try {
-    $isoSizeGb = [math]::Round($isoItem.Length / 1GB, 2)
-    EmitLog "stage-mount: mounting '$($isoItem.Name)' ($isoSizeGb GB)..."
+    $isoSizeGb = [math]::Round([long]$isoItem.Length / 1GB, 2)
     EmitProgress 'stage-mount' 0
-    $diskImage = Mount-DiskImage -ImagePath $isoItem.FullName -PassThru -ErrorAction Stop
-    $mounted   = $true
+    if ($useSourceDir) {
+        $isoDrive = $sourceMediaRoot
+        EmitLog "stage-mount: using SourceDir '$($isoItem.FullName)' ($isoSizeGb GB install image; no ISO mount)"
+        EmitProgress 'stage-mount' 100
+    } else {
+        EmitLog "stage-mount: mounting '$($isoItem.Name)' ($isoSizeGb GB)..."
+        $diskImage = Mount-DiskImage -ImagePath $isoItem.FullName -PassThru -ErrorAction Stop
+        $mounted   = $true
 
-    $driveLetter = ''
-    for ($r = 0; $r -lt 5 -and [string]::IsNullOrEmpty($driveLetter); $r++) {
-        if ($r -gt 0) { Start-Sleep -Seconds 1 }
-        $vol = $diskImage | Get-Volume -ErrorAction SilentlyContinue
-        if ($vol -and $vol.DriveLetter) { $driveLetter = $vol.DriveLetter + ':' }
+        $driveLetter = ''
+        for ($r = 0; $r -lt 5 -and [string]::IsNullOrEmpty($driveLetter); $r++) {
+            if ($r -gt 0) { Start-Sleep -Seconds 1 }
+            $vol = $diskImage | Get-Volume -ErrorAction SilentlyContinue
+            if ($vol -and $vol.DriveLetter) { $driveLetter = $vol.DriveLetter + ':' }
+        }
+        if ([string]::IsNullOrEmpty($driveLetter)) { throw 'Failed to get drive letter for mounted ISO after 5 attempts.' }
+        $isoDrive = "$driveLetter\"
+        EmitLog "stage-mount: ISO mounted at $isoDrive"
+        EmitProgress 'stage-mount' 100
     }
-    if ([string]::IsNullOrEmpty($driveLetter)) { throw 'Failed to get drive letter for mounted ISO after 5 attempts.' }
-    $isoDrive = "$driveLetter\"
-    EmitLog "stage-mount: ISO mounted at $isoDrive"
-    EmitProgress 'stage-mount' 100
 
     # Inspect the source install image for manifest metadata.
     $isoSources = Join-Path $isoDrive 'sources'
@@ -416,7 +509,8 @@ try {
     } elseif (Test-Path -LiteralPath $srcEsdPath) {
         $sourceKind = 'esd'; $installImg = $srcEsdPath
     } else {
-        throw "no install.wim or install.esd found under '$isoSources' on the mounted ISO"
+        $where = if ($useSourceDir) { 'SourceDir' } else { 'mounted ISO' }
+        throw "no install.wim or install.esd found under '$isoSources' on the $where"
     }
     $originalSize = (Get-Item -LiteralPath $installImg).Length
     $indexCount   = 1
@@ -426,7 +520,19 @@ try {
     } catch { }
 
     # -- Split into a local scratch folder (never split straight to the share) --
-    $scratch        = Join-Path $env:TEMP ('LW-Stage-' + [guid]::NewGuid().ToString('N').Substring(0, 8))
+    $scratchBase = $env:TEMP
+    if (-not [string]::IsNullOrWhiteSpace($ScratchRoot)) {
+        try {
+            if (-not (Test-Path -LiteralPath $ScratchRoot)) {
+                New-Item -ItemType Directory -Path $ScratchRoot -Force | Out-Null
+            }
+            $scratchBase = (Get-Item -LiteralPath $ScratchRoot).FullName
+        } catch {
+            EmitLog ("stage-split: ScratchRoot unusable ($($_.Exception.Message)); using TEMP")
+            $scratchBase = $env:TEMP
+        }
+    }
+    $scratch        = Join-Path $scratchBase ('LW-Stage-' + [guid]::NewGuid().ToString('N').Substring(0, 8))
     $scratchSources = Join-Path $scratch 'sources'
     New-Item -ItemType Directory -Force -Path $scratchSources | Out-Null
     $splitSources = $isoSources
@@ -564,9 +670,22 @@ try {
         Write-LWPreSplitCurrentMarkers -PreSplitRoot $WriteRoot -SetDir $Target -Arch $wfUpper -Edition $winEdition -ImageVersion $imageVersion -UpdatedUtc $nowUtc
     } else {
         $currentMarker = Join-Path $Target 'current'
-        $curObj = [ordered]@{ imageVersion = $imageVersion; windowsEdition = $winEdition; arch = $wfUpper; updatedUtc = $nowUtc }
-        [System.IO.File]::WriteAllText($currentMarker, ($curObj | ConvertTo-Json -Compress),
-            [System.Text.UTF8Encoding]::new($false))
+        $ymd = ''
+        if (Get-Command -Name Get-LWCanonicalImageBuildDateYmd -ErrorAction SilentlyContinue) {
+            $ymd = [string](Get-LWCanonicalImageBuildDateYmd -ImageVersion $imageVersion -UpdatedUtc $nowUtc)
+        }
+        $curObj = [ordered]@{
+            imageVersion   = $imageVersion
+            imageBuildDate = $ymd
+            windowsEdition = $winEdition
+            arch           = $wfUpper
+            updatedUtc     = $nowUtc
+        }
+        $utf8 = [System.Text.UTF8Encoding]::new($false)
+        [System.IO.File]::WriteAllText($currentMarker, ($curObj | ConvertTo-Json -Depth 6), $utf8)
+        if (Get-Command -Name Write-LWRemoteVersionJson -ErrorAction SilentlyContinue) {
+            Write-LWRemoteVersionJson -PreSplitRoot $WriteRoot
+        }
     }
     EmitProgress 'stage-verify' 100
 

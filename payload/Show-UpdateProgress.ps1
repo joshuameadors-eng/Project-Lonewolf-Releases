@@ -270,32 +270,57 @@ $script:FbProductDisplayVersion = $FirstBaseProductVersion
 
 $script:FbSplashOsCurrentBuild = 0
 $script:FbSplashOsDisplayVersion = ''
-$script:FbSplashOsAlready25H2 = $false
+$script:FbSplashOsCurrentFeature = ''
+$script:FbSplashOsCurrentFeatureRank = 0
 try {
     $fbSplashCv = Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion' -ErrorAction Stop
     try { $script:FbSplashOsCurrentBuild = [int]$fbSplashCv.CurrentBuild } catch {
         try { $script:FbSplashOsCurrentBuild = [int]$fbSplashCv.CurrentBuildNumber } catch { $script:FbSplashOsCurrentBuild = 0 }
     }
     try { $script:FbSplashOsDisplayVersion = ([string]$fbSplashCv.DisplayVersion).Trim() } catch { $script:FbSplashOsDisplayVersion = '' }
-    if ($script:FbSplashOsCurrentBuild -ge 26100) {
-        $script:FbSplashOsAlready25H2 = $true
-    } elseif ($script:FbSplashOsDisplayVersion -match '(?i)25\s*H\s*2') {
-        $script:FbSplashOsAlready25H2 = $true
+    if ($script:FbSplashOsDisplayVersion -match '(?i)(\d{2})\s*H\s*([12])') {
+        $script:FbSplashOsCurrentFeature = ('{0}H{1}' -f $Matches[1], $Matches[2]).ToUpper()
+    } elseif ($script:FbSplashOsCurrentBuild -ge 26100) {
+        $script:FbSplashOsCurrentFeature = '25H2'
+    }
+    if ($script:FbSplashOsCurrentFeature -match '(?i)^(\d{2})H([12])$') {
+        $script:FbSplashOsCurrentFeatureRank = (([int]$Matches[1] * 10) + [int]$Matches[2])
     }
 } catch {}
 
 function Test-FbSplashIsRedundant25H2Title {
+    <#
+    .SYNOPSIS
+        Hide same-version / N+1 feature-upgrade titles from splash during WU
+        (e.g. 26H2 while on 25H2). Quality/LCU titles never match.
+    #>
     param([string]$Title = '')
     $t = [string]$Title
     if ([string]::IsNullOrWhiteSpace($t)) { return $false }
-    if ($t -match '(?i)Cumulative\s+Update|Security\s+Intelligence|Servicing\s+Stack|\.NET\s+Framework|Malicious\s+Software|Definition\s+Update|Quality\s+Update|Monthly\s+Rollup|\bLCU\b|\bSSU\b') {
+    if ($t -match '(?i)enablement\s+package|feature\s+update(\s+to)?\s+windows') {
+        # feature paths below
+    } elseif ($t -match '(?i)Cumulative\s+Update|Security\s+Intelligence|Servicing\s+Stack|\.NET\s+Framework|Malicious\s+Software|Definition\s+Update|Quality\s+Update|Monthly\s+Rollup|\bLCU\b|\bSSU\b') {
         return $false
     }
-    if ($t -match '(?i)KB5054156') { return $true }
-    if ($t -match '(?i)enablement\s+package' -and $t -match '(?i)25\s*H\s*2') { return $true }
-    if ($t -match '(?i)(?:feature\s+update\s+to\s+)?(?:windows|win)\s*11,?\s*version\s*25\s*H\s*2') { return $true }
-    if ($t -match '(?i)^(?:windows|win)\s*11\s*25\s*H\s*2') { return $true }
-    return $false
+    $isFeature = [bool]($t -match '(?i)enablement\s+package|feature\s+update(\s+to)?\s+windows|KB5054156')
+    if (-not $isFeature -and $t -notmatch '(?i)(?:windows|win)\s*11,?\s*version\s*\d{2}\s*H\s*[12]') {
+        return $false
+    }
+    $offered = ''
+    if ($t -match '(?i)version\s+(\d{2})\s*H\s*([12])') {
+        $offered = ('{0}H{1}' -f $Matches[1], $Matches[2]).ToUpper()
+    } elseif ($t -match '(?i)\b(\d{2})\s*H\s*([12])\b') {
+        $offered = ('{0}H{1}' -f $Matches[1], $Matches[2]).ToUpper()
+    } elseif ($t -match '(?i)KB5054156') {
+        $offered = '25H2'
+    }
+    if ($script:FbSplashOsCurrentFeatureRank -le 0) { return $false }
+    if (-not $offered) { return $true }
+    $offRank = 0
+    if ($offered -match '(?i)^(\d{2})H([12])$') {
+        $offRank = (([int]$Matches[1] * 10) + [int]$Matches[2])
+    }
+    return ($offRank -ge $script:FbSplashOsCurrentFeatureRank)
 }
 
 $FbRoot = 'C:\Windows\Setup\FirstBase'
@@ -474,7 +499,7 @@ function Test-FbSplashIsOobeFamilyProc {
     param([string]$ProcName)
     $pn = ([string]$ProcName).ToLowerInvariant()
     if ($pn -notmatch '\.exe$') { $pn = $pn + '.exe' }
-    return ($pn -eq 'applicationframehost.exe' -or $pn -eq 'cloudexperiencehost.exe' -or $pn -eq 'shellexperiencehost.exe' -or $pn -eq 'useroobebroker.exe' -or $pn -eq 'oobeldr.exe' -or $pn -eq 'wwahost.exe' -or $pn -eq 'oobe.exe')
+    return ($pn -eq 'applicationframehost.exe' -or $pn -eq 'cloudexperiencehost.exe' -or $pn -eq 'shellexperiencehost.exe' -or $pn -eq 'startmenuexperiencehost.exe' -or $pn -eq 'searchhost.exe' -or $pn -eq 'useroobebroker.exe' -or $pn -eq 'oobeldr.exe' -or $pn -eq 'wwahost.exe' -or $pn -eq 'oobe.exe')
 }
 
 function Invoke-FbSplashHideOobeHwndIfAllowed {
@@ -1102,9 +1127,22 @@ public static class FbSplashWin32Z {
     public static extern bool SystemParametersInfoSet(uint uiAction, uint uiParam, IntPtr pvParam, uint fWinIni);
     [DllImport("user32.dll", SetLastError = true, EntryPoint = "SystemParametersInfoW")]
     public static extern bool SystemParametersInfoGetUint(uint uiAction, uint uiParam, ref uint pvParam, uint fWinIni);
+    // Keep display/system awake while the splash covers the interactive desktop.
+    public const uint ES_SYSTEM_REQUIRED = 0x00000001;
+    public const uint ES_DISPLAY_REQUIRED = 0x00000002;
+    public const uint ES_CONTINUOUS = 0x80000000;
+    [DllImport("kernel32.dll")]
+    public static extern uint SetThreadExecutionState(uint esFlags);
+    public static void SetKeepAwake(bool enable) {
+        if (enable) {
+            SetThreadExecutionState(ES_CONTINUOUS | ES_SYSTEM_REQUIRED | ES_DISPLAY_REQUIRED);
+        } else {
+            SetThreadExecutionState(ES_CONTINUOUS);
+        }
+    }
 }
 '@ -ErrorAction Stop
-    Write-SplashLog 'STARTUP: FbSplashWin32Z P/Invoke type compiled (2213z+2214a+2214b+2214c+2214d+2214e+2214f+2214h+2214i+2214j+2214k+2214l+2214m+2296+2300)'
+    Write-SplashLog 'STARTUP: FbSplashWin32Z P/Invoke type compiled (2213z+2214a+2214b+2214c+2214d+2214e+2214f+2214h+2214i+2214j+2214k+2214l+2214m+2296+2300+keepAwake)'
     Write-SplashLog '2214l-enum: OOBE WWAHost enumeration pass armed (1.5s throttle); fg-mismatch diagnostic enabled.'
 } catch {
     Write-SplashLog ("STARTUP: FbSplashWin32Z Add-Type failed: {0}" -f $_.Exception.Message) 'WARN'
@@ -1662,6 +1700,46 @@ function Set-FbSplashElapsedDisplay {
     $elapsedText.Text = Format-FbSplashDuration -Elapsed $Elapsed
 }
 
+function Get-FbSplashTickCount64 {
+    # Windows PowerShell 5.1 has no [Environment]::TickCount64.
+    try {
+        if (-not ('FbSplashTickCount64' -as [type])) {
+            Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+public static class FbSplashTickCount64 {
+    [DllImport("kernel32.dll")]
+    public static extern ulong GetTickCount64();
+}
+'@ -ErrorAction Stop
+        }
+        return [int64][FbSplashTickCount64]::GetTickCount64()
+    } catch {
+        return $null
+    }
+}
+
+function Get-FbSplashSinceBootSpan {
+    # ELAPSED is time since this OS boot. The tick counter does not move when
+    # the clock is corrected and does not restart when the splash process
+    # restarts for an update recheck.
+    try {
+        $tick = Get-FbSplashTickCount64
+        if ($null -eq $tick) { throw 'tick-unavailable' }
+        $sec = [int64]($tick / 1000)
+        if ($sec -lt 0) { $sec = 0 }
+        return [TimeSpan]::FromSeconds($sec)
+    } catch {
+        if ($script:startTime) { return ((Get-Date) - $script:startTime) }
+        return [TimeSpan]::Zero
+    }
+}
+
+function Test-FbSplashCheckPhase {
+    param([string]$Phase)
+    return [bool]($Phase -match '^(?i)(Scanning|Checking|Verifying|FinalCheck)$')
+}
+
 function Get-FbSplashPipelineStartTime {
     # Earliest of wu-state StartTime and wu-pipeline-started.utc.
     # CBS settle used to rewrite StartTime to "now" (dump 4FVGN94-0657),
@@ -1694,9 +1772,20 @@ function Get-FbSplashPipelineStartTime {
         $seed = if ($script:startTime) { $script:startTime } else { Get-Date }
         [void]$candidates.Add($seed)
     }
-    $earliest = $candidates[0]
+    $now = Get-Date
+    $sane = New-Object System.Collections.Generic.List[datetime]
     foreach ($c in $candidates) {
-        if ($c -lt $earliest) { $earliest = $c }
+        $ageDays = ($now - $c).TotalDays
+        if ($ageDays -gt 2 -or $ageDays -lt -1) { continue }
+        [void]$sane.Add($c)
+    }
+    if ($sane.Count -eq 0) {
+        $earliest = $now
+    } else {
+        $earliest = $sane[0]
+        foreach ($c in $sane) {
+            if ($c -lt $earliest) { $earliest = $c }
+        }
     }
     try {
         $writeMarker = -not (Test-Path -LiteralPath $marker)
@@ -1771,6 +1860,13 @@ function Set-FbSplashRebootDisplay {
     param([int]$Count = -1)
     if (-not $rebootCountText) { return }
     $n = if ($Count -ge 0) { $Count } else { Get-FbSplashRebootCount }
+    # A recheck must not zero REBOOTS. The count moves only when a real
+    # reboot iteration is on disk, or when this splash is not in a check phase.
+    $checkPhase = Test-FbSplashCheckPhase -Phase ([string]$script:FbSplashActivityPhase)
+    if (-not $script:Preview -and $checkPhase -and $null -ne $script:FbSplashRebootShown -and $n -lt [int]$script:FbSplashRebootShown) {
+        $n = [int]$script:FbSplashRebootShown
+    }
+    $script:FbSplashRebootShown = $n
     $rebootCountText.Text = [string]$n
     # Screenshot: light-blue REBOOTS label + magenta count; blue pill border stays.
     $countAccent = if ($n -gt 0) { '#FFFF80AB' } else { '#FFB0C4DE' }
@@ -2047,10 +2143,10 @@ try {
     try { Write-SplashLog ("logo glow wire-up failed: {0}" -f $_.Exception.Message) 'WARN' } catch {}
 }
 
-# Elapsed timer: must be $script:startTime (not $startTime) so DispatcherTimer ticks
-# resolve the same field in this script scope (dot-sourced or -File).
-# ELAPSED = this splash session (resets after restart). TOTAL ELAPSED = pipeline
-# StartTime from wu-state (survives reboot) and freezes at OOBE handoff.
+# $script:startTime is this splash process start (stall watchdog only).
+# ELAPSED = time since this OS boot (TickCount64). A recheck or splash
+# relaunch does not restart it. TOTAL ELAPSED = pipeline StartTime from
+# wu-state (survives reboot) and freezes at OOBE handoff.
 $script:startTime = Get-Date
 $script:FbTotalElapsedFrozen = $false
 $script:FbTotalElapsedFrozenValue = $null
@@ -2066,7 +2162,7 @@ $script:UserPreferredTopmostOff = $false
 
 function Get-FbSplashOobe2214dCollectOobePidsForEnum {
     $pids = New-Object 'System.Collections.Generic.List[uint32]'
-    foreach ($procBase in @('oobeldr', 'UserOOBEBroker', 'CloudExperienceHost', 'ShellExperienceHost', 'ApplicationFrameHost', 'WWAHost', 'oobe')) {
+    foreach ($procBase in @('oobeldr', 'UserOOBEBroker', 'CloudExperienceHost', 'ShellExperienceHost', 'StartMenuExperienceHost', 'SearchHost', 'ApplicationFrameHost', 'WWAHost', 'oobe')) {
         Get-Process -Name $procBase -ErrorAction SilentlyContinue | ForEach-Object {
             try { [void]$pids.Add([uint32]$_.Id) } catch {}
         }
@@ -2257,6 +2353,25 @@ function Invoke-FbSplashOobe2214eMinimizeForegroundOobeRoot {
         Invoke-FbSplashHideOobeHwndIfAllowed -Hwnd $root -ProcName $procName -Reason 'fg-oobe-root'
     } catch {
         try { Write-SplashLog ("2214f: OOBE-hide-fg-root EXCEPTION {0}" -f $_.Exception.Message) 'WARN' } catch { }
+    }
+}
+
+function Set-FbSplashKeepAwake {
+    param([bool]$Enable = $true)
+    # Interactive desktop splash: hold display + system awake until the window closes.
+    if ($script:Preview) { return }
+    try {
+        try { $null = [FbSplashWin32Z] } catch { return }
+        [FbSplashWin32Z]::SetKeepAwake([bool]$Enable)
+        if ($Enable -and -not $script:FbSplashKeepAwakeArmed) {
+            $script:FbSplashKeepAwakeArmed = $true
+            Write-SplashLog 'keep-awake: display/system sleep inhibited while splash is open (desktop)'
+        } elseif (-not $Enable -and $script:FbSplashKeepAwakeArmed) {
+            $script:FbSplashKeepAwakeArmed = $false
+            Write-SplashLog 'keep-awake: display/system sleep inhibition cleared'
+        }
+    } catch {
+        try { Write-SplashLog ("keep-awake: SetThreadExecutionState failed: {0}" -f $_.Exception.Message) 'WARN' } catch {}
     }
 }
 
@@ -2544,7 +2659,7 @@ function Invoke-FbSplashMaybeReclaimForegroundFromOobe {
         } catch { }
         $pn = if ($procName) { $procName + '.exe' } else { '' }
         $pnLower = $pn.ToLowerInvariant()
-        $isOobeFg = ($pnLower -eq 'oobeldr.exe') -or ($pnLower -eq 'useroobebroker.exe') -or ($pnLower -eq 'cloudexperiencehost.exe') -or ($pnLower -eq 'shellexperiencehost.exe') -or ($pnLower -eq 'wwahost.exe')
+        $isOobeFg = ($pnLower -eq 'oobeldr.exe') -or ($pnLower -eq 'useroobebroker.exe') -or ($pnLower -eq 'cloudexperiencehost.exe') -or ($pnLower -eq 'shellexperiencehost.exe') -or ($pnLower -eq 'startmenuexperiencehost.exe') -or ($pnLower -eq 'searchhost.exe') -or ($pnLower -eq 'wwahost.exe')
         if ($pnLower -eq 'applicationframehost.exe') {
             $titleAfh = ''
             try { $titleAfh = Get-FbSplashWindowText -Hwnd $fg } catch {}
@@ -2678,6 +2793,31 @@ function Invoke-FbSplashOobe2214cApplyMinimizeWhileUpdates {
     }
 }
 
+function Invoke-FbSplashDismissStartMenu {
+    # Close an open Start flyout once, and stop Win11 from opening Start on this Audit logon.
+    try {
+        if ($script:FbStartDismissed) { return }
+        $script:FbStartDismissed = $true
+        try { $null = [FbSplashWin32Z] } catch { return }
+        [FbSplashWin32Z]::keybd_event(0x1B, 0, 0, [UIntPtr]::Zero)
+        [FbSplashWin32Z]::keybd_event(0x1B, 0, [FbSplashWin32Z]::KEYEVENTF_KEYUP, [UIntPtr]::Zero)
+        $adv = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced'
+        if (-not (Test-Path -LiteralPath $adv)) {
+            New-Item -Path $adv -Force -ErrorAction SilentlyContinue | Out-Null
+        }
+        New-ItemProperty -LiteralPath $adv -Name 'StartShownOnEnable' -PropertyType DWord -Value 0 -Force -ErrorAction SilentlyContinue | Out-Null
+        $marker = 'C:\ProgramData\FirstBase\.start-menu-policy-armed'
+        try {
+            $dir = Split-Path -Parent $marker
+            if (-not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
+            Set-Content -LiteralPath $marker -Value 'StartShownOnEnable=0' -Encoding ASCII -ErrorAction SilentlyContinue
+        } catch {}
+        Write-SplashLog 'splash: dismissed Start (VK_ESCAPE) and set StartShownOnEnable=0'
+    } catch {
+        try { Write-SplashLog ("splash: Start dismiss failed: {0}" -f $_.Exception.Message) 'WARN' } catch {}
+    }
+}
+
 function Invoke-FbSplashTryForegroundOnce {
     if ($script:SplashForegroundBoostDone) { return }
     try {
@@ -2750,6 +2890,8 @@ try {
             $script:Oobe2214mDid2214lPass1ZStompThisTick = $false
             $script:Fb2241SkipWwahostMinForThisTick = $false
             if (-not $window.IsVisible) { return }
+            # Re-assert keep-awake (Windows may clear ES_* after idle timers).
+            try { Set-FbSplashKeepAwake -Enable $true } catch {}
             try {
                 if (Test-FbSplashNeedsCoverScreen -Window $window) {
                     Invoke-FbSplashCoverScreen -Window $window
@@ -3308,8 +3450,11 @@ function Get-FbSplashStateVersionText {
     try {
         $phase = if ([string]::IsNullOrWhiteSpace($PhaseOrPass)) { 'Preparing' } else { $PhaseOrPass.Trim() }
         if ($script:FbSplashActivityPhase -ne $phase) {
+            $enteringCheck = Test-FbSplashCheckPhase -Phase $phase
+            if (-not $enteringCheck -or -not $script:FbSplashActivityPhaseStarted) {
+                $script:FbSplashActivityPhaseStarted = Get-Date
+            }
             $script:FbSplashActivityPhase = $phase
-            $script:FbSplashActivityPhaseStarted = Get-Date
         }
 
         $phaseLabel = switch -Regex ($phase) {
@@ -3326,7 +3471,8 @@ function Get-FbSplashStateVersionText {
             '^ManualRestart$' { 'Restart the device'; break }
             '^Stopped$'   { 'Updates stopped'; break }
             '^Skipped$'   { 'Updating skipped'; break }
-            '^Reboot|^restart-for-checks$' { 'Preparing to restart'; break }
+            '^Scanning$|^Checking$|^Verifying$|^FinalCheck$' { 'Checking for updates'; break }
+            '^Rebooting$|^restart-for-checks$' { 'Preparing to restart'; break }
             '^\d+$'       { "Update pass $phase"; break }
             '^Pass\s*(\d+)$' { "Update pass $($Matches[1])"; break }
             '^Preparing$' { 'Preparing your computer'; break }
@@ -3702,6 +3848,21 @@ function Get-FbSplashBootStamp {
 
 function Test-FbSplashStatusIsPriorBoot {
     param($StatusObject)
+    $stampTick = $null
+    try {
+        if ($StatusObject -and ($StatusObject.PSObject.Properties.Name -contains 'bootTick') -and $null -ne $StatusObject.bootTick -and [string]$StatusObject.bootTick -ne '') {
+            $stampTick = [int64]$StatusObject.bootTick
+        }
+    } catch { $stampTick = $null }
+    if ($null -ne $stampTick) {
+        try {
+            $curTick = Get-FbSplashTickCount64
+            if ($null -eq $curTick) { return $false }
+            return (($curTick + 15000) -lt $stampTick)
+        } catch {
+            return $false
+        }
+    }
     $current = Get-FbSplashBootStamp
     if ([string]::IsNullOrWhiteSpace($current)) { return $false }
     $stamp = ''
@@ -3758,7 +3919,7 @@ function Get-StatusFromStateFile {
         foreach ($u in @($obj.updates)) {
             if (-not $u) { continue }
             $rowTitle = [string]$u.Title
-            if ($script:FbSplashOsAlready25H2 -and (Test-FbSplashIsRedundant25H2Title -Title $rowTitle)) {
+            if (($script:FbSplashOsCurrentFeatureRank -gt 0) -and (Test-FbSplashIsRedundant25H2Title -Title $rowTitle)) {
                 continue
             }
             $rawStatus = [string]$u.Status
@@ -4017,7 +4178,7 @@ function Set-FbSplashUpdatesContent {
     param([object[]]$Items)
     $list = @()
     if ($null -ne $Items) { $list = @($Items) }
-    if ($script:FbSplashOsAlready25H2 -and $list.Count -gt 0) {
+    if (($script:FbSplashOsCurrentFeatureRank -gt 0) -and $list.Count -gt 0) {
         $list = @($list | Where-Object { $_ -and -not (Test-FbSplashIsRedundant25H2Title -Title ([string]$_.Title)) })
     }
     if ($list.Count -gt 0) {
@@ -4259,9 +4420,12 @@ $timer.Add_Tick({
         Set-FbSplashUpdatesContent -Items @($script:FbSplashLastKnownUpdates)
     }
 
-    Set-FbSplashElapsedDisplay -Elapsed ((Get-Date) - $script:startTime)
-    Update-FbSplashTotalElapsed
-    Set-FbSplashRebootDisplay
+    try {
+        $fbElapsed = if ($script:Preview) { (Get-Date) - $script:startTime } else { Get-FbSplashSinceBootSpan }
+        Set-FbSplashElapsedDisplay -Elapsed $fbElapsed
+    } catch {}
+    try { Update-FbSplashTotalElapsed } catch {}
+    try { Set-FbSplashRebootDisplay } catch {}
     try { Invoke-FbSplashHonorOperatorForeground | Out-Null } catch {}
 })
 if (-not $script:Preview) {
@@ -4292,6 +4456,7 @@ $window.Add_Closing({
     }
     try { Invoke-FbSplashMaybeStartOobeSoundAfterUpdates } catch {}
     try { Invoke-FbSplashOobe2214cRestoreAll -Reason 'splash-closing' } catch {}
+    try { Set-FbSplashKeepAwake -Enable $false } catch {}
     try { if ($null -ne $script:SplashTopmostRefreshTimer) { $script:SplashTopmostRefreshTimer.Stop() } } catch {}
 })
 
@@ -4299,6 +4464,7 @@ $window.Add_Closing({
 $window.Add_Loaded({
     if (-not $script:Preview) {
         try {
+            try { Set-FbSplashKeepAwake -Enable $true } catch {}
             try { Invoke-FbSplashCoverScreen -Window $window } catch {}
             $yieldLoaded = $false
             try { $yieldLoaded = [bool](Invoke-FbSplashHonorOperatorForeground) } catch { $yieldLoaded = $false }
@@ -4321,6 +4487,7 @@ $window.Add_Loaded({
                 }
             } catch {}
             try {
+                Invoke-FbSplashDismissStartMenu
                 Invoke-FbSplashOobe2214eMinimizeForegroundOobeRoot
                 Invoke-FbSplashOobe2214cApplyMinimizeWhileUpdates
             } catch {}
@@ -4640,6 +4807,7 @@ try {
         $dialogResult = $window.ShowDialog()
         Write-SplashLog "ShowDialog() returned: $dialogResult (window closed normally)"
     } finally {
+        try { Set-FbSplashKeepAwake -Enable $false } catch {}
         try { Invoke-FbSplashOobe2214cRestoreAll -Reason 'showdialog-finally' } catch {}
     }
 } catch {

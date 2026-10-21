@@ -235,6 +235,99 @@ public static class FbSettingsWin32 {
     public static bool ForegroundMaximize(IntPtr h){
         return ForegroundFullscreen(h);
     }
+
+    [DllImport("user32.dll")] static extern void keybd_event(byte bVk, byte bScan, uint dwFlags, UIntPtr dwExtraInfo);
+    const uint KEYEVENTF_KEYUP = 0x0002;
+    // YouTube player: 'f' toggles player fullscreen when the watch/embed page has focus.
+    public static void SendVk(byte vk){
+        try {
+            keybd_event(vk, 0, 0, UIntPtr.Zero);
+            keybd_event(vk, 0, KEYEVENTF_KEYUP, UIntPtr.Zero);
+        } catch {}
+    }
+}
+'@
+
+# Local loopback host for the hardware-gate YouTube player HTML (embed + IFrame API).
+# Keeps Edge on a single page so the operator cannot navigate away from the specified video.
+$FbYoutubeGateHostSrc = @'
+using System;
+using System.Net;
+using System.Text;
+using System.Threading;
+public static class FbYoutubeGateHost {
+    static HttpListener _listener;
+    static Thread _thread;
+    static byte[] _htmlBytes;
+    static volatile bool _stop;
+    static readonly object _gate = new object();
+
+    public static string Start(string html, int preferredPort) {
+        lock (_gate) {
+            Stop();
+            if (string.IsNullOrEmpty(html)) throw new ArgumentException("html");
+            _htmlBytes = Encoding.UTF8.GetBytes(html);
+            _stop = false;
+            Exception last = null;
+            for (int attempt = 0; attempt < 12; attempt++) {
+                int port = (attempt == 0 && preferredPort > 0) ? preferredPort : (17650 + attempt);
+                string prefix = "http://127.0.0.1:" + port + "/";
+                try {
+                    var l = new HttpListener();
+                    l.Prefixes.Add(prefix);
+                    l.Start();
+                    _listener = l;
+                    _thread = new Thread(ServeLoop);
+                    _thread.IsBackground = true;
+                    _thread.Name = "FbYoutubeGateHost";
+                    _thread.Start();
+                    return prefix;
+                } catch (Exception ex) {
+                    last = ex;
+                    try { if (_listener != null) { _listener.Close(); } } catch {}
+                    _listener = null;
+                }
+            }
+            throw new InvalidOperationException("FbYoutubeGateHost bind failed: " + (last != null ? last.Message : "unknown"));
+        }
+    }
+
+    static void ServeLoop() {
+        while (!_stop) {
+            HttpListener l = _listener;
+            if (l == null || !l.IsListening) break;
+            HttpListenerContext ctx = null;
+            try { ctx = l.GetContext(); } catch { if (_stop) break; continue; }
+            if (ctx == null) continue;
+            try {
+                byte[] body = _htmlBytes;
+                ctx.Response.StatusCode = 200;
+                ctx.Response.ContentType = "text/html; charset=utf-8";
+                ctx.Response.ContentLength64 = body.Length;
+                ctx.Response.Headers["Cache-Control"] = "no-store";
+                ctx.Response.OutputStream.Write(body, 0, body.Length);
+            } catch {}
+            try { ctx.Response.OutputStream.Close(); } catch {}
+            try { ctx.Response.Close(); } catch {}
+        }
+    }
+
+    public static void Stop() {
+        _stop = true;
+        try {
+            HttpListener l = _listener;
+            _listener = null;
+            if (l != null) {
+                try { l.Stop(); } catch {}
+                try { l.Close(); } catch {}
+            }
+        } catch {}
+        try {
+            Thread t = _thread;
+            _thread = null;
+            if (t != null && t.IsAlive) t.Join(1500);
+        } catch {}
+    }
 }
 '@
 
@@ -373,9 +466,138 @@ function Wait-FbManualInteractiveExplorer {
     return $false
 }
 
-# Stable default used by the hardware-gate PASS path (embed + autoplay; play once).
+# Stable default used by the hardware-gate PASS path (video id resolved into local embed host).
 $script:FbHardwareGateYoutubeUrl = 'https://www.youtube.com/embed/Z0xDBI5aVFo?autoplay=1'
 $script:FbHardwareGateBrowserProfile = Join-Path $env:TEMP 'FirstBaseHwGateBrowser'
+$script:FbYoutubeGatePauseAfterSec = 240
+
+function Get-FbYoutubeVideoId {
+    param([string]$Url)
+    $u = [string]$Url
+    if ($u -match 'youtube\.com/embed/([A-Za-z0-9_-]{6,})') { return $Matches[1] }
+    if ($u -match 'youtu\.be/([A-Za-z0-9_-]{6,})') { return $Matches[1] }
+    if ($u -match '[?&]v=([A-Za-z0-9_-]{6,})') { return $Matches[1] }
+    if ($u -match 'youtube\.com/shorts/([A-Za-z0-9_-]{6,})') { return $Matches[1] }
+    return 'Z0xDBI5aVFo'
+}
+
+function Get-FbYoutubeGatePlayerHtml {
+    param(
+        [Parameter(Mandatory)][string]$VideoId,
+        [int]$PauseAfterSec = 240
+    )
+    $id = ($VideoId -replace '[^A-Za-z0-9_-]', '')
+    if ([string]::IsNullOrWhiteSpace($id)) { $id = 'Z0xDBI5aVFo' }
+    $pauseMs = [Math]::Max(1000, $PauseAfterSec * 1000)
+    # Single-purpose player page: embed only (no watch chrome), loop until pause, then hold.
+    return @"
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>FirstBase</title>
+<style>
+  html,body{margin:0;width:100%;height:100%;background:#000;overflow:hidden}
+  #wrap{position:fixed;inset:0;background:#000}
+  #player{position:absolute;inset:0;width:100%;height:100%}
+</style>
+</head>
+<body>
+<div id="wrap"><div id="player"></div></div>
+<script>
+var VIDEO_ID = '$id';
+var PAUSE_AFTER_MS = $pauseMs;
+var player = null;
+var holdPaused = false;
+var fsTried = false;
+function tryFullscreen() {
+  if (fsTried) return;
+  fsTried = true;
+  var el = document.getElementById('wrap') || document.documentElement;
+  try {
+    var req = el.requestFullscreen || el.webkitRequestFullscreen || el.msRequestFullscreen;
+    if (req) req.call(el);
+  } catch (e) {}
+}
+function onYouTubeIframeAPIReady() {
+  player = new YT.Player('player', {
+    width: '100%',
+    height: '100%',
+    videoId: VIDEO_ID,
+    playerVars: {
+      autoplay: 1,
+      controls: 1,
+      rel: 0,
+      modestbranding: 1,
+      iv_load_policy: 3,
+      fs: 1,
+      playsinline: 1,
+      loop: 1,
+      playlist: VIDEO_ID,
+      disablekb: 0,
+      origin: window.location.origin
+    },
+    events: {
+      onReady: function (e) {
+        try { e.target.playVideo(); } catch (x) {}
+        setTimeout(tryFullscreen, 800);
+        setTimeout(tryFullscreen, 2500);
+        setTimeout(function () {
+          holdPaused = true;
+          try { e.target.pauseVideo(); } catch (x) {}
+        }, PAUSE_AFTER_MS);
+      },
+      onStateChange: function (e) {
+        if (!player) return;
+        if (holdPaused) {
+          if (e.data === YT.PlayerState.PLAYING) {
+            try { player.pauseVideo(); } catch (x) {}
+          }
+          return;
+        }
+        if (e.data === YT.PlayerState.ENDED) {
+          try { player.seekTo(0, true); player.playVideo(); } catch (x) {}
+        }
+      }
+    }
+  });
+}
+var tag = document.createElement('script');
+tag.src = 'https://www.youtube.com/iframe_api';
+document.head.appendChild(tag);
+document.addEventListener('click', tryFullscreen, { once: true });
+</script>
+</body>
+</html>
+"@
+}
+
+function Initialize-FbYoutubeGateHost {
+    try {
+        if (-not ([System.Management.Automation.PSTypeName]'FbYoutubeGateHost').Type) {
+            Add-Type -TypeDefinition $FbYoutubeGateHostSrc -ErrorAction Stop
+        }
+        return $true
+    } catch {
+        Write-FbManualSettingsFinishLog ("hardware-gate PASS: Add-Type FbYoutubeGateHost failed: {0}" -f $_.Exception.Message) 'WARN'
+        return $false
+    }
+}
+
+function Send-FbYoutubePlayerKey {
+    param(
+        [IntPtr]$Hwnd = [IntPtr]::Zero,
+        [byte]$Vk = 0x46
+    )
+    if ($Hwnd -eq [IntPtr]::Zero) { return }
+    if (-not (Initialize-FbSettingsWin32)) { return }
+    try {
+        [void]([FbSettingsWin32]::ForegroundFullscreen($Hwnd))
+        Start-Sleep -Milliseconds 200
+        [FbSettingsWin32]::SendVk($Vk)
+    } catch {}
+}
 
 function Get-FbHardwareGateBrowser {
     # Win11 Audit often has no Program Files\Microsoft\Edge (N-SKU / unprovisioned AppX).
@@ -711,20 +933,16 @@ function Invoke-FbYoutubePassAndWait {
         }
     }
 
-    $url = $YouTubeUrl
-    if ([string]::IsNullOrWhiteSpace($url)) { $url = $script:FbHardwareGateYoutubeUrl }
-    # A youtube.com/embed URL opened with --app is a bare player. YouTube
-    # rejects that window (playback error). Open the watch page in Edge.
-    if ($url -match 'youtube\.com/embed/([A-Za-z0-9_-]{6,})') {
-        $url = ('https://www.youtube.com/watch?v={0}&autoplay=1' -f $Matches[1])
-    } elseif ($url -match 'youtu\.be/([A-Za-z0-9_-]{6,})') {
-        $url = ('https://www.youtube.com/watch?v={0}&autoplay=1' -f $Matches[1])
-    } elseif ($url -match '[?&]v=' -and $url -notmatch 'autoplay=') {
-        $url = ($url + '&autoplay=1')
-    }
+    $sourceUrl = $YouTubeUrl
+    if ([string]::IsNullOrWhiteSpace($sourceUrl)) { $sourceUrl = $script:FbHardwareGateYoutubeUrl }
+    $videoId = Get-FbYoutubeVideoId -Url $sourceUrl
+    $pauseAfterSec = [int]$script:FbYoutubeGatePauseAfterSec
+    if ($pauseAfterSec -lt 30) { $pauseAfterSec = 240 }
+
     $browser = Get-FbHardwareGateBrowser
     $profileDir = $script:FbHardwareGateBrowserProfile
     $useAnyInstance = $false
+    $hostStarted = $false
     try {
         if (-not (Test-Path -LiteralPath $profileDir)) {
             New-Item -ItemType Directory -Path $profileDir -Force -ErrorAction SilentlyContinue | Out-Null
@@ -740,10 +958,32 @@ function Invoke-FbYoutubePassAndWait {
             $volumeApplied = [bool]$volPrep.Applied
         }
 
+        # Local HTML host + --app keeps Edge on the specified video (no watch-page escape).
+        $url = $null
+        $html = Get-FbYoutubeGatePlayerHtml -VideoId $videoId -PauseAfterSec $pauseAfterSec
+        if (Initialize-FbYoutubeGateHost) {
+            try {
+                $prefix = [FbYoutubeGateHost]::Start($html, 17650)
+                if (-not [string]::IsNullOrWhiteSpace($prefix)) {
+                    $url = $prefix
+                    $hostStarted = $true
+                    Write-FbManualSettingsFinishLog ("hardware-gate PASS: local player host ready videoId={0} pauseAfterSec={1} url={2}" -f $videoId, $pauseAfterSec, $url) 'INFO'
+                }
+            } catch {
+                Write-FbManualSettingsFinishLog ("hardware-gate PASS: local player host failed: {0}" -f $_.Exception.Message) 'WARN'
+            }
+        }
+        if (-not $url) {
+            # Fallback: direct embed (still no watch chrome). Loop via playlist=self.
+            $url = ('https://www.youtube.com/embed/{0}?autoplay=1&loop=1&playlist={0}&rel=0&modestbranding=1&iv_load_policy=3&fs=1&playsinline=1' -f $videoId)
+            Write-FbManualSettingsFinishLog ("hardware-gate PASS: using direct embed fallback url={0}" -f $url) 'WARN'
+        }
+
         $launched = $false
         if ($browser) {
             Write-FbManualSettingsFinishLog ("hardware-gate PASS: launching {0} fullscreen {1} url={2} profile={3}" -f $browser.Name, $browser.PrivateArg, $url, $profileDir) 'INFO'
             try {
+                # --app locks the window to this URL (no omnibox / tab strip to leave the video).
                 $argList = @(
                     $browser.PrivateArg
                     ('--user-data-dir={0}' -f $profileDir)
@@ -751,13 +991,30 @@ function Invoke-FbYoutubePassAndWait {
                     '--no-default-browser-check'
                     '--autoplay-policy=no-user-gesture-required'
                     '--start-fullscreen'
-                    '--new-window'
-                    $url
+                    ('--app={0}' -f $url)
                 )
                 Start-Process -FilePath $browser.Path -ArgumentList $argList -ErrorAction Stop | Out-Null
                 $launched = $true
             } catch {
-                Write-FbManualSettingsFinishLog ("hardware-gate PASS: browser exe launch threw: {0}" -f $_.Exception.Message) 'WARN'
+                Write-FbManualSettingsFinishLog ("hardware-gate PASS: browser --app launch threw: {0}" -f $_.Exception.Message) 'WARN'
+            }
+            if (-not $launched) {
+                try {
+                    $argList = @(
+                        $browser.PrivateArg
+                        ('--user-data-dir={0}' -f $profileDir)
+                        '--no-first-run'
+                        '--no-default-browser-check'
+                        '--autoplay-policy=no-user-gesture-required'
+                        '--start-fullscreen'
+                        '--new-window'
+                        $url
+                    )
+                    Start-Process -FilePath $browser.Path -ArgumentList $argList -ErrorAction Stop | Out-Null
+                    $launched = $true
+                } catch {
+                    Write-FbManualSettingsFinishLog ("hardware-gate PASS: browser exe launch threw: {0}" -f $_.Exception.Message) 'WARN'
+                }
             }
         }
         if (-not $launched) {
@@ -802,13 +1059,22 @@ function Invoke-FbYoutubePassAndWait {
             if ($useAnyInstance) { Stop-FbHardwareGateBrowserLeftovers -AnyInstance } else { Stop-FbHardwareGateBrowserLeftovers -ProfileDir $profileDir }
             return 'window-never-appeared'
         }
-        Write-FbManualSettingsFinishLog ("hardware-gate PASS: private YouTube window acquired; waiting for operator close. Close = seal then sysprep /oobe /reboot. Walk-away timeout ({0}s) does NOT seal or power off." -f $CloseWaitSec) 'INFO'
+
+        $ytHwnd = if ($useAnyInstance) { Get-FbHardwareGateBrowserHwnd -AnyInstance } else { Get-FbHardwareGateBrowserHwnd -ProfileDir $profileDir }
+        [void](Assert-FbOperatorWindowFullscreen -Hwnd $ytHwnd)
+        # One player-fullscreen attempt (VK_F). Local HTML also calls requestFullscreen.
+        Start-Sleep -Milliseconds 1800
+        Send-FbYoutubePlayerKey -Hwnd $ytHwnd -Vk ([byte]0x46)
+
+        Write-FbManualSettingsFinishLog ("hardware-gate PASS: private YouTube window acquired; loop until pause at {0}s then hold. Close = seal then sysprep /oobe /reboot. Walk-away timeout ({1}s) does NOT seal or power off." -f $pauseAfterSec, $CloseWaitSec) 'INFO'
 
         $goneStart = $null
         $graceSec = 3
         $timeoutNotices = 0
         $noticeAt = (Get-Date).AddSeconds($CloseWaitSec)
         $frontAt = [datetime]::MinValue
+        $pauseAt = (Get-Date).AddSeconds($pauseAfterSec)
+        $pauseSent = $false
         while ($true) {
             $live = $false
             if ($useAnyInstance) {
@@ -822,6 +1088,16 @@ function Invoke-FbYoutubePassAndWait {
                     $ytHwnd = if ($useAnyInstance) { Get-FbHardwareGateBrowserHwnd -AnyInstance } else { Get-FbHardwareGateBrowserHwnd -ProfileDir $profileDir }
                     [void](Assert-FbOperatorWindowFullscreen -Hwnd $ytHwnd)
                     $frontAt = Get-Date
+                }
+                # Direct-embed fallback has no IFrame API timer — send 'k' once to pause.
+                # Local HTML host already pauses via JS; do not toggle with 'k' (would resume).
+                if (-not $pauseSent -and (Get-Date) -ge $pauseAt) {
+                    $pauseSent = $true
+                    if (-not $hostStarted) {
+                        $ytHwnd = if ($useAnyInstance) { Get-FbHardwareGateBrowserHwnd -AnyInstance } else { Get-FbHardwareGateBrowserHwnd -ProfileDir $profileDir }
+                        Send-FbYoutubePlayerKey -Hwnd $ytHwnd -Vk ([byte]0x4B)
+                    }
+                    Write-FbManualSettingsFinishLog ("hardware-gate PASS: pause hold after {0}s; waiting for operator close." -f $pauseAfterSec) 'INFO'
                 }
             } else {
                 if ($null -eq $goneStart) { $goneStart = Get-Date }
@@ -840,6 +1116,9 @@ function Invoke-FbYoutubePassAndWait {
             Start-Sleep -Milliseconds 500
         }
     } finally {
+        if ($hostStarted) {
+            try { [FbYoutubeGateHost]::Stop() } catch {}
+        }
         Restore-FbYoutubePassRenderVolume -CapturedSnap $capturedSnap -VolumeApplied $volumeApplied
     }
 }

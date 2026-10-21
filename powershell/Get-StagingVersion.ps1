@@ -33,8 +33,9 @@
 param(
     [string]$ShareRoot        = '\\WIN-HQ5JDEACV3S\Images\FB Image Creation',
     # KEEP IN SYNC: LONEWOLF_SHARE_USER / LONEWOLF_SHARE_PASSWORD env-first (see Invoke-LoneWolfBuild.ps1).
+    # GATE: share staging fails closed when LONEWOLF_SHARE_PASSWORD is unset.
     [string]$ShareUser        = $(if (-not [string]::IsNullOrWhiteSpace($env:LONEWOLF_SHARE_USER)) { $env:LONEWOLF_SHARE_USER } else { 'Reflect' }),
-    [string]$SharePassword    = $(if (-not [string]::IsNullOrWhiteSpace($env:LONEWOLF_SHARE_PASSWORD)) { $env:LONEWOLF_SHARE_PASSWORD } else { 'mer*HWE0upt*rqe@dud' }),
+    [string]$SharePassword    = $(if (-not [string]::IsNullOrWhiteSpace($env:LONEWOLF_SHARE_PASSWORD)) { $env:LONEWOLF_SHARE_PASSWORD } else { '' }),
     [string]$WorkflowType     = 'AMD64',
     [string]$WindowsEdition   = 'Pro',  # Home | Pro. Presplit/ISO identity; not LoneWolf vs Quick Install.
     [string]$LocalProjectRoot = '',  # When non-empty: skip share auth and read from this local path instead
@@ -62,6 +63,9 @@ if ($ShareRoot -match '^(?i)https?://') {
 # --- Share authentication -----------------------------------------------------
 function Connect-ShareCredentials {
     param([string]$ShareHost, [string]$User, [string]$Pass)
+    if ([string]::IsNullOrWhiteSpace($Pass)) {
+        throw 'HQ share password is not set. Set LONEWOLF_SHARE_PASSWORD before connecting to the deployment share.'
+    }
     try {
         $cmdkey = Join-Path $env:SystemRoot 'System32\cmdkey.exe'
         if (Test-Path -LiteralPath $cmdkey) {
@@ -78,6 +82,19 @@ if ($WindowsEdition -match '^(?i)home$') { $winEdition = 'Home' }
 $resolvedMediaSource = if ($DestageMedia) { 'local' } elseif (-not [string]::IsNullOrWhiteSpace($MediaSource)) { $MediaSource } else { '' }
 
 if ([string]::IsNullOrWhiteSpace($LocalProjectRoot) -and $resolvedMediaSource -ne 'local' -and -not $DestageMedia -and $ShareRoot -match '^\\\\') {
+    if ([string]::IsNullOrWhiteSpace($SharePassword)) {
+        [ordered]@{
+            version        = 'unknown'
+            buildDate      = ''
+            workflowType   = $wfUpper
+            windowsEdition = $winEdition
+            buildMode      = 'none'
+            isoAvailable   = $false
+            wimAvailable   = $false
+            error          = 'HQ share password is not set. Set LONEWOLF_SHARE_PASSWORD.'
+        } | ConvertTo-Json -Compress -Depth 5
+        return
+    }
     $shareHost = 'WIN-HQ5JDEACV3S'
     if ($ShareRoot -match '^\\\\([^\\]+)\\') { $shareHost = $Matches[1] }
     Connect-ShareCredentials -ShareHost $shareHost -User $ShareUser -Pass $SharePassword
@@ -233,7 +250,9 @@ try {
 
 # --- Pre-split staging availability ----------------------------------------
 # Identity = arch + Windows version (ISO slug) + Home/Pro. LoneWolf and Quick
-# Install share the same set. Uses Test-LWPreSplitSet + Get-LWImageVersionId.
+# Install share the same set. Match staged sets by source name+size (staging-UTC
+# folder stamps are not recomputed from ISO LastWriteTime).
+$preSplitRoot = $preSplitRootResolved
 try {
     if ($splitLibLoaded) {
         $skipPreSplitScan = $resolvedMediaSource -eq 'googleDrive' -and [string]::IsNullOrWhiteSpace($preSplitRootResolved)
@@ -258,9 +277,6 @@ try {
                 if (Test-Path -LiteralPath $p) { $psIso = Get-Item -LiteralPath $p; break }
             }
         }
-        $currentId = if ($psIso) { Get-LWImageVersionId -Iso $psIso -Edition $winEdition } else { $null }
-        $legacyId  = if ($psIso) { Get-LWImageVersionId -Iso $psIso } else { $null }
-
         $cands = @(Get-LWPreSplitCandidateDirs -PreSplitRoot $preSplitRoot -Arch $wfUpper -Edition $winEdition)
 
         foreach ($setDir in $cands) {
@@ -294,12 +310,15 @@ try {
                 $output.preSplitImageVersion = [string]$chk.Manifest.imageVersion
             }
             if ($psIso) {
-                $src = $chk.Manifest.source
-                $idOk = ([string]$chk.Manifest.imageVersion -eq $currentId) -or
-                        ($winEdition -eq 'Pro' -and [string]$chk.Manifest.imageVersion -eq $legacyId)
-                $match = $idOk -and
-                         ([string]$src.isoName -eq $psIso.Name) -and
-                         ([long]$src.isoSizeBytes -eq [long]$psIso.Length)
+                $match = $false
+                if (Get-Command -Name Test-LWPreSplitSourceMatchesIso -ErrorAction SilentlyContinue) {
+                    $match = [bool](Test-LWPreSplitSourceMatchesIso -Manifest $chk.Manifest -Iso $psIso)
+                } else {
+                    $src = $chk.Manifest.source
+                    $match = $src -and
+                             ([string]$src.isoName -eq $psIso.Name) -and
+                             ([long]$src.isoSizeBytes -eq [long]$psIso.Length)
+                }
                 if ($match) {
                     $output.preSplitMatchesIso   = $true
                     $output.preSplitImageVersion = [string]$chk.Manifest.imageVersion
@@ -313,9 +332,9 @@ try {
                     if ($wantMediaPkg -and -not $output.preSplitMediaPackage) {
                         $output.preSplitMatchesIso = $false
                     } elseif ($wantMediaPkg -and $output.preSplitMediaPackage) {
-                        # Soft Image Ready status (share + Drive): media package is enough.
-                        # Rebuild can inject WinPE on the stick when the sentinel is missing.
-                        $output.preSplitBootInjected = $true
+                        # Soft Image Ready: media package is enough for the chip / Rebuild path.
+                        # preSplitBootInjected stays honest (sentinel only) so UI can show inject state.
+                        $output.preSplitMatchesIso = $true
                     }
                     break
                 }
@@ -334,9 +353,8 @@ try {
                         $output.preSplitBootInjected = [bool](Test-LwPreSplitBootInjected -SetDir $setDir)
                     }
                     # Soft Image Ready: full media package (ISO tree + swm + boot.wim).
-                    # Inject sentinel is optional for status; Rebuild injects on stick if needed.
+                    # Sentinel is optional for package readiness; bootInjected stays honest.
                     if ($output.preSplitMediaPackage) {
-                        $output.preSplitBootInjected = $true
                         $output.preSplitMatchesIso = $true
                         break
                     }
@@ -346,6 +364,46 @@ try {
         }
     }
 } catch { }
+
+# Rebuild identity: remote version.json (or current.json) is SoT for available
+# Windows image versioning. Heals UUP ISO LastWrite stamps (2024-04-01) using
+# staging updatedUtc. Stick LW_VERSION.json is compared to preSplitImageVersion.
+$remoteSku = $null
+$remoteRoot = $preSplitRootResolved
+if (-not [string]::IsNullOrWhiteSpace($preSplitRoot)) { $remoteRoot = $preSplitRoot }
+elseif (-not [string]::IsNullOrWhiteSpace($output.preSplitRoot)) { $remoteRoot = [string]$output.preSplitRoot }
+if ($splitLibLoaded -and (Get-Command -Name Read-LWRemoteVersionSku -ErrorAction SilentlyContinue) -and
+    -not [string]::IsNullOrWhiteSpace($remoteRoot)) {
+    try {
+        $remoteSku = Read-LWRemoteVersionSku -PreSplitRoot $remoteRoot -Arch $wfUpper -Edition $winEdition
+    } catch { }
+}
+if ($remoteSku -and $remoteSku.imageVersion) {
+    $output.preSplitImageVersion = [string]$remoteSku.imageVersion
+    if ($remoteSku.imageBuildDate) {
+        $output.buildDate = [string]$remoteSku.imageBuildDate
+        if ($output.architectures.Contains($wfUpper)) {
+            $output.architectures[$wfUpper].wimBuildDate = [string]$remoteSku.imageBuildDate
+        }
+    }
+    $output.remoteVersionSource = [string]$remoteSku.source
+} elseif ($output.preSplitImageVersion -and (Get-Command -Name Get-LWCanonicalImageBuildDateYmd -ErrorAction SilentlyContinue)) {
+    $ivYmd = [string](Get-LWCanonicalImageBuildDateYmd -ImageVersion ([string]$output.preSplitImageVersion))
+    if ($ivYmd) {
+        $output.buildDate = $ivYmd
+        if ($output.architectures.Contains($wfUpper)) {
+            $output.architectures[$wfUpper].wimBuildDate = $ivYmd
+        }
+    }
+} elseif ($output.preSplitImageVersion -and (Get-Command -Name Get-LWImageVersionBuildDateYmd -ErrorAction SilentlyContinue)) {
+    $ivYmd = [string](Get-LWImageVersionBuildDateYmd -ImageVersion ([string]$output.preSplitImageVersion))
+    if ($ivYmd) {
+        $output.buildDate = $ivYmd
+        if ($output.architectures.Contains($wfUpper)) {
+            $output.architectures[$wfUpper].wimBuildDate = $ivYmd
+        }
+    }
+}
 
 # --- Build mode (WIM preferred over ISO) ------------------------------------
 # Home is ISO-only unless Image Ready package on share/Drive (no SKU-aware staged WIM).

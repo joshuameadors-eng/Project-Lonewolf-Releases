@@ -102,6 +102,16 @@ if errorlevel 1 (
   exit /b 1
 )
 
+:: --- 3c. Verify MDM, exclusions, and WU AU are actually gone ---------------
+:: KEEP IN SYNC / GATE / CLEANUP / SEAL: same leftover set as Invoke-FbInlineMdmScrub
+:: HARD items and Get-FbImSecurityShipState. A failed delete must not stamp sealed.
+powershell -NoProfile -ExecutionPolicy Bypass -Command "$bad = @(); $mdm = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\CurrentVersion\MDM'; if (Test-Path -LiteralPath $mdm) { $p = Get-ItemProperty -LiteralPath $mdm -ErrorAction SilentlyContinue; if ($p -and (($p.PSObject.Properties.Name -contains 'AutoEnrollMDM') -or ($p.PSObject.Properties.Name -contains 'UseAADCredentialType'))) { $bad += 'MDM keys' } }; try { $svc = Get-CimInstance -ClassName Win32_Service -Filter 'Name=''DmEnrollmentSvc''' -ErrorAction Stop; if ($svc -and ($svc.StartMode -eq 'Disabled')) { $bad += 'DmEnrollmentSvc disabled' } } catch { $bad += 'DmEnrollmentSvc unreadable' }; try { if (Get-NetFirewallRule -DisplayName 'FirstBase-Block-Autopilot' -ErrorAction SilentlyContinue) { $bad += 'Autopilot firewall rule' } } catch { $bad += 'firewall unreadable' }; $au = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate\AU'; if (Test-Path -LiteralPath $au) { $a = Get-ItemProperty -LiteralPath $au -ErrorAction SilentlyContinue; if ($a -and (($a.PSObject.Properties.Name -contains 'NoAutoUpdate') -or ($a.PSObject.Properties.Name -contains 'NoAutoRebootWithLoggedOnUsers'))) { $bad += 'WU AU policy' } }; try { $pref = Get-MpPreference -ErrorAction Stop; foreach ($want in @('C:\Windows\Setup\FirstBase','C:\ProgramData\FirstBase','C:\ProgramData\Microsoft\Windows\Start Menu\Programs\Startup')) { foreach ($have in @($pref.ExclusionPath)) { if ([string]$have -and ([string]$have).TrimEnd('\') -eq $want) { $bad += ('exclusion ' + $want) } } } } catch { $bad += 'Defender exclusions unreadable' }; if ($bad.Count -gt 0) { Write-Host ('ERROR: seal leftovers: ' + ($bad -join ', ')); exit 1 }; Write-Host 'OK: MDM, exclusions, and WU AU verified clear'; exit 0"
+if errorlevel 1 (
+  echo ERROR: MDM, exclusion, or WU AU teardown FAILED. Device is NOT sealed. Do not continue.
+  pause
+  exit /b 1
+)
+
 :: --- 4. Merge the ProgramData logs into the surviving Logs folder ----------
 :: /XF excludes everything executable so the operator kit and splash scripts
 :: cannot be carried into a folder that survives on the customer's device.

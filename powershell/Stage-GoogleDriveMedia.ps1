@@ -5,12 +5,17 @@
 
 .DESCRIPTION
   Builds a full bootable media package under PreSplit\<set>\:
-    1. Pre-split install.wim into install*.swm and mirror the rest of the ISO tree
+    1. Pre-split install.wim into install*.swm and mirror the rest of the ISO/media tree
     2. Export startnet / WinPeUi-injected boot.wim into the same set\sources
 
   Target layout comes from -MediaSource:
     googleDrive - local UUP staging root (upload PreSplit to the shared Drive folder separately)
     share       - HQ share ISO\ + PreSplit\ (same package shape as Drive)
+
+  Pass -SourceDir for a SkipISO / UUP convert folder (sources\install.wim|esd);
+  that path is forwarded to Stage-PreSplitImage and used for boot.wim export
+  without mounting an ISO. When -SourceDir is empty, IsoPath / Find-LWWindowsIso
+  behave as before.
 
   USB Rebuild can copy the package without remounting the ISO.
 #>
@@ -26,10 +31,13 @@ param(
 
     [string] $ShareRoot = '',
     [string] $IsoPath = '',
+    [string] $SourceDir = '',
     [string] $AppResourcesPath = '',
     [ValidateSet('local', 'share', 'googleDrive', '')]
     [string] $MediaSource = 'googleDrive',
-    [switch] $Force
+    [switch] $Force,
+    # Forwarded to Stage-PreSplitImage (avoid %TEMP% when UI export work root is set).
+    [string] $ScratchRoot = ''
 )
 
 $ErrorActionPreference = 'Stop'
@@ -86,7 +94,27 @@ $wfUpper = $WorkflowType.ToUpper()
 $winEdition = if ($WindowsEdition -match '^(?i)home$') { 'Home' } else { 'Pro' }
 
 $isoItem = $null
-if (-not [string]::IsNullOrWhiteSpace($IsoPath)) {
+$useSourceDir = $false
+if (-not [string]::IsNullOrWhiteSpace($SourceDir)) {
+    if (-not (Test-Path -LiteralPath $SourceDir)) {
+        Emit-StageDrive @{ event = 'error'; disk = -1; message = "SourceDir not found: $SourceDir" }
+        exit 1
+    }
+    $srcDirItem = Get-Item -LiteralPath $SourceDir
+    if (-not $srcDirItem.PSIsContainer) {
+        Emit-StageDrive @{ event = 'error'; disk = -1; message = "SourceDir is not a directory: $SourceDir" }
+        exit 1
+    }
+    $srcRoot = $srcDirItem.FullName.TrimEnd('\') + '\'
+    $srcWim = Join-Path $srcRoot 'sources\install.wim'
+    $srcEsd = Join-Path $srcRoot 'sources\install.esd'
+    if (-not (Test-Path -LiteralPath $srcWim) -and -not (Test-Path -LiteralPath $srcEsd)) {
+        Emit-StageDrive @{ event = 'error'; disk = -1; message = "SourceDir '$($srcDirItem.FullName)' has no sources\install.wim or sources\install.esd" }
+        exit 1
+    }
+    $isoItem = $srcDirItem
+    $useSourceDir = $true
+} elseif (-not [string]::IsNullOrWhiteSpace($IsoPath)) {
     if (-not (Test-Path -LiteralPath $IsoPath)) {
         Emit-StageDrive @{ event = 'error'; disk = -1; message = "IsoPath not found: $IsoPath" }
         exit 1
@@ -100,20 +128,36 @@ if (-not $isoItem) {
     exit 1
 }
 
-$imageVersion = Get-LWImageVersionId -Iso $isoItem -Edition $winEdition
-$preSplitSetDir = Join-Path $destageLayout.PreSplitRoot $imageVersion
+# Preview only — Stage-PreSplitImage mints its own UTC stamp. Resolve the real
+# set folder AFTER stage before exporting boot.wim into it.
+$previewVersion = $null
+if (-not $Force -and (Get-Command -Name Get-LWPreSplitCandidateDirs -ErrorAction SilentlyContinue) -and
+    (Get-Command -Name Test-LWPreSplitSourceMatchesIso -ErrorAction SilentlyContinue)) {
+    foreach ($cand in @(Get-LWPreSplitCandidateDirs -PreSplitRoot $destageLayout.PreSplitRoot -Arch $wfUpper -Edition $winEdition)) {
+        $chk = Test-LWPreSplitSet -SetDir $cand
+        if ($chk.Valid -and (Test-LWPreSplitSourceMatchesIso -Manifest $chk.Manifest -Iso $isoItem)) {
+            $previewVersion = [string]$chk.Manifest.imageVersion
+            if (-not $previewVersion) { $previewVersion = [string](Split-Path -Leaf $cand) }
+            break
+        }
+    }
+}
+if (-not $previewVersion) {
+    $previewVersion = Get-LWImageVersionId -Iso $isoItem -Edition $winEdition -StampUtc ([datetime]::UtcNow)
+}
 
 Emit-StageDrive @{
     event            = 'init'
     disk             = 0
     shareRoot        = $stagingRoot
     preSplitRoot     = $destageLayout.PreSplitRoot
-    preSplitSetDir   = $preSplitSetDir
+    preSplitSetDir   = (Join-Path $destageLayout.PreSplitRoot $previewVersion)
     workflowType     = $WorkflowType
     windowsEdition   = $WindowsEdition
     producer         = 'Stage-GoogleDriveMedia'
     mediaSource      = $ms
     localStagingRoot = $usedLocalStagingRoot
+    sourceDir        = $(if ($useSourceDir) { $isoItem.FullName } else { '' })
 }
 
 Emit-StageDrive @{ event = 'phase'; disk = 0; phase = 'stage-drive-presplit' }
@@ -125,13 +169,66 @@ $preArgs = @(
     '-MediaSource', $ms
 )
 if ($AppResourcesPath) { $preArgs += '-AppResourcesPath', $AppResourcesPath }
-if ($IsoPath) { $preArgs += '-IsoPath', $IsoPath }
+if ($useSourceDir) { $preArgs += '-SourceDir', $isoItem.FullName }
+elseif ($IsoPath) { $preArgs += '-IsoPath', $IsoPath }
 if ($Force) { $preArgs += '-Force' }
+if (-not [string]::IsNullOrWhiteSpace($ScratchRoot)) { $preArgs += '-ScratchRoot', $ScratchRoot }
 
 & powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $stagePs @preArgs
 if ($LASTEXITCODE -ne 0) {
     Emit-StageDrive @{ event = 'error'; disk = -1; message = "Pre-split staging failed (exit $LASTEXITCODE)" }
     exit $LASTEXITCODE
+}
+
+# Resolve the set Stage-PreSplitImage actually wrote (current.json / candidates).
+$preSplitSetDir = $null
+$imageVersion = $null
+$skuKey = '{0}-{1}' -f $wfUpper, $winEdition
+$currentJson = Join-Path $destageLayout.PreSplitRoot 'current.json'
+if (Test-Path -LiteralPath $currentJson) {
+    try {
+        $curDoc = Get-Content -Raw -LiteralPath $currentJson | ConvertFrom-Json
+        $leaf = $null
+        if ($curDoc.PSObject.Properties[$skuKey]) {
+            $entry = $curDoc.$skuKey
+            if ($entry -is [string]) { $leaf = [string]$entry }
+            elseif ($entry -and $entry.PSObject.Properties['imageVersion']) { $leaf = [string]$entry.imageVersion }
+        } elseif ($curDoc.PSObject.Properties['skus'] -and $curDoc.skus.PSObject.Properties[$skuKey]) {
+            $entry = $curDoc.skus.$skuKey
+            if ($entry -and $entry.PSObject.Properties['imageVersion']) { $leaf = [string]$entry.imageVersion }
+        }
+        if ($leaf) {
+            $cand = Join-Path $destageLayout.PreSplitRoot $leaf
+            if (Test-Path -LiteralPath $cand) {
+                $preSplitSetDir = $cand
+                $imageVersion = $leaf
+            }
+        }
+    } catch {}
+}
+if (-not $preSplitSetDir -and (Get-Command -Name Get-LWPreSplitCandidateDirs -ErrorAction SilentlyContinue)) {
+    foreach ($cand in @(Get-LWPreSplitCandidateDirs -PreSplitRoot $destageLayout.PreSplitRoot -Arch $wfUpper -Edition $winEdition)) {
+        $chk = Test-LWPreSplitSet -SetDir $cand
+        if (-not $chk.Valid) { continue }
+        if ($useSourceDir -and (Get-Command -Name Test-LWPreSplitSourceMatchesIso -ErrorAction SilentlyContinue)) {
+            if (-not (Test-LWPreSplitSourceMatchesIso -Manifest $chk.Manifest -Iso $isoItem)) { continue }
+        }
+        $preSplitSetDir = $cand
+        $imageVersion = [string]$chk.Manifest.imageVersion
+        if (-not $imageVersion) { $imageVersion = [string](Split-Path -Leaf $cand) }
+        break
+    }
+}
+if (-not $preSplitSetDir) {
+    Emit-StageDrive @{ event = 'error'; disk = -1; message = "Pre-split finished but no Image Ready set found under '$($destageLayout.PreSplitRoot)' for $skuKey" }
+    exit 1
+}
+
+Emit-StageDrive @{
+    event          = 'log'
+    disk           = 0
+    message        = ("Resolved Image Ready set for boot.wim export: " + $preSplitSetDir)
+    preSplitSetDir = $preSplitSetDir
 }
 
 Emit-StageDrive @{ event = 'phase'; disk = 0; phase = 'stage-drive-bootwim' }
@@ -145,13 +242,34 @@ $bootArgs = @(
     '-ExportStagedBootWimSetDir', $preSplitSetDir,
     '-AppResourcesPath', $AppResourcesPath
 )
-if ($IsoPath) { $bootArgs += '-StagingIsoPath', $IsoPath }
+if ($useSourceDir) { $bootArgs += '-StagingIsoPath', $isoItem.FullName }
+elseif ($IsoPath) { $bootArgs += '-StagingIsoPath', $IsoPath }
 else { $bootArgs += '-StagingIsoPath', $isoItem.FullName }
 
 & powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $buildPs @bootArgs
 if ($LASTEXITCODE -ne 0) {
     Emit-StageDrive @{ event = 'error'; disk = -1; message = "boot.wim export failed (exit $LASTEXITCODE)" }
     exit $LASTEXITCODE
+}
+
+$bootWimOut = Join-Path $preSplitSetDir 'sources\boot.wim'
+$swmHit = @(Get-ChildItem -LiteralPath (Join-Path $preSplitSetDir 'sources') -Filter 'install*.swm' -File -ErrorAction SilentlyContinue)
+if (-not (Test-Path -LiteralPath $bootWimOut) -or $swmHit.Count -lt 1) {
+    Emit-StageDrive @{
+        event   = 'error'
+        disk    = -1
+        message = "Image Ready package incomplete at $preSplitSetDir (need sources\boot.wim and install*.swm)"
+    }
+    exit 1
+}
+if (-not (Get-Command -Name Test-LwPreSplitBootInjected -ErrorAction SilentlyContinue) -or
+    -not (Test-LwPreSplitBootInjected -SetDir $preSplitSetDir)) {
+    Emit-StageDrive @{
+        event   = 'error'
+        disk    = -1
+        message = "Image Ready package at $preSplitSetDir missing sources\boot.wim.lw-injected after boot.wim export. USB Rebuild would re-run DISM; refusing incomplete stage."
+    }
+    exit 1
 }
 
 $doneWhere = if ($ms -eq 'share') {
@@ -161,5 +279,12 @@ $doneWhere = if ($ms -eq 'share') {
 } else {
     'Drive PreSplit'
 }
-Emit-StageDrive @{ event = 'done'; disk = 0; success = $true; message = "Image Ready staging complete ($doneWhere set $imageVersion)" }
+Emit-StageDrive @{
+    event          = 'done'
+    disk           = 0
+    success        = $true
+    preSplitSetDir = $preSplitSetDir
+    imageVersion   = $imageVersion
+    message        = "Image Ready staging complete ($doneWhere set $imageVersion)"
+}
 exit 0

@@ -1937,6 +1937,17 @@ call :LOG "MDM suppression applied PS-free (sc: DmEnrollmentSvc stop + start=dis
 endlocal & exit /b 0
 
 :ADD_DEFENDER_EXCLUSION
+:: TEMPORARY / KEEP IN SYNC: the three ExclusionPath values below MUST match
+::   Invoke-FbInlineMdmScrub, Get-FbImSecurityShipState, and Tools\seal_command.txt.
+:: GATE: specialize-pass only. Do not add a new exclusion path.
+:: CLEANUP: removal is NOT this subroutine. Teardown owners:
+::   (1) automated — Invoke-FbInlineMdmScrub in the WU loop (live-verified HARD)
+::   (2) fb-im Seal — Invoke-FbImSealToOobe (imports the same scrub)
+::   (3) seal_command.txt — Remove-MpPreference, then verify before stamp
+:: SEAL: all three seal paths must prove these exclusions are gone before
+::   writing .firstbase-sealed. FirstBaseOobeOperatorFinalize.ps1 is
+::   recovery/legacy ([RETIRED 5.0.38]) and is NOT the load-bearing owner.
+::
 :: 2280-defender-autopilot-block: Add Defender path exclusions for the two FirstBase
 :: directories BEFORE any PowerShell from those directories runs.
 :: Add-MpPreference -ExclusionPath is NOT blocked by Tamper Protection (unlike
@@ -1981,6 +1992,17 @@ del /f /q "%FB_DEFEXCL_TMPSCRIPT%" 2>nul
 endlocal & exit /b 0
 
 :BLOCK_AUTOPILOT_ENDPOINTS
+:: TEMPORARY / KEEP IN SYNC: the FirstBase-Block-Autopilot rule name MUST match
+::   Invoke-FbInlineMdmScrub and Tools\seal_command.txt.
+:: GATE: specialize-pass only. Do not add a second Autopilot block rule.
+:: CLEANUP: removal is NOT this subroutine. Teardown owners:
+::   (1) automated — Invoke-FbInlineMdmScrub in the WU loop (firewall HARD)
+::   (2) fb-im Seal — Invoke-FbImSealToOobe (imports the same scrub)
+::   (3) seal_command.txt — Remove-NetFirewallRule, then verify before stamp
+:: SEAL: all three seal paths must prove this rule is gone before writing
+::   .firstbase-sealed. FirstBaseOobeOperatorFinalize.ps1 is recovery/legacy
+::   ([RETIRED 5.0.38]) and is NOT the load-bearing owner.
+::
 :: 2280-defender-autopilot-block: Add Windows Firewall outbound block rules for
 :: Autopilot-specific enrollment endpoints. The WCOOBE / oobeldr.exe / msoobe.exe
 :: enrollment stack bypasses DmEnrollmentSvc suppression and AutoEnrollMDM registry

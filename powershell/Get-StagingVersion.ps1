@@ -33,8 +33,9 @@
 param(
     [string]$ShareRoot        = '\\WIN-HQ5JDEACV3S\Images\FB Image Creation',
     # KEEP IN SYNC: LONEWOLF_SHARE_USER / LONEWOLF_SHARE_PASSWORD env-first (see Invoke-LoneWolfBuild.ps1).
+    # GATE: share staging fails closed when LONEWOLF_SHARE_PASSWORD is unset.
     [string]$ShareUser        = $(if (-not [string]::IsNullOrWhiteSpace($env:LONEWOLF_SHARE_USER)) { $env:LONEWOLF_SHARE_USER } else { 'Reflect' }),
-    [string]$SharePassword    = $(if (-not [string]::IsNullOrWhiteSpace($env:LONEWOLF_SHARE_PASSWORD)) { $env:LONEWOLF_SHARE_PASSWORD } else { 'mer*HWE0upt*rqe@dud' }),
+    [string]$SharePassword    = $(if (-not [string]::IsNullOrWhiteSpace($env:LONEWOLF_SHARE_PASSWORD)) { $env:LONEWOLF_SHARE_PASSWORD } else { '' }),
     [string]$WorkflowType     = 'AMD64',
     [string]$WindowsEdition   = 'Pro',  # Home | Pro. Presplit/ISO identity; not LoneWolf vs Quick Install.
     [string]$LocalProjectRoot = '',  # When non-empty: skip share auth and read from this local path instead
@@ -62,6 +63,9 @@ if ($ShareRoot -match '^(?i)https?://') {
 # --- Share authentication -----------------------------------------------------
 function Connect-ShareCredentials {
     param([string]$ShareHost, [string]$User, [string]$Pass)
+    if ([string]::IsNullOrWhiteSpace($Pass)) {
+        throw 'HQ share password is not set. Set LONEWOLF_SHARE_PASSWORD before connecting to the deployment share.'
+    }
     try {
         $cmdkey = Join-Path $env:SystemRoot 'System32\cmdkey.exe'
         if (Test-Path -LiteralPath $cmdkey) {
@@ -78,6 +82,19 @@ if ($WindowsEdition -match '^(?i)home$') { $winEdition = 'Home' }
 $resolvedMediaSource = if ($DestageMedia) { 'local' } elseif (-not [string]::IsNullOrWhiteSpace($MediaSource)) { $MediaSource } else { '' }
 
 if ([string]::IsNullOrWhiteSpace($LocalProjectRoot) -and $resolvedMediaSource -ne 'local' -and -not $DestageMedia -and $ShareRoot -match '^\\\\') {
+    if ([string]::IsNullOrWhiteSpace($SharePassword)) {
+        [ordered]@{
+            version        = 'unknown'
+            buildDate      = ''
+            workflowType   = $wfUpper
+            windowsEdition = $winEdition
+            buildMode      = 'none'
+            isoAvailable   = $false
+            wimAvailable   = $false
+            error          = 'HQ share password is not set. Set LONEWOLF_SHARE_PASSWORD.'
+        } | ConvertTo-Json -Compress -Depth 5
+        return
+    }
     $shareHost = 'WIN-HQ5JDEACV3S'
     if ($ShareRoot -match '^\\\\([^\\]+)\\') { $shareHost = $Matches[1] }
     Connect-ShareCredentials -ShareHost $shareHost -User $ShareUser -Pass $SharePassword

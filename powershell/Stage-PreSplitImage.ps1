@@ -117,8 +117,9 @@ param(
 
     [string] $ShareRoot        = '\\WIN-HQ5JDEACV3S\Images\FB Image Creation',
     # KEEP IN SYNC: LONEWOLF_SHARE_USER / LONEWOLF_SHARE_PASSWORD env-first (see Invoke-LoneWolfBuild.ps1).
+    # GATE: share staging fails closed when LONEWOLF_SHARE_PASSWORD is unset.
     [string] $ShareUser        = $(if (-not [string]::IsNullOrWhiteSpace($env:LONEWOLF_SHARE_USER)) { $env:LONEWOLF_SHARE_USER } else { 'Reflect' }),
-    [string] $SharePassword    = $(if (-not [string]::IsNullOrWhiteSpace($env:LONEWOLF_SHARE_PASSWORD)) { $env:LONEWOLF_SHARE_PASSWORD } else { 'mer*HWE0upt*rqe@dud' }),
+    [string] $SharePassword    = $(if (-not [string]::IsNullOrWhiteSpace($env:LONEWOLF_SHARE_PASSWORD)) { $env:LONEWOLF_SHARE_PASSWORD } else { '' }),
     [string] $LocalProjectRoot = '',
     [switch] $DestageMedia,
     [ValidateSet('local', 'share', 'googleDrive', '')]
@@ -153,6 +154,9 @@ function EmitDone     { param([bool]$Success, [string]$Msg)
 # --- Share authentication (mirrors Get-StagingVersion.ps1) --------------------
 function Connect-ShareCredentials {
     param([string]$ShareHost, [string]$User, [string]$Pass)
+    if ([string]::IsNullOrWhiteSpace($Pass)) {
+        throw 'HQ share password is not set. Set LONEWOLF_SHARE_PASSWORD before connecting to the deployment share.'
+    }
     try {
         $cmdkey = Join-Path $env:SystemRoot 'System32\cmdkey.exe'
         if (Test-Path -LiteralPath $cmdkey) {
@@ -257,6 +261,9 @@ if ($useDestageLocalUup) {
         EmitError 'A Google Drive folder URL is not a Windows filesystem ShareRoot. Use local UUP or the HQ UNC share.'; exit 1
     }
     if ($ShareRoot -match '^\\\\') {
+        if ([string]::IsNullOrWhiteSpace($SharePassword)) {
+            EmitError 'HQ share password is not set. Set LONEWOLF_SHARE_PASSWORD.'; exit 1
+        }
         $shareHost = 'WIN-HQ5JDEACV3S'
         if ($ShareRoot -match '^\\\\([^\\]+)\\') { $shareHost = $Matches[1] }
         Connect-ShareCredentials -ShareHost $shareHost -User $ShareUser -Pass $SharePassword

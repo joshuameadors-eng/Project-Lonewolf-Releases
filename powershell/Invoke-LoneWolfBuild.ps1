@@ -98,12 +98,11 @@ param(
     [Parameter(Mandatory)] [string]   $DiskNumbers,
     [string] $ShareRoot        = '\\WIN-HQ5JDEACV3S\Images\FB Image Creation',
     # KEEP IN SYNC: LONEWOLF_SHARE_USER / LONEWOLF_SHARE_PASSWORD env-first in
-    # main.js, Get-StagingVersion.ps1, Stage-PreSplitImage.ps1, ProvisioningConstants.cs.
-    # GATE: destage HQ UNC still works with the well-known default if env is unset.
-    # CLEANUP: do not rotate the live share password from this repo.
-    # SEAL: not a FirstBase seal path — destage credential only.
+    # main.js, Get-StagingVersion.ps1, Stage-PreSplitImage.ps1, ConnectDeploymentShare.
+    # GATE: HQ UNC connect fails closed when LONEWOLF_SHARE_PASSWORD is unset.
+    # Username defaults to Reflect. No share password is stored in this repo.
     [string] $ShareUser        = $(if (-not [string]::IsNullOrWhiteSpace($env:LONEWOLF_SHARE_USER)) { $env:LONEWOLF_SHARE_USER } else { 'Reflect' }),
-    [string] $SharePassword    = $(if (-not [string]::IsNullOrWhiteSpace($env:LONEWOLF_SHARE_PASSWORD)) { $env:LONEWOLF_SHARE_PASSWORD } else { 'mer*HWE0upt*rqe@dud' }),
+    [string] $SharePassword    = $(if (-not [string]::IsNullOrWhiteSpace($env:LONEWOLF_SHARE_PASSWORD)) { $env:LONEWOLF_SHARE_PASSWORD } else { '' }),
     [string] $CacheRoot,
     [string] $DataVolumeLabel  = 'LoneWolf',
     [string] $AppResourcesPath = '',
@@ -805,6 +804,9 @@ $overlayCache = ''
 function Connect-Share {
     param([string]$ShareHost, [string]$User, [string]$Pass, [string]$ProbePath)
 
+    if ([string]::IsNullOrWhiteSpace($Pass)) {
+        throw 'HQ share password is not set. Set LONEWOLF_SHARE_PASSWORD before connecting to the deployment share.'
+    }
     $cmdkey = Join-Path $env:SystemRoot 'System32\cmdkey.exe'
     if (Test-Path -LiteralPath $cmdkey) {
         & $cmdkey /delete:$ShareHost 2>$null | Out-Null
@@ -3948,7 +3950,9 @@ try {
         } elseif ($ShareRoot -match '^\\\\') {
             $shareHost = 'WIN-HQ5JDEACV3S'
             if ($ShareRoot -match '^\\\\([^\\]+)\\') { $shareHost = $Matches[1] }
-            try { Connect-Share -ShareHost $shareHost -User $ShareUser -Pass $SharePassword -ProbePath $ShareRoot } catch { }
+            try { Connect-Share -ShareHost $shareHost -User $ShareUser -Pass $SharePassword -ProbePath $ShareRoot } catch {
+                EmitLog -Disk 0 -Msg ("destage: share connect skipped: {0}" -f $_.Exception.Message)
+            }
         }
         if (-not [string]::IsNullOrWhiteSpace($ShareRoot) -and (Test-Path -LiteralPath $ShareRoot)) {
             EmitLog -Disk 0 -Msg "destage: share reachable $ShareRoot"

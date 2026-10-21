@@ -13660,16 +13660,33 @@ function Invoke-FbInlineMdmScrub {
         & $writeInline $(if ($fwOk) { 'INFO' } else { 'ERROR' }) ('FirstBase-Block-Autopilot firewall rule -> ' + $items['FirewallRule'])
     } catch { $items['FirewallRule'] = 'FAIL'; & $writeInline 'ERROR' ('Firewall EXC: ' + $_.Exception.Message) }
 
-    # 4) Defender exclusions (best-effort; not Autopilot-blocking)
+    # 4) Defender exclusions (HARD: live-verify the three FirstBase paths are gone)
+    $exclWant = @(
+        'C:\Windows\Setup\FirstBase',
+        'C:\ProgramData\FirstBase',
+        'C:\ProgramData\Microsoft\Windows\Start Menu\Programs\Startup'
+    )
     try {
-        foreach ($ex in @('C:\Windows\Setup\FirstBase', 'C:\ProgramData\FirstBase', 'C:\ProgramData\Microsoft\Windows\Start Menu\Programs\Startup')) {
+        foreach ($ex in $exclWant) {
             Remove-MpPreference -ExclusionPath $ex -ErrorAction SilentlyContinue
         }
-        $items['DefenderExclusions'] = 'DONE'
-        & $writeInline 'INFO' 'Defender exclusions removal attempted.'
-    } catch { $items['DefenderExclusions'] = 'WARN'; & $writeInline 'WARN' ('Defender EXC: ' + $_.Exception.Message) }
+        $left = @()
+        $pref = Get-MpPreference -ErrorAction Stop
+        foreach ($want in $exclWant) {
+            foreach ($have in @($pref.ExclusionPath)) {
+                if ([string]$have -and ([string]$have).TrimEnd('\') -eq $want) { $left += $want }
+            }
+        }
+        if ($left.Count -eq 0) {
+            $items['DefenderExclusions'] = 'PASS'
+            & $writeInline 'INFO' 'Defender exclusions verified removed.'
+        } else {
+            $items['DefenderExclusions'] = 'FAIL'
+            & $writeInline 'ERROR' ('Defender exclusions still present: ' + ($left -join ', '))
+        }
+    } catch { $items['DefenderExclusions'] = 'FAIL'; & $writeInline 'ERROR' ('Defender EXC: ' + $_.Exception.Message) }
 
-    # 5) WU AU suppression policy (best-effort; written pre-operator to protect the operator window)
+    # 5) WU AU suppression policy (HARD: NoAutoUpdate and NoAutoReboot must be absent)
     try {
         $au = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate\AU'
         if (Test-Path -LiteralPath $au) {
@@ -13682,9 +13699,21 @@ function Invoke-FbInlineMdmScrub {
             Remove-ItemProperty -LiteralPath $wuPol -Name 'TargetReleaseVersionInfo' -Force -ErrorAction SilentlyContinue
             Remove-ItemProperty -LiteralPath $wuPol -Name 'ProductVersion' -Force -ErrorAction SilentlyContinue
         }
-        $items['WuAuPolicy'] = 'DONE'
-        & $writeInline 'INFO' 'WU AU suppression policy removal attempted.'
-    } catch { $items['WuAuPolicy'] = 'WARN'; & $writeInline 'WARN' ('WU AU EXC: ' + $_.Exception.Message) }
+        $auLeft = @()
+        if (Test-Path -LiteralPath $au) {
+            $auProp = Get-ItemProperty -LiteralPath $au -ErrorAction SilentlyContinue
+            foreach ($n in @('NoAutoUpdate', 'NoAutoRebootWithLoggedOnUsers')) {
+                if ($auProp -and ($auProp.PSObject.Properties.Name -contains $n)) { $auLeft += $n }
+            }
+        }
+        if ($auLeft.Count -eq 0) {
+            $items['WuAuPolicy'] = 'PASS'
+            & $writeInline 'INFO' 'WU AU suppression policy verified removed.'
+        } else {
+            $items['WuAuPolicy'] = 'FAIL'
+            & $writeInline 'ERROR' ('WU AU policy still present: ' + ($auLeft -join ', '))
+        }
+    } catch { $items['WuAuPolicy'] = 'FAIL'; & $writeInline 'ERROR' ('WU AU EXC: ' + $_.Exception.Message) }
 
     # 6) Recovery BCD restore (best-effort)
     try {
@@ -13694,7 +13723,7 @@ function Invoke-FbInlineMdmScrub {
         & $writeInline 'INFO' 'BCD recovery settings restored.'
     } catch { $items['RecoveryBcd'] = 'WARN'; & $writeInline 'WARN' ('bcdedit EXC: ' + $_.Exception.Message) }
 
-    $hard = @($items['MdmKeys'], $items['DmEnrollmentSvc'], $items['FirewallRule'])
+    $hard = @($items['MdmKeys'], $items['DmEnrollmentSvc'], $items['FirewallRule'], $items['DefenderExclusions'], $items['WuAuPolicy'])
     $overall = $(if (@($hard | Where-Object { $_ -ne 'PASS' }).Count -eq 0) { 'PASS' } else { 'FAIL' })
     try {
         ([ordered]@{ overall = $overall; at = (Get-Date -Format 'o'); runAs = $who; mode = 'inline-administrator-session'; items = $items } | ConvertTo-Json -Depth 4) |
@@ -14050,16 +14079,33 @@ try {
     Write-Scrub $(if ($ok) { 'INFO' } else { 'ERROR' }) ('2296: FirstBase-Block-Autopilot firewall rule -> ' + $items['FirewallRule'])
 } catch { $items['FirewallRule'] = 'FAIL'; Write-Scrub 'ERROR' ('2296: Firewall EXC: ' + $_.Exception.Message) }
 
-# 4) Defender exclusions (best-effort; not Autopilot-blocking)
+# 4) Defender exclusions (HARD: live-verify the three FirstBase paths are gone)
+$exclWant2296 = @(
+    'C:\Windows\Setup\FirstBase',
+    'C:\ProgramData\FirstBase',
+    'C:\ProgramData\Microsoft\Windows\Start Menu\Programs\Startup'
+)
 try {
-    foreach ($ex in @('C:\Windows\Setup\FirstBase', 'C:\ProgramData\FirstBase', 'C:\ProgramData\Microsoft\Windows\Start Menu\Programs\Startup')) {
+    foreach ($ex in $exclWant2296) {
         Remove-MpPreference -ExclusionPath $ex -ErrorAction SilentlyContinue
     }
-    $items['DefenderExclusions'] = 'DONE'
-    Write-Scrub 'INFO' '2296: Defender exclusions removal attempted.'
-} catch { $items['DefenderExclusions'] = 'WARN'; Write-Scrub 'WARN' ('2296: Defender EXC: ' + $_.Exception.Message) }
+    $left2296 = @()
+    $pref2296 = Get-MpPreference -ErrorAction Stop
+    foreach ($want in $exclWant2296) {
+        foreach ($have in @($pref2296.ExclusionPath)) {
+            if ([string]$have -and ([string]$have).TrimEnd('\') -eq $want) { $left2296 += $want }
+        }
+    }
+    if ($left2296.Count -eq 0) {
+        $items['DefenderExclusions'] = 'PASS'
+        Write-Scrub 'INFO' '2296: Defender exclusions verified removed.'
+    } else {
+        $items['DefenderExclusions'] = 'FAIL'
+        Write-Scrub 'ERROR' ('2296: Defender exclusions still present: ' + ($left2296 -join ', '))
+    }
+} catch { $items['DefenderExclusions'] = 'FAIL'; Write-Scrub 'ERROR' ('2296: Defender EXC: ' + $_.Exception.Message) }
 
-# 5) WU AU suppression policy (best-effort)
+# 5) WU AU suppression policy (HARD: NoAutoUpdate and NoAutoReboot must be absent)
 try {
     $au = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate\AU'
     if (Test-Path -LiteralPath $au) {
@@ -14072,9 +14118,21 @@ try {
         Remove-ItemProperty -LiteralPath $wuPol -Name 'TargetReleaseVersionInfo' -Force -ErrorAction SilentlyContinue
         Remove-ItemProperty -LiteralPath $wuPol -Name 'ProductVersion' -Force -ErrorAction SilentlyContinue
     }
-    $items['WuAuPolicy'] = 'DONE'
-    Write-Scrub 'INFO' '2296: WU AU suppression policy removal attempted.'
-} catch { $items['WuAuPolicy'] = 'WARN'; Write-Scrub 'WARN' ('2296: WU AU EXC: ' + $_.Exception.Message) }
+    $auLeft2296 = @()
+    if (Test-Path -LiteralPath $au) {
+        $auProp2296 = Get-ItemProperty -LiteralPath $au -ErrorAction SilentlyContinue
+        foreach ($n in @('NoAutoUpdate', 'NoAutoRebootWithLoggedOnUsers')) {
+            if ($auProp2296 -and ($auProp2296.PSObject.Properties.Name -contains $n)) { $auLeft2296 += $n }
+        }
+    }
+    if ($auLeft2296.Count -eq 0) {
+        $items['WuAuPolicy'] = 'PASS'
+        Write-Scrub 'INFO' '2296: WU AU suppression policy verified removed.'
+    } else {
+        $items['WuAuPolicy'] = 'FAIL'
+        Write-Scrub 'ERROR' ('2296: WU AU policy still present: ' + ($auLeft2296 -join ', '))
+    }
+} catch { $items['WuAuPolicy'] = 'FAIL'; Write-Scrub 'ERROR' ('2296: WU AU EXC: ' + $_.Exception.Message) }
 
 # 6) Recovery BCD restore (best-effort)
 try {
@@ -14084,7 +14142,7 @@ try {
     Write-Scrub 'INFO' '2296: BCD recovery settings restored.'
 } catch { $items['RecoveryBcd'] = 'WARN'; Write-Scrub 'WARN' ('2296: bcdedit EXC: ' + $_.Exception.Message) }
 
-$hard = @($items['MdmKeys'], $items['DmEnrollmentSvc'], $items['FirewallRule'])
+$hard = @($items['MdmKeys'], $items['DmEnrollmentSvc'], $items['FirewallRule'], $items['DefenderExclusions'], $items['WuAuPolicy'])
 $overall = if (@($hard | Where-Object { $_ -ne 'PASS' }).Count -eq 0) { 'PASS' } else { 'FAIL' }
 $obj = [ordered]@{ overall = $overall; at = (Get-Date -Format 'o'); runAs = $who; items = $items }
 try { ($obj | ConvertTo-Json -Depth 4) | Set-Content -LiteralPath $resultPath -Encoding ASCII -Force } catch { Write-Scrub 'ERROR' ('2296: result write EXC: ' + $_.Exception.Message) }
@@ -15937,8 +15995,8 @@ function Invoke-FbOobeHandoff {
         # STEP B — INLINE, verified, full-privilege MDM/Autopilot scrub + Defender
         # restore (SYSTEM, in-process). HARD failure must NOT stamp .firstbase-sealed.
         # KEEP IN SYNC / GATE / CLEANUP / SEAL: same restore+scrub as Invoke-FbImSealToOobe
-        # and Tools\seal_command.txt. Already-sealed skips the fail-closed block so a
-        # sysprep retry does not brick Audit. Already-clean scrub is Overall=PASS.
+        # and Tools\seal_command.txt. A prior .firstbase-sealed does not skip HARD
+        # fail. Defender restore and MDM scrub must both pass before sysprep.
         $fbSealedPath = Join-Path $FbProgramDataFirstBase '.firstbase-sealed'
         $fbAlreadySealed = $false
         try { $fbAlreadySealed = [bool](Test-Path -LiteralPath $fbSealedPath) } catch { $fbAlreadySealed = $false }
@@ -15948,13 +16006,9 @@ function Invoke-FbOobeHandoff {
         $fbDefenderRestoreOk = $false
         try { $fbDefenderRestoreOk = [bool]$script:FbDefenderRealtimeLastOk } catch { $fbDefenderRestoreOk = $false }
         if (-not $fbDefenderRestoreOk) {
-            if ($fbAlreadySealed) {
-                Write-FbLog '5038: Defender restore last-ok=false but .firstbase-sealed already present; continuing sysprep retry (do not brick Audit).' 'WARN'
-            } else {
-                Write-FbLog '5038: HARD FAIL Defender restore (Set-MpPreference/live preference). NOT writing .firstbase-sealed / .pipeline-completed. Device stays in Audit. Inspect defender-state.flag and retry Seal from fb-im.' 'ERROR'
-                try { Set-UiPhase -Phase 'HardwareGate' -Message 'Defender restore failed. Device is not sealed. Retry Seal from fb-im.' } catch {}
-                return
-            }
+            Write-FbLog '5038: HARD FAIL Defender restore (Set-MpPreference/live preference). Not continuing sysprep. Device stays in Audit. Inspect defender-state.flag and retry Seal from fb-im.' 'ERROR'
+            try { Set-UiPhase -Phase 'HardwareGate' -Message 'Defender restore failed. Device is not sealed. Retry Seal from fb-im.' } catch {}
+            return
         }
 
         Write-FbLog '5038: running INLINE MDM/Autopilot scrub + hardening restore (SYSTEM, in-process, verified) at operator settings-close.' 'WARN'
@@ -15970,13 +16024,9 @@ function Invoke-FbOobeHandoff {
         } else {
             $fb5038Ov = $(if ($fb5038Scrub) { [string]$fb5038Scrub.Overall } else { 'UNKNOWN' })
             Write-FbLog ('5038: ERROR INLINE MDM scrub overall={0}; one or more PRIVILEGED blocks may PERSIST into the shipped image. Inspect C:\ProgramData\FirstBase\Logs\WU-mdm-scrub.log and .mdm-scrub-result.' -f $fb5038Ov) 'ERROR'
-            if ($fbAlreadySealed) {
-                Write-FbLog '5038: MDM scrub HARD FAIL but .firstbase-sealed already present; continuing sysprep retry (do not brick Audit).' 'WARN'
-            } else {
-                Write-FbLog '5038: HARD FAIL MDM scrub. NOT writing .firstbase-sealed / .pipeline-completed. Device stays in Audit. Retry Seal from fb-im after inspecting WU-mdm-scrub.log.' 'ERROR'
-                try { Set-UiPhase -Phase 'HardwareGate' -Message 'MDM scrub failed. Device is not sealed. Retry Seal from fb-im.' } catch {}
-                return
-            }
+            Write-FbLog '5038: HARD FAIL MDM scrub. Not continuing sysprep. Device stays in Audit. Retry Seal from fb-im after inspecting WU-mdm-scrub.log.' 'ERROR'
+            try { Set-UiPhase -Phase 'HardwareGate' -Message 'MDM scrub failed. Device is not sealed. Retry Seal from fb-im.' } catch {}
+            return
         }
 
         # STEP C — record pipeline sealed + disarm the (now-unused) defaultuser0

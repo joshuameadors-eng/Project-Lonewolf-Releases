@@ -1,6 +1,6 @@
 {
-    "launcherVersion":  "6.2.5",
-    "payloadVersion":  "6.2.62",
+    "launcherVersion":  "6.3.1",
+    "payloadVersion":  "7.0.0",
     "channel":  "dev",
     "source":  "github-public-source",
     "latestReleaseUrl":  "https://github.com/joshuameadors-eng/Project-Lonewolf-Releases/releases/latest",
@@ -35,9 +35,23 @@
                  "winpeUiZipBase":  "https://raw.githubusercontent.com/joshuameadors-eng/Project-Lonewolf-Releases/dev/bin",
                  "manifest":  "https://raw.githubusercontent.com/joshuameadors-eng/Project-Lonewolf-Releases/dev/latest-dev.json"
              },
-    "portableSha256":  "97c85dd4496f94a8d2c7f4a0d04a729ba9ae0b00d53fb5bc395828e095d2a0e2",
-    "portableSize":  73275771,
+    "portableSha256":  "d9f929791870ee16b125ce43d5c608308dca8d55bd068da8621351b9da0d392b",
+    "portableSize":  73275691,
     "changelog":  [
+                      {
+                          "version":  "7.0.0",
+                          "date":  "2026-10-21",
+                          "changes":  [
+                                          "Official release 7.0.0 â€” payload MAJOR (6 to 7); launcher 6.3.0.",
+                                          "Added",
+                                          "Seal security gates â€” Defender exclusions and Windows Update auto-update policy are live-verified HARD before seal; READY treats WU AU leftovers and a failed security probe as not ready",
+                                          "Changed",
+                                          "Install media â€” Google Drive is the default; the HQ share is not auto-connected at startup",
+                                          "Seal paths â€” a prior sealed marker no longer bypasses Defender restore or MDM scrub failures before sysprep",
+                                          "HQ share credentials â€” LONEWOLF_SHARE_PASSWORD is required; no password is embedded in the product",
+                                          "Windows Update â€” clock/certificate failures sync time only when needed; splash elapsed and reboot counting stay correct across rechecks"
+                                      ]
+                      },
                       {
                           "version":  "6.2.2",
                           "date":  "2026-10-09",

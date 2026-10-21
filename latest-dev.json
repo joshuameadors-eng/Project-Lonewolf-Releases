@@ -35,8 +35,8 @@
                  "winpeUiZipBase":  "https://raw.githubusercontent.com/joshuameadors-eng/Project-Lonewolf-Releases/dev/bin",
                  "manifest":  "https://raw.githubusercontent.com/joshuameadors-eng/Project-Lonewolf-Releases/dev/latest-dev.json"
              },
-    "portableSha256":  "06f384b4ce500a3f02f0957d81818d15a0e5cf313c54396e089fc70fe9834380",
-    "portableSize":  73274925,
+    "portableSha256":  "97c85dd4496f94a8d2c7f4a0d04a729ba9ae0b00d53fb5bc395828e095d2a0e2",
+    "portableSize":  73275771,
     "changelog":  [
                       {
                           "version":  "6.2.2",

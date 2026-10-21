@@ -983,6 +983,7 @@ function Ensure-LwWinPeUiArchDir {
         $url = "$base/$zipName"
         New-Item -ItemType Directory -Path $cacheRoot -Force -ErrorAction SilentlyContinue | Out-Null
         EmitLog -Disk 0 -Msg ("WinPeUi: downloading {0} -> {1}" -f $url, $downloadZip)
+        Emit @{ event = 'progress'; disk = 0; phase = 'winpe-ui'; pct = 0; message = ("Downloading WinPE UI ({0})..." -f $Arch) }
         try {
             Invoke-WebRequest -Uri $url -OutFile $downloadZip -UseBasicParsing -ErrorAction Stop
         } catch {
@@ -4642,8 +4643,17 @@ try {
     # ARM64 drivers are injected into boot.wim only. $arm64InstallImageDir stays empty.
 
     # Warm WinPeUi (local trees or GitHub bin/ zips) before per-disk overlay / boot inject.
+    # Packaged builds may download ~60-130 MB with no USB phase yet — emit disk-0 progress
+    # so the UI is not stuck on Waiting 0%. OverlayOnly only needs the workflow arch.
     try {
-        Ensure-LwWinPeUiForBuild -Arches @('AMD64', 'ARM64')
+        $uiArches = if ($OverlayOnly) {
+            @($(if ($wfUpper -match 'ARM') { 'ARM64' } else { 'AMD64' }))
+        } else {
+            @('AMD64', 'ARM64')
+        }
+        Emit @{ event = 'progress'; disk = 0; phase = 'winpe-ui'; pct = 0; message = 'Preparing WinPE UI...' }
+        Ensure-LwWinPeUiForBuild -Arches $uiArches
+        Emit @{ event = 'progress'; disk = 0; phase = 'winpe-ui'; pct = 100; message = 'WinPE UI ready' }
     } catch {
         EmitLog -Disk 0 -Msg ("WinPeUi ensure: {0}" -f $_.Exception.Message)
     }

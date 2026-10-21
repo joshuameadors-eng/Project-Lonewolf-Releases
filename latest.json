@@ -1,5 +1,5 @@
 {
-    "launcherVersion":  "6.3.0",
+    "launcherVersion":  "6.3.1",
     "payloadVersion":  "7.0.0",
     "channel":  "release",
     "source":  "github-public-source",
@@ -35,8 +35,8 @@
                  "winpeUiZipBase":  "https://raw.githubusercontent.com/joshuameadors-eng/Project-Lonewolf-Releases/main/bin",
                  "manifest":  "https://raw.githubusercontent.com/joshuameadors-eng/Project-Lonewolf-Releases/main/latest.json"
              },
-    "portableSha256":  "2677aeb0ae60419478380bd1bdf80540a94fc3c5258f3865ee848cff3d65b823",
-    "portableSize":  73203572,
+    "portableSha256":  "f6de3dfef5862d26f3ff0bca676f2e848c289ee9190df247717b375985f754d3",
+    "portableSize":  73206467,
     "changelog":  [
                       {
                           "version":  "7.0.0",

@@ -167,6 +167,8 @@ function Get-LoneWolfInfo {
         lwImageBuildDate = $null
         lwWimBuildDate = $null
         lwImageVersion = $null
+        lwInstallLcuKb = $null
+        lwOsBuild = $null
         lwBuiltAt = $null
         lwArch = $null
         lwArchLabel = $null
@@ -304,6 +306,16 @@ function Get-LoneWolfInfo {
                             $lwInfo.lwImageVersion = [string]$lwJson.imageVersion
                         }
                     } catch {}
+                    try {
+                        if ($lwJson.PSObject.Properties['installLcuKb'] -and $lwJson.installLcuKb) {
+                            $lwInfo.lwInstallLcuKb = [string]$lwJson.installLcuKb
+                        }
+                    } catch {}
+                    try {
+                        if ($lwJson.PSObject.Properties['osBuild'] -and $lwJson.osBuild) {
+                            $lwInfo.lwOsBuild = [string]$lwJson.osBuild
+                        }
+                    } catch {}
                     # Destage/DEV visuals follow the npm start stamp only (destage / channel=destage / legacy
                     # devBuild). Do not infer DEV from version-ahead: packaged Launcher Dev destage must look
                     # like a real packaged run.
@@ -365,6 +377,8 @@ try {
                 lwImageBuildDate = $lwInfo.lwImageBuildDate
                 lwWimBuildDate = $lwInfo.lwWimBuildDate
                 lwImageVersion = $lwInfo.lwImageVersion
+                lwInstallLcuKb = $lwInfo.lwInstallLcuKb
+                lwOsBuild = $lwInfo.lwOsBuild
                 lwBuiltAt = $lwInfo.lwBuiltAt
                 lwArch         = $lwInfo.lwArch
                 lwArchLabel    = $lwInfo.lwArchLabel

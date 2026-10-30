@@ -308,12 +308,59 @@ function Get-LWBareArch {
     return $a
 }
 
+# Leaf for SKU token scans. Only strip real media suffixes (.iso/.wim/…);
+# UUP convert folders often look like 26000.1.….arm64fre.…_clienthome_… and
+# GetFileNameWithoutExtension would truncate at the first/last dotted segment.
+function Get-LWMediaNameForSkuScan {
+    param([string] $Name)
+    $base = [System.IO.Path]::GetFileName(([string]$Name).TrimEnd('\', '/'))
+    if ([string]::IsNullOrWhiteSpace($base)) { return '' }
+    if ($base -match '(?i)\.(iso|wim|esd|swm|img|vhd|vhdx)$') {
+        return [System.IO.Path]::GetFileNameWithoutExtension($base)
+    }
+    return $base
+}
+
 function Get-LWIsoEditionFromName {
     param([string] $Name)
-    $base = [System.IO.Path]::GetFileNameWithoutExtension($Name)
+    $base = Get-LWMediaNameForSkuScan $Name
+    # ISO titles: home / pro as delimited tokens.
     if ($base -match '(?i)(^|[^a-z0-9])home([^a-z0-9]|$)') { return 'Home' }
     if ($base -match '(?i)(^|[^a-z0-9])pro([^a-z0-9]|$)') { return 'Pro' }
+    # UUP / GE convert leaves: clienthome / clientpro (no delimiter before home|pro).
+    if ($base -match '(?i)clienthome') { return 'Home' }
+    if ($base -match '(?i)clientpro') { return 'Pro' }
     return $null
+}
+
+# Arch token in a path segment: (arm64), arm64-Home, arm64fre, amd64, x64, x64fre.
+function Test-LWNameHasArchToken {
+    param(
+        [Parameter(Mandatory)] [string] $Name,
+        [Parameter(Mandatory)] [string] $Arch
+    )
+    $n = $Name.ToLowerInvariant()
+    $arch = Get-LWBareArch $Arch
+    $hasArm = [bool]($n -match '(?i)(^|[^a-z0-9])arm64(fre)?([^a-z0-9]|$)')
+    $hasAmd = [bool]($n -match '(?i)(^|[^a-z0-9])(amd64|x64)(fre)?([^a-z0-9]|$)')
+    if ($arch -eq 'ARM64') { return ($hasArm -and -not ($hasAmd -and -not $hasArm)) }
+    return ($hasAmd -and -not $hasArm)
+}
+
+function Get-LWArchFromMediaPath {
+    param([Parameter(Mandatory)] [string] $FullName)
+    $cursor = $FullName
+    for ($i = 0; $i -lt 5 -and -not [string]::IsNullOrWhiteSpace($cursor); $i++) {
+        $leaf = [System.IO.Path]::GetFileName($cursor.TrimEnd('\', '/'))
+        if (-not [string]::IsNullOrWhiteSpace($leaf)) {
+            if (Test-LWNameHasArchToken -Name $leaf -Arch ARM64) { return 'ARM64' }
+            if (Test-LWNameHasArchToken -Name $leaf -Arch AMD64) { return 'AMD64' }
+        }
+        try { $next = [System.IO.Path]::GetDirectoryName($cursor) } catch { $next = $null }
+        if ([string]::IsNullOrWhiteSpace($next) -or $next -eq $cursor) { break }
+        $cursor = $next
+    }
+    return ''
 }
 
 function Test-LWIsoMatchesEdition {
@@ -322,12 +369,23 @@ function Test-LWIsoMatchesEdition {
         [string] $Edition
     )
     $want = Get-LWWindowsEdition $Edition
-    $fromName = Get-LWIsoEditionFromName $FullName
-    if ($fromName) { return ($fromName -eq $want) }
-    $parent = ''
-    try { $parent = [System.IO.Path]::GetFileName([System.IO.Path]::GetDirectoryName($FullName)) } catch { }
-    if ($parent -match '^(?i)home$') { return ($want -eq 'Home') }
-    if ($parent -match '^(?i)pro$') { return ($want -eq 'Pro') }
+    # Check the leaf and a few parent segments so Keyes LCU work dirs like
+    # ...\amd64-Home\media (and ISO names like 25h2-home-....iso) all match.
+    $cursor = $FullName
+    for ($i = 0; $i -lt 4 -and -not [string]::IsNullOrWhiteSpace($cursor); $i++) {
+        $leaf = [System.IO.Path]::GetFileName($cursor.TrimEnd('\', '/'))
+        if (-not [string]::IsNullOrWhiteSpace($leaf)) {
+            $fromName = Get-LWIsoEditionFromName $leaf
+            if ($fromName) { return ($fromName -eq $want) }
+        }
+        try {
+            $next = [System.IO.Path]::GetDirectoryName($cursor)
+        } catch {
+            $next = $null
+        }
+        if ([string]::IsNullOrWhiteSpace($next) -or $next -eq $cursor) { break }
+        $cursor = $next
+    }
     # Untagged file in a non-SKU folder (flat ISO\ or Staging\): Pro-only legacy.
     return ($want -eq 'Pro')
 }
@@ -413,8 +471,9 @@ function Test-LWPreSplitFolderMatches {
     $fromEd = Get-LWIsoEditionFromName $FolderName
     if ($fromEd -and $fromEd -ne $ed) { return $false }
     $n = $FolderName.ToLowerInvariant()
-    $hasAmd = [bool]($n -match '(?i)(^|[^a-z0-9])(amd64|x64)([^a-z0-9]|$)')
-    $hasArm = [bool]($n -match '(?i)(^|[^a-z0-9])arm64([^a-z0-9]|$)')
+    # Accept UUP suffixes: arm64fre / x64fre / amd64fre as well as (arm64) / amd64.
+    $hasAmd = [bool]($n -match '(?i)(^|[^a-z0-9])(amd64|x64)(fre)?([^a-z0-9]|$)')
+    $hasArm = [bool]($n -match '(?i)(^|[^a-z0-9])arm64(fre)?([^a-z0-9]|$)')
     if ($arch -eq 'ARM64' -and $hasAmd -and -not $hasArm) { return $false }
     if ($arch -eq 'AMD64' -and $hasArm -and -not $hasAmd) { return $false }
     if ($RequireArchInName) {
@@ -538,7 +597,9 @@ function Write-LWPreSplitCurrentMarkers {
         [Parameter(Mandatory)] [string] $Arch,
         [string] $Edition,
         [Parameter(Mandatory)] [string] $ImageVersion,
-        [string] $UpdatedUtc
+        [string] $UpdatedUtc,
+        [string] $InstallLcuKb = '',
+        [string] $OsBuild = ''
     )
     if ([string]::IsNullOrWhiteSpace($PreSplitRoot)) { return }
     $ed = Get-LWWindowsEdition $Edition
@@ -554,6 +615,8 @@ function Write-LWPreSplitCurrentMarkers {
         arch            = $arch
         updatedUtc      = $UpdatedUtc
     }
+    if (-not [string]::IsNullOrWhiteSpace($InstallLcuKb)) { $payload.installLcuKb = [string]$InstallLcuKb }
+    if (-not [string]::IsNullOrWhiteSpace($OsBuild)) { $payload.osBuild = [string]$OsBuild }
     $utf8 = [System.Text.UTF8Encoding]::new($false)
     if (-not [string]::IsNullOrWhiteSpace($SetDir) -and (Test-Path -LiteralPath $SetDir)) {
         try {
@@ -610,6 +673,8 @@ function Write-LWRemoteVersionJson {
                 $arch = ''
                 $upd = ''
                 $explicit = ''
+                $lcuKb = ''
+                $osBuild = ''
                 if ($entry -is [string]) {
                     $iv = [string]$entry
                 } elseif ($entry) {
@@ -618,6 +683,8 @@ function Write-LWRemoteVersionJson {
                     try { if ($entry.PSObject.Properties['arch']) { $arch = [string]$entry.arch } } catch { }
                     try { if ($entry.PSObject.Properties['updatedUtc']) { $upd = [string]$entry.updatedUtc } } catch { }
                     try { if ($entry.PSObject.Properties['imageBuildDate']) { $explicit = [string]$entry.imageBuildDate } } catch { }
+                    try { if ($entry.PSObject.Properties['installLcuKb']) { $lcuKb = [string]$entry.installLcuKb } } catch { }
+                    try { if ($entry.PSObject.Properties['osBuild']) { $osBuild = [string]$entry.osBuild } } catch { }
                 }
                 if ([string]::IsNullOrWhiteSpace($iv)) { continue }
                 if (-not $arch -or -not $ed) {
@@ -628,13 +695,16 @@ function Write-LWRemoteVersionJson {
                 $arch = Get-LWBareArch $arch
                 $ed = Get-LWWindowsEdition $ed
                 $ymd = [string](Get-LWCanonicalImageBuildDateYmd -ImageVersion $iv -UpdatedUtc $upd -ExplicitBuildDate $explicit)
-                $skus[$p.Name] = [ordered]@{
+                $skuDoc = [ordered]@{
                     arch           = $arch
                     windowsEdition = $ed
                     imageVersion   = $iv
                     imageBuildDate = $ymd
                     updatedUtc     = $upd
                 }
+                if (-not [string]::IsNullOrWhiteSpace($lcuKb)) { $skuDoc.installLcuKb = $lcuKb }
+                if (-not [string]::IsNullOrWhiteSpace($osBuild)) { $skuDoc.osBuild = $osBuild }
+                $skus[$p.Name] = $skuDoc
                 if ($upd -and ($upd -gt $newestUtc)) { $newestUtc = $upd }
             }
         } catch { }
@@ -673,11 +743,15 @@ function Read-LWRemoteVersionSku {
                 $iv = ''
                 $ymd = ''
                 $upd = ''
+                $lcuKb = ''
+                $osBuild = ''
                 if ($e -is [string]) { $iv = [string]$e }
                 else {
                     try { if ($e.PSObject.Properties['imageVersion']) { $iv = [string]$e.imageVersion } } catch { }
                     try { if ($e.PSObject.Properties['imageBuildDate']) { $ymd = [string]$e.imageBuildDate } } catch { }
                     try { if ($e.PSObject.Properties['updatedUtc']) { $upd = [string]$e.updatedUtc } } catch { }
+                    try { if ($e.PSObject.Properties['installLcuKb']) { $lcuKb = [string]$e.installLcuKb } } catch { }
+                    try { if ($e.PSObject.Properties['osBuild']) { $osBuild = [string]$e.osBuild } } catch { }
                 }
                 if ($iv) {
                     if (-not $ymd) {
@@ -687,6 +761,8 @@ function Read-LWRemoteVersionSku {
                         imageVersion   = $iv
                         imageBuildDate = $ymd
                         updatedUtc     = $upd
+                        installLcuKb   = $lcuKb
+                        osBuild        = $osBuild
                         source         = 'version.json'
                     }
                 }
@@ -702,11 +778,15 @@ function Read-LWRemoteVersionSku {
                 $iv = ''
                 $upd = ''
                 $explicit = ''
+                $lcuKb = ''
+                $osBuild = ''
                 if ($e -is [string]) { $iv = [string]$e }
                 else {
                     try { if ($e.PSObject.Properties['imageVersion']) { $iv = [string]$e.imageVersion } } catch { }
                     try { if ($e.PSObject.Properties['updatedUtc']) { $upd = [string]$e.updatedUtc } } catch { }
                     try { if ($e.PSObject.Properties['imageBuildDate']) { $explicit = [string]$e.imageBuildDate } } catch { }
+                    try { if ($e.PSObject.Properties['installLcuKb']) { $lcuKb = [string]$e.installLcuKb } } catch { }
+                    try { if ($e.PSObject.Properties['osBuild']) { $osBuild = [string]$e.osBuild } } catch { }
                 }
                 if ($iv) {
                     $ymd = [string](Get-LWCanonicalImageBuildDateYmd -ImageVersion $iv -UpdatedUtc $upd -ExplicitBuildDate $explicit)
@@ -714,6 +794,8 @@ function Read-LWRemoteVersionSku {
                         imageVersion   = $iv
                         imageBuildDate = $ymd
                         updatedUtc     = $upd
+                        installLcuKb   = $lcuKb
+                        osBuild        = $osBuild
                         source         = 'current.json'
                     }
                 }
@@ -797,6 +879,112 @@ function Get-LWImageVersionId {
     }
     $stamp = $StampUtc.ToUniversalTime().ToString("yyyyMMdd'T'HHmmss'Z'")
     return "$slug-$stamp"
+}
+
+# Canonical PreSplit / Image Ready folder id used for SkipISO / convert folder staging:
+#   25h2-home-10-12-amd64-<stamp>  /  25h2-pro-amd64-<stamp>
+# Prefer this over slugifying long UUP/GE convert leaf names (clientpro-oemret-x64fre…).
+function Get-LWCanonicalImageVersionId {
+    param(
+        [Parameter(Mandatory)] [System.IO.FileSystemInfo] $Iso,
+        [string] $Edition = 'Pro',
+        [string] $Arch = 'AMD64',
+        [DateTime] $StampUtc = [DateTime]::MinValue
+    )
+    $ed = (Get-LWWindowsEdition $Edition).ToLowerInvariant()
+    $archKey = (Get-LWBareArch $Arch).ToLowerInvariant()
+    $name = if ($Iso.PSIsContainer) {
+        [string]$Iso.Name
+    } else {
+        [System.IO.Path]::GetFileNameWithoutExtension($Iso.Name)
+    }
+    $blob = $name.ToLowerInvariant()
+    # Also scan a few parent segments (e.g. ...\25h2_home_10.12(amd64)\media).
+    $cursor = $Iso.FullName
+    for ($i = 0; $i -lt 3 -and -not [string]::IsNullOrWhiteSpace($cursor); $i++) {
+        try {
+            $parent = [System.IO.Path]::GetDirectoryName($cursor)
+        } catch { $parent = $null }
+        if ([string]::IsNullOrWhiteSpace($parent) -or $parent -eq $cursor) { break }
+        $blob = ([System.IO.Path]::GetFileName($parent.TrimEnd('\', '/')) + ' ' + $blob).ToLowerInvariant()
+        $cursor = $parent
+    }
+
+    $release = '25h2'
+    if ($blob -match '(?i)(2[4-9]h[12])') { $release = $Matches[1].ToLowerInvariant() }
+
+    $md = ''
+    # ISO-style title date after edition: home_10.12 / home-10-15 / pro.9.9
+    if ($blob -match "(?i)(?:^|[^a-z0-9])$ed[_\-.\s]+(\d{1,2})[._\-](\d{1,2})(?:[^0-9]|$)") {
+        $md = ('{0}-{1}' -f [int]$Matches[1], [int]$Matches[2])
+    }
+    # UUP / SkipISO convert folders often lack title dates; keep canonical M-D segment.
+    if ([string]::IsNullOrWhiteSpace($md)) {
+        $mediaUtc = $null
+        if ($Iso.PSIsContainer) {
+            foreach ($leaf in @('install.wim', 'install.esd')) {
+                $mediaPath = Join-Path $Iso.FullName $leaf
+                if (-not (Test-Path -LiteralPath $mediaPath)) { continue }
+                try {
+                    $mediaUtc = (Get-Item -LiteralPath $mediaPath).LastWriteTimeUtc
+                    break
+                } catch { }
+            }
+            if (-not $mediaUtc) {
+                try { $mediaUtc = $Iso.LastWriteTimeUtc } catch { }
+            }
+        } else {
+            try { $mediaUtc = $Iso.LastWriteTimeUtc } catch { }
+        }
+        if (-not $mediaUtc -or $mediaUtc -eq [DateTime]::MinValue) {
+            if ($StampUtc -eq [DateTime]::MinValue) {
+                $StampUtc = [DateTime]::UtcNow
+            } elseif ($StampUtc.Kind -eq [DateTimeKind]::Unspecified) {
+                $StampUtc = [DateTime]::SpecifyKind($StampUtc, [DateTimeKind]::Utc)
+            }
+            $mediaUtc = $StampUtc.ToUniversalTime()
+        }
+        $md = ('{0}-{1}' -f [int]$mediaUtc.Month, [int]$mediaUtc.Day)
+    }
+
+    if ($StampUtc -eq [DateTime]::MinValue) {
+        $StampUtc = [DateTime]::UtcNow
+    } elseif ($StampUtc.Kind -eq [DateTimeKind]::Unspecified) {
+        $StampUtc = [DateTime]::SpecifyKind($StampUtc, [DateTimeKind]::Utc)
+    }
+    $stamp = $StampUtc.ToUniversalTime().ToString("yyyyMMdd'T'HHmmss'Z'")
+
+    $parts = New-Object System.Collections.Generic.List[string]
+    [void]$parts.Add($release)
+    [void]$parts.Add($ed)
+    if (-not [string]::IsNullOrWhiteSpace($md)) { [void]$parts.Add($md) }
+    [void]$parts.Add($archKey)
+    [void]$parts.Add($stamp)
+    return ($parts -join '-')
+}
+
+# True when FullName (leaf + parents) carries Home/Pro and arch tokens for this SKU.
+function Test-LWMediaPathMatchesSku {
+    param(
+        [Parameter(Mandatory)] [string] $FullName,
+        [string] $Edition = 'Pro',
+        [string] $Arch = 'AMD64'
+    )
+    if (-not (Test-LWIsoMatchesEdition -FullName $FullName -Edition $Edition)) { return $false }
+    $ed = Get-LWWindowsEdition $Edition
+    $archKey = Get-LWBareArch $Arch
+    $cursor = $FullName
+    for ($i = 0; $i -lt 5 -and -not [string]::IsNullOrWhiteSpace($cursor); $i++) {
+        $leaf = [System.IO.Path]::GetFileName($cursor.TrimEnd('\', '/'))
+        if (-not [string]::IsNullOrWhiteSpace($leaf) -and
+            (Test-LWPreSplitFolderMatches -FolderName $leaf -Arch $archKey -Edition $ed -RequireArchInName)) {
+            return $true
+        }
+        try { $next = [System.IO.Path]::GetDirectoryName($cursor) } catch { $next = $null }
+        if ([string]::IsNullOrWhiteSpace($next) -or $next -eq $cursor) { break }
+        $cursor = $next
+    }
+    return $false
 }
 
 # Calendar date from a PreSplit folder / imageVersionId trailing stamp.
@@ -986,4 +1174,195 @@ function Test-LwPreSplitBootInjected {
         if ((Get-Item -LiteralPath $sentinel).LastWriteTime -lt (Get-Item -LiteralPath $bootWim).LastWriteTime) { return $false }
     } catch { return $false }
     return $true
+}
+
+# ---------------------------------------------------------------------------
+# Invoke-LwRobocopyChecked
+#   Robocopy wrapper for staging copies. Uses plain full paths (no /256, no \\?\;
+#   robocopy mishandles \\?\ on local dirs as ERROR_BAD_NETPATH). SUBST shortens
+#   deep UUP source trees when the source path exceeds 200 chars.
+# ---------------------------------------------------------------------------
+function Resolve-LwRobocopyPath {
+    param([Parameter(Mandatory)][string] $Path)
+    if ([string]::IsNullOrWhiteSpace($Path)) { return $Path }
+    if ($Path.StartsWith('\\?\', [StringComparison]::Ordinal)) {
+        $Path = $Path.Substring(4)
+    }
+    try {
+        $full = [IO.Path]::GetFullPath($Path)
+        if ($full.Length -gt 3 -and $full.EndsWith('\', [StringComparison]::Ordinal)) {
+            $full = $full.TrimEnd('\')
+        }
+        return $full
+    } catch {
+        return $Path
+    }
+}
+
+function New-LwRobocopySubstContext {
+    param(
+        [Parameter(Mandatory)][string] $SourcePath,
+        [int] $MinSourceLength = 200
+    )
+    $full = Resolve-LwRobocopyPath -Path $SourcePath
+    if ($full.Length -le $MinSourceLength) { return $null }
+
+    $anchor = $full
+    $leaf = Split-Path -Leaf $full
+    if ($leaf -ieq 'sources') {
+        $anchor = Split-Path -Parent $full
+    } elseif (-not (Test-Path -LiteralPath $full -PathType Container -ErrorAction SilentlyContinue)) {
+        $anchor = Split-Path -Parent $full
+    }
+    $anchor = Resolve-LwRobocopyPath -Path $anchor
+    if (-not (Test-Path -LiteralPath $anchor -PathType Container)) { return $null }
+
+    $letter = $null
+    foreach ($c in @('Z', 'Y', 'X', 'W', 'V', 'U', 'T', 'S', 'R', 'Q', 'P')) {
+        if (-not (Get-PSDrive -Name $c -ErrorAction SilentlyContinue)) {
+            $letter = "${c}:"
+            break
+        }
+    }
+    if (-not $letter) { return $null }
+
+    $substOk = $false
+    try {
+        & subst.exe $letter $anchor 2>&1 | Out-Null
+        $substOk = (Test-Path -LiteralPath $letter)
+    } catch { $substOk = $false }
+    if (-not $substOk) { return $null }
+
+    $suffix = $full.Substring($anchor.Length).TrimStart('\')
+    $mapped = if ([string]::IsNullOrEmpty($suffix)) { $letter + '\' } else { Join-Path $letter $suffix }
+
+    return @{
+        Letter       = $letter
+        Anchor       = $anchor
+        MappedSource = $mapped
+    }
+}
+
+function Remove-LwRobocopySubstContext {
+    param($Context)
+    if (-not $Context -or -not $Context.Letter) { return }
+    try { & subst.exe $Context.Letter /D 2>&1 | Out-Null } catch { }
+}
+
+function Test-LwRobocopyLogPathLengthHint {
+    param([string[]] $Lines)
+    if (-not $Lines -or $Lines.Count -eq 0) { return $false }
+    $blob = ($Lines -join ' ')
+    if ($blob -match '(?i)path too long|MAX_PATH|filename or extension is too long') { return $true }
+    if ($blob -match '(?i)ERROR\s+206\b|\(0x000000CE\)|ERROR\s+3\b|\(0x00000003\)|PATH_NOT_FOUND') { return $true }
+    return $false
+}
+
+function Get-LwPathVolumeRoot {
+    param([Parameter(Mandatory)][string] $Path)
+    try {
+        if (-not (Test-Path -LiteralPath $Path)) {
+            $parent = Split-Path -Parent $Path
+            if ($parent) { $Path = $parent }
+        }
+        return [IO.Path]::GetPathRoot(([IO.Path]::GetFullPath($Path)))
+    } catch {
+        return ''
+    }
+}
+
+function Get-LwVolumeFreeGbHint {
+    param([string] $Path)
+    try {
+        $root = Get-LwPathVolumeRoot -Path $Path
+        if ([string]::IsNullOrWhiteSpace($root)) { return '' }
+        $letter = $root.TrimEnd('\').TrimEnd(':')
+        if ($letter.Length -ne 1) { return '' }
+        $vol = Get-Volume -DriveLetter $letter -ErrorAction Stop
+        return ('dest volume {0}: free {1:N2} GB' -f $letter, ($vol.SizeRemaining / 1GB))
+    } catch {
+        return ''
+    }
+}
+
+function Get-LwRobocopyFailureMessage {
+    param(
+        [Parameter(Mandatory)][int] $ExitCode,
+        [Parameter(Mandatory)][string] $Context,
+        [string] $DestPath = '',
+        [string] $LogPath = ''
+    )
+    $logLines = @()
+    $errLines = @()
+    if ($LogPath -and (Test-Path -LiteralPath $LogPath)) {
+        $logLines = @(Get-Content -LiteralPath $LogPath -ErrorAction SilentlyContinue)
+        $errLines = @($logLines | Where-Object { $_ -match '(?i)ERROR|\s+FAILED\s' } | Select-Object -Last 8)
+        if ($errLines.Count -eq 0) { $errLines = @($logLines | Select-Object -Last 20) }
+    }
+    $pathTooLong = Test-LwRobocopyLogPathLengthHint -Lines @($errLines + $logLines)
+
+    $parts = @("robocopy failed (exit $ExitCode) $Context")
+    if ($pathTooLong) {
+        $parts += 'likely cause: path too long (deep UUP sources tree or destination path; not necessarily disk space)'
+    }
+    if ($ExitCode -band 8) {
+        if ($pathTooLong) {
+            $parts += 'one or more files could not be copied (path too long or locked file)'
+        } else {
+            $parts += 'one or more files could not be copied (disk full, locked file, or path too long)'
+        }
+    }
+    if ($ExitCode -band 16) {
+        $parts += 'robocopy serious error (bad path or no files matched)'
+    }
+    if (-not [string]::IsNullOrWhiteSpace($DestPath)) {
+        $free = Get-LwVolumeFreeGbHint -Path $DestPath
+        if ($free) { $parts += $free }
+    }
+    if ($errLines.Count -gt 0) {
+        $parts += ('log tail: ' + ($errLines -join ' | '))
+    }
+    return ($parts -join '; ')
+}
+
+function Invoke-LwRobocopyChecked {
+    param(
+        [Parameter(Mandatory)][string] $Source,
+        [Parameter(Mandatory)][string] $Destination,
+        [string[]] $FilePatterns = @(),
+        [string[]] $ExtraArgs = @(),
+        [Parameter(Mandatory)][string] $FailureContext
+    )
+    $log = Join-Path $env:TEMP ('LW-robocopy-' + [guid]::NewGuid().ToString('N').Substring(0, 8) + '.log')
+    $srcUse = Resolve-LwRobocopyPath -Path $Source
+    $destUse = Resolve-LwRobocopyPath -Path $Destination
+    if (-not (Test-Path -LiteralPath $Destination)) {
+        New-Item -ItemType Directory -Force -Path $Destination | Out-Null
+    }
+    if (-not (Test-Path -LiteralPath $srcUse)) {
+        throw "robocopy source not found: '$srcUse' ($FailureContext)"
+    }
+
+    $substCtx = $null
+    try {
+        $substCtx = New-LwRobocopySubstContext -SourcePath $srcUse
+        if ($substCtx) {
+            $srcUse = $substCtx.MappedSource
+        }
+
+        $rcArgs = @($srcUse, $destUse)
+        if ($FilePatterns -and @($FilePatterns).Count -gt 0) { $rcArgs += @($FilePatterns) }
+        $rcArgs += @('/R:2', '/W:5', '/NP', '/NJH', '/NJS', "/LOG:$log")
+        if ($ExtraArgs -and @($ExtraArgs).Count -gt 0) { $rcArgs += @($ExtraArgs) }
+
+        & robocopy.exe @rcArgs | Out-Null
+        $exit = $LASTEXITCODE
+        if ($exit -gt 7) {
+            throw (Get-LwRobocopyFailureMessage -ExitCode $exit -Context $FailureContext -DestPath $Destination -LogPath $log)
+        }
+        return $exit
+    } finally {
+        Remove-LwRobocopySubstContext -Context $substCtx
+        Remove-Item -LiteralPath $log -Force -ErrorAction SilentlyContinue
+    }
 }

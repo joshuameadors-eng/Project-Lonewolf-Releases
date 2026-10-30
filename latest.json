@@ -1,5 +1,5 @@
 {
-    "launcherVersion":  "6.3.1",
+    "launcherVersion":  "7.0.0",
     "payloadVersion":  "7.0.0",
     "channel":  "release",
     "source":  "github-public-source",
@@ -35,18 +35,20 @@
                  "winpeUiZipBase":  "https://raw.githubusercontent.com/joshuameadors-eng/Project-Lonewolf-Releases/main/bin",
                  "manifest":  "https://raw.githubusercontent.com/joshuameadors-eng/Project-Lonewolf-Releases/main/latest.json"
              },
-    "portableSha256":  "f6de3dfef5862d26f3ff0bca676f2e848c289ee9190df247717b375985f754d3",
-    "portableSize":  73206467,
+    "portableSha256":  "84ff38377e29bbacb1e5eb4798e711e8ae386408b58beae94483fbe95c866031",
+    "portableSize":  73225962,
     "changelog":  [
                       {
                           "version":  "7.0.0",
-                          "date":  "2026-10-21",
+                          "date":  "2026-10-30",
                           "changes":  [
-                                          "Official release 7.0.0 â€” payload MAJOR (6 to 7); launcher 6.3.0.",
+                                          "Official release 7.0.0 â€” launcher and payload MAJOR (6 to 7).",
                                           "Added",
                                           "Seal security gates â€” Defender exclusions and Windows Update auto-update policy are live-verified HARD before seal; READY treats WU AU leftovers and a failed security probe as not ready",
                                           "Changed",
                                           "Install media â€” Google Drive is the default; the HQ share is not auto-connected at startup",
+                                          "Google Drive media â€” HTTPS Image Ready staging, rebuild, and packaged Full Rebuild without Drive for Desktop",
+                                          "Pre-split / Image Ready â€” canonical folder ids for SkipISO and UUP convert trees include edition, arch, and calendar date",
                                           "Seal paths â€” a prior sealed marker no longer bypasses Defender restore or MDM scrub failures before sysprep",
                                           "HQ share credentials â€” LONEWOLF_SHARE_PASSWORD is required; no password is embedded in the product",
                                           "Windows Update â€” clock/certificate failures sync time only when needed; splash elapsed and reboot counting stay correct across rechecks"

@@ -94,22 +94,59 @@ function Resolve-LwDevShareRoot {
     }
 }
 
+function Test-LwWpeOcRootHasArch {
+    param([string]$OcRoot)
+    if (-not (Test-LwShareDir $OcRoot)) { return $false }
+    foreach ($a in @('AMD64', 'ARM64')) {
+        if (Test-Path -LiteralPath (Join-Path $OcRoot $a)) { return $true }
+    }
+    # Flat ADK-style root (WinPE_OCs with cabs at the top level).
+    if (Test-Path -LiteralPath (Join-Path $OcRoot 'WinPE-PowerShell.cab')) { return $true }
+    return $false
+}
+
+function Get-LwAdkWpeOcArchRoot {
+    <#
+    .SYNOPSIS
+      Local ADK WinPE_OCs folder for one arch (offline fallback when HQ is down).
+      Returns e.g. ...\Windows Preinstallation Environment\amd64\WinPE_OCs
+    #>
+    param([string]$Arch = 'AMD64')
+    $archKey = if ($Arch -match '(?i)ARM64') { 'arm64' } else { 'amd64' }
+    $pf86 = ${env:ProgramFiles(x86)}
+    if ([string]::IsNullOrWhiteSpace($pf86)) { $pf86 = 'C:\Program Files (x86)' }
+    $p = Join-Path $pf86 (
+        "Windows Kits\10\Assessment and Deployment Kit\Windows Preinstallation Environment\$archKey\WinPE_OCs"
+    )
+    if (Test-Path -LiteralPath $p) { return $p }
+    return ''
+}
+
 function Resolve-LwWpeOcRoot {
     <#
     .SYNOPSIS
-      Pick WinPE-OCs root (parent of AMD64\ / ARM64\). Prefer share-root, then HQ, never require legacy Staging.
+      Pick WinPE-OCs root (parent of AMD64\ / ARM64\, or flat ADK-style). Prefer
+      share-root, then HQ. Empty UUP\WinPE-OCs does not win. Local UUP staging
+      roots never invent a missing WinPE-OCs path — return HQ so callers can
+      ADK-fallback per arch.
     #>
     param(
         [string]$ShareRoot = '',
         [string]$LocalOcRoot = ''
     )
-    if (Test-LwShareDir $LocalOcRoot) { return $LocalOcRoot }
+    if (Test-LwWpeOcRootHasArch $LocalOcRoot) { return $LocalOcRoot }
     if (-not [string]::IsNullOrWhiteSpace($ShareRoot)) {
         $rootOc = Join-Path $ShareRoot 'WinPE-OCs'
-        if (Test-LwShareDir $rootOc) { return $rootOc }
+        if (Test-LwWpeOcRootHasArch $rootOc) { return $rootOc }
     }
     $hqOc = Get-LwHqWpeOcRoot
+    if (Test-LwWpeOcRootHasArch $hqOc) { return $hqOc }
     if (Test-LwShareDir $hqOc) { return $hqOc }
+    # Local UUP / Drive staging: OCs are not under this tree. Do not invent
+    # <UUP>\WinPE-OCs when HQ is offline — ADK arch fallback handles inject.
+    if (-not [string]::IsNullOrWhiteSpace($ShareRoot) -and (Test-LwLooksLikeStagingRoot $ShareRoot)) {
+        return $hqOc
+    }
     if (-not [string]::IsNullOrWhiteSpace($ShareRoot)) {
         return (Join-Path $ShareRoot 'WinPE-OCs')
     }
@@ -212,6 +249,7 @@ function Get-LwDestageUupLayout {
         Root         = $root
         IsoRoot      = Join-Path $root 'ISO'
         PreSplitRoot = Join-Path $root 'PreSplit'
+        WinPeUiRoot  = Join-Path $root 'WinPEUI'
     }
 }
 

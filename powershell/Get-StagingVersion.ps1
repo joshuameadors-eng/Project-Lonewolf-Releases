@@ -144,6 +144,8 @@ $output = [ordered]@{
     preSplitAvailable    = $false
     preSplitMatchesIso   = $false
     preSplitImageVersion = $null
+    installLcuKb        = $null
+    osBuild             = $null
     preSplitMediaPackage = $false
     preSplitBootInjected = $false
     isoMissingReason     = $null
@@ -380,6 +382,18 @@ if ($splitLibLoaded -and (Get-Command -Name Read-LWRemoteVersionSku -ErrorAction
 }
 if ($remoteSku -and $remoteSku.imageVersion) {
     $output.preSplitImageVersion = [string]$remoteSku.imageVersion
+    if ($remoteSku.installLcuKb) { $output.installLcuKb = [string]$remoteSku.installLcuKb }
+    if ($remoteSku.osBuild) { $output.osBuild = [string]$remoteSku.osBuild }
+    if ((-not $output.installLcuKb) -and $output.preSplitImageVersion -and $remoteRoot) {
+        $manPath = Join-Path (Join-Path $remoteRoot ([string]$output.preSplitImageVersion)) 'presplit-manifest.json'
+        if (Test-Path -LiteralPath $manPath) {
+            try {
+                $man = Get-Content -Raw -LiteralPath $manPath -ErrorAction Stop | ConvertFrom-Json -ErrorAction Stop
+                if ($man.PSObject.Properties['installLcuKb'] -and $man.installLcuKb) { $output.installLcuKb = [string]$man.installLcuKb }
+                if ($man.PSObject.Properties['osBuild'] -and $man.osBuild) { $output.osBuild = [string]$man.osBuild }
+            } catch { }
+        }
+    }
     if ($remoteSku.imageBuildDate) {
         $output.buildDate = [string]$remoteSku.imageBuildDate
         if ($output.architectures.Contains($wfUpper)) {

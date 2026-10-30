@@ -297,15 +297,49 @@ if (-not [string]::IsNullOrWhiteSpace($SourceDir)) {
     if (-not (Test-Path -LiteralPath $srcWimPath) -and -not (Test-Path -LiteralPath $srcEsdPath)) {
         EmitError "SourceDir '$($srcDirItem.FullName)' has no sources\install.wim or sources\install.esd"; exit 1
     }
+    # Prefer arch/edition from the folder path so ARM convert trees are not staged as AMD64
+    # when the builder card was still on Intel/AMD.
+    $pathArch = ''
+    if (Get-Command -Name Get-LWArchFromMediaPath -ErrorAction SilentlyContinue) {
+        $pathArch = [string](Get-LWArchFromMediaPath -FullName $srcDirItem.FullName)
+    }
+    if (-not [string]::IsNullOrWhiteSpace($pathArch) -and $pathArch -ne $bareArch) {
+        EmitLog ("SourceDir arch is {0} (folder path); builder was {1} - staging as {0}" -f $pathArch, $bareArch)
+        $bareArch = $pathArch
+        $wfUpper = $pathArch
+        $WorkflowType = $pathArch
+    }
+    $pathEd = $null
+    $cursorEd = $srcDirItem.FullName
+    for ($ei = 0; $ei -lt 5 -and -not [string]::IsNullOrWhiteSpace($cursorEd); $ei++) {
+        $leafEd = [System.IO.Path]::GetFileName($cursorEd.TrimEnd('\', '/'))
+        if ($leafEd) {
+            $pathEd = Get-LWIsoEditionFromName $leafEd
+            if ($pathEd) { break }
+        }
+        try { $nextEd = [System.IO.Path]::GetDirectoryName($cursorEd) } catch { $nextEd = $null }
+        if ([string]::IsNullOrWhiteSpace($nextEd) -or $nextEd -eq $cursorEd) { break }
+        $cursorEd = $nextEd
+    }
+    if ($pathEd -and $pathEd -ne $winEdition) {
+        EmitLog ("SourceDir edition is {0} (folder path); builder was {1} - staging as {0}" -f $pathEd, $winEdition)
+        $winEdition = $pathEd
+        $WindowsEdition = $pathEd
+    }
     if (-not (Test-LWIsoMatchesEdition -FullName $srcDirItem.FullName -Edition $winEdition)) {
-        EmitError "SourceDir '$($srcDirItem.Name)' is not a $winEdition media folder (arch $wfUpper)"; exit 1
+        EmitError "SourceDir '$($srcDirItem.Name)' is not a $winEdition media folder (need home/pro or clienthome/clientpro in the folder or parent name)"; exit 1
+    }
+    if ((Get-Command -Name Test-LWMediaPathMatchesSku -ErrorAction SilentlyContinue) -and
+        -not (Test-LWMediaPathMatchesSku -FullName $srcDirItem.FullName -Edition $winEdition -Arch $wfUpper)) {
+        EmitError ("SourceDir '{0}' must include {1} and {2} in the folder or parent name (e.g. 25h2_home_10.12(arm64), arm64fre, or arm64-Home\media)" -f $srcDirItem.Name, $winEdition, $wfUpper)
+        exit 1
     }
     $installForSize = if (Test-Path -LiteralPath $srcWimPath) { $srcWimPath } else { $srcEsdPath }
     $isoItem = $srcDirItem
     # DirectoryInfo has no Length; use install image size for skip/manifest parity with ISO.
     $isoItem | Add-Member -NotePropertyName Length -NotePropertyValue ([long](Get-Item -LiteralPath $installForSize).Length) -Force
     $useSourceDir = $true
-    EmitLog ('using SourceDir media tree {0}' -f $srcDirItem.FullName)
+    EmitLog ('using SourceDir media tree {0} (arch={1} edition={2})' -f $srcDirItem.FullName, $wfUpper, $winEdition)
 } elseif (-not [string]::IsNullOrWhiteSpace($IsoPath)) {
     if (-not (Test-Path -LiteralPath $IsoPath)) { EmitError "IsoPath not found: $IsoPath"; exit 1 }
     $isoItem = Get-Item -LiteralPath $IsoPath
@@ -356,7 +390,22 @@ if (-not $Force -and (Get-Command -Name Get-LWPreSplitCandidateDirs -ErrorAction
     }
 }
 if ([string]::IsNullOrWhiteSpace($imageVersion)) {
-    $imageVersion = Get-LWImageVersionId -Iso $isoItem -Edition $winEdition -StampUtc ([datetime]::UtcNow)
+    # Folder staging: always mint release-edition[-M-D]-arch-stamp (not raw convert leaf slugs).
+    # ISO files keep Get-LWImageVersionId from the ISO basename.
+    if ($useSourceDir -and (Get-Command -Name Get-LWCanonicalImageVersionId -ErrorAction SilentlyContinue)) {
+        $imageVersion = Get-LWCanonicalImageVersionId -Iso $isoItem -Edition $winEdition -Arch $wfUpper -StampUtc ([datetime]::UtcNow)
+    } else {
+        $imageVersion = Get-LWImageVersionId -Iso $isoItem -Edition $winEdition -StampUtc ([datetime]::UtcNow)
+    }
+    $Target = Join-Path $WriteRoot $imageVersion
+}
+# Reused sets / ISO-derived ids that lack arch+edition tokens get a canonical rename.
+if ($useSourceDir -and (Get-Command -Name Test-LWPreSplitFolderMatches -ErrorAction SilentlyContinue) -and
+    -not (Test-LWPreSplitFolderMatches -FolderName $imageVersion -Arch $bareArch -Edition $winEdition -RequireArchInName) -and
+    (Get-Command -Name Get-LWCanonicalImageVersionId -ErrorAction SilentlyContinue)) {
+    $canon = Get-LWCanonicalImageVersionId -Iso $isoItem -Edition $winEdition -Arch $wfUpper -StampUtc ([datetime]::UtcNow)
+    EmitLog ('pre-split: renaming set folder {0} -> {1} (folder staging naming convention)' -f $imageVersion, $canon)
+    $imageVersion = $canon
     $Target = Join-Path $WriteRoot $imageVersion
 }
 $isoSizeGb    = [math]::Round([long]$isoItem.Length / 1GB, 2)
@@ -370,7 +419,7 @@ EmitLog ('pre-split: output root={0} target={1}' -f $WriteRoot, $Target)
 $skipStaged = $false
 if ($Force) {
     if ($useDestageMedia) {
-        EmitLog ('destage split: -Force / Shift-click — re-staging into {0} (share PreSplit ignored)' -f $Target)
+        EmitLog ('destage split: -Force / Shift-click - re-staging into {0} (share PreSplit ignored)' -f $Target)
     } else {
         EmitLog ('force re-stage at {0}' -f $Target)
     }
@@ -473,7 +522,6 @@ if ($skipStaged) {
 }
 
 # --- Produce the set ----------------------------------------------------------
-$scratch   = ''
 $tmpTarget = ''
 $mounted   = $false
 try {
@@ -519,62 +567,23 @@ try {
         if ($imgInfo.Count -gt 0) { $indexCount = $imgInfo.Count }
     } catch { }
 
-    # -- Split into a local scratch folder (never split straight to the share) --
-    $scratchBase = $env:TEMP
-    if (-not [string]::IsNullOrWhiteSpace($ScratchRoot)) {
-        try {
-            if (-not (Test-Path -LiteralPath $ScratchRoot)) {
-                New-Item -ItemType Directory -Path $ScratchRoot -Force | Out-Null
-            }
-            $scratchBase = (Get-Item -LiteralPath $ScratchRoot).FullName
-        } catch {
-            EmitLog ("stage-split: ScratchRoot unusable ($($_.Exception.Message)); using TEMP")
-            $scratchBase = $env:TEMP
-        }
-    }
-    $scratch        = Join-Path $scratchBase ('LW-Stage-' + [guid]::NewGuid().ToString('N').Substring(0, 8))
-    $scratchSources = Join-Path $scratch 'sources'
-    New-Item -ItemType Directory -Force -Path $scratchSources | Out-Null
-    $splitSources = $isoSources
-    EmitLog "stage-split: Windows install image stays stock (ARM64 drivers are injected into WinPE only)"
-    EmitPhase 'stage-split'
-    EmitProgress 'stage-split' 0
-    Split-LWImageForFat32 -SourceSourcesDir $splitSources -DestSourcesDir $scratchSources -FileSizeMb $FileSizeMb -Emit { param($m) EmitLog $m } -Progress { param($p) EmitProgress 'stage-split' $p }
-    EmitProgress 'stage-split' 100
-
-    $chunkFiles = @(Get-ChildItem -LiteralPath $scratchSources -File -ErrorAction SilentlyContinue |
-        Where-Object { $_.Name -match '^install(\d*)\.(swm|wim|esd)$' } |
-        Sort-Object Name)
-    if ($chunkFiles.Count -eq 0) {
-        throw "stage-split produced no install image in $scratchSources"
-    }
-    $splitInputLen = [long]$originalSize
-    $splitInputWim = Join-Path $splitSources 'install.wim'
-    $splitInputEsd = Join-Path $splitSources 'install.esd'
-    if (Test-Path -LiteralPath $splitInputWim) {
-        $splitInputLen = (Get-Item -LiteralPath $splitInputWim).Length
-    } elseif (Test-Path -LiteralPath $splitInputEsd) {
-        $splitInputLen = (Get-Item -LiteralPath $splitInputEsd).Length
-    }
-    $splitPlan = Get-LWFat32SplitPlan -LengthBytes $splitInputLen -FileSizeMb $FileSizeMb
-    $swmCount = @($chunkFiles | Where-Object { $_.Extension -eq '.swm' }).Count
-    if ($splitPlan.Split -and $swmCount -lt 2) {
-        throw ("stage-split: image is {0} bytes and /FileSize:{1} MB requires at least 2 install*.swm chunks, but {2} were produced. Stage not completed." -f $splitInputLen, $splitPlan.FileSizeMb, $swmCount)
-    }
-
-    # -- Copy the set to a temp sibling of the final target (atomic swap later) --
-    EmitPhase 'stage-copy'
-    EmitProgress 'stage-copy' 0
+    # -- Temp set folder (atomic swap later). Split install*.swm here instead of
+    #    %TEMP% + robocopy, which doubled disk use and failed mid-copy (robocopy 9).
     if ($useDestageMedia -and ($WriteRoot -match '^\\\\')) {
         throw "destage: refusing UNC PreSplit write '$WriteRoot'"
     }
     New-Item -ItemType Directory -Force -Path $WriteRoot | Out-Null
-    $tmpTarget = "$Target.tmp-" + [guid]::NewGuid().ToString('N').Substring(0, 8)
+    $tmpTarget = Join-Path $WriteRoot ('.tmp-' + [guid]::NewGuid().ToString('N').Substring(0, 8))
     New-Item -ItemType Directory -Force -Path $tmpTarget | Out-Null
     $chunkDest = $tmpTarget
     if ($resolvedMediaSource -eq 'googleDrive') {
         $chunkDest = Join-Path $tmpTarget 'sources'
         New-Item -ItemType Directory -Force -Path $chunkDest | Out-Null
+    }
+
+    if ($resolvedMediaSource -eq 'googleDrive') {
+        EmitPhase 'stage-copy'
+        EmitProgress 'stage-copy' 0
         EmitLog "stage-copy: mirroring ISO boot tree into PreSplit package (excluding monolithic install image)..."
         $isoRootEntries = @(Get-ChildItem -LiteralPath $isoDrive -Force -ErrorAction SilentlyContinue |
             Where-Object { $_.Name -ine 'sources' -and
@@ -590,15 +599,43 @@ try {
                 Copy-Item -LiteralPath $isoEntry.FullName -Destination $tmpTarget -Force -ErrorAction Stop
             }
         }
-        & robocopy.exe $isoSources $chunkDest /E /XF 'install.wim' 'install.esd' /R:2 /W:5 /NP /NJH /NJS | Out-Null
-        $rcIsoSrc = $LASTEXITCODE
-        if ($rcIsoSrc -gt 7) { throw "robocopy failed (exit $rcIsoSrc) copying ISO sources (minus install image) to '$chunkDest'" }
+        $null = Invoke-LwRobocopyChecked -Source $isoSources -Destination $chunkDest -ExtraArgs @('/E', '/XF', 'install.wim', 'install.esd') -FailureContext ("copying ISO sources (minus install image) to '$chunkDest'")
         EmitProgress 'stage-copy' 50
+    } else {
+        EmitPhase 'stage-copy'
+        EmitProgress 'stage-copy' 0
     }
-    $robPatterns = @('install*.swm', 'install.wim', 'install.esd')
-    & robocopy.exe $scratchSources $chunkDest @robPatterns /R:2 /W:5 /NP /NJH /NJS | Out-Null
-    $rc = $LASTEXITCODE
-    if ($rc -gt 7) { throw "robocopy failed (exit $rc) copying the .swm set to '$tmpTarget'" }
+
+    $splitSources = $isoSources
+    EmitLog "stage-split: Windows install image stays stock (ARM64 drivers are injected into WinPE only)"
+    EmitPhase 'stage-split'
+    EmitProgress 'stage-split' 0
+    Split-LWImageForFat32 -SourceSourcesDir $splitSources -DestSourcesDir $chunkDest -FileSizeMb $FileSizeMb -Emit { param($m) EmitLog $m } -Progress { param($p) EmitProgress 'stage-split' $p }
+    EmitProgress 'stage-split' 100
+
+    $chunkFiles = @(Get-ChildItem -LiteralPath $chunkDest -File -ErrorAction SilentlyContinue |
+        Where-Object { $_.Name -match '^install(\d*)\.(swm|wim|esd)$' } |
+        Sort-Object Name)
+    if ($chunkFiles.Count -eq 0) {
+        throw "stage-split produced no install image in $chunkDest"
+    }
+    $splitInputLen = [long]$originalSize
+    $splitInputWim = Join-Path $splitSources 'install.wim'
+    $splitInputEsd = Join-Path $splitSources 'install.esd'
+    if (Test-Path -LiteralPath $splitInputWim) {
+        $splitInputLen = (Get-Item -LiteralPath $splitInputWim).Length
+    } elseif (Test-Path -LiteralPath $splitInputEsd) {
+        $splitInputLen = (Get-Item -LiteralPath $splitInputEsd).Length
+    }
+    $splitPlan = Get-LWFat32SplitPlan -LengthBytes $splitInputLen -FileSizeMb $FileSizeMb
+    $swmCount = @($chunkFiles | Where-Object { $_.Extension -eq '.swm' }).Count
+    if ($splitPlan.Split -and $swmCount -lt 2) {
+        throw ("stage-split: image is {0} bytes and /FileSize:{1} MB requires at least 2 install*.swm chunks, but {2} were produced. Stage not completed." -f $splitInputLen, $splitPlan.FileSizeMb, $swmCount)
+    }
+
+    if ($resolvedMediaSource -ne 'googleDrive') {
+        EmitLog ("stage-copy: install image written under '{0}' (no scratch robocopy)" -f $tmpTarget)
+    }
     EmitProgress 'stage-copy' 100
 
     # -- Manifest (schema 1, per docs §4.3) -------------------------------------
@@ -712,9 +749,6 @@ try {
     if ($mounted) {
         EmitLog 'cleanup: dismounting ISO...'
         try { Dismount-DiskImage -ImagePath $isoItem.FullName -ErrorAction SilentlyContinue | Out-Null } catch { }
-    }
-    if (-not [string]::IsNullOrWhiteSpace($scratch) -and (Test-Path -LiteralPath $scratch)) {
-        Remove-Item -LiteralPath $scratch -Recurse -Force -ErrorAction SilentlyContinue
     }
     if (-not [string]::IsNullOrWhiteSpace($tmpTarget) -and (Test-Path -LiteralPath $tmpTarget)) {
         Remove-Item -LiteralPath $tmpTarget -Recurse -Force -ErrorAction SilentlyContinue

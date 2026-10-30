@@ -499,6 +499,8 @@ $UsbOverlayLibPath = Join-Path $PSScriptRoot 'lib\LwUsbOverlay.ps1'
 if (Test-Path -LiteralPath $UsbOverlayLibPath) { . $UsbOverlayLibPath }
 $DriveHttpLibPath = Join-Path $PSScriptRoot 'lib\Invoke-LwDriveHttpUsbMedia.ps1'
 if (Test-Path -LiteralPath $DriveHttpLibPath) { . $DriveHttpLibPath }
+$LcuLibPath = Join-Path $PSScriptRoot 'lib\Invoke-LwOfflineLcuInject.ps1'
+if (Test-Path -LiteralPath $LcuLibPath) { . $LcuLibPath }
 
 # Full Windows Updates (Intel/AMD and Snapdragon) parses the update loop.
 # Both Quick Install workflows and WIN-INSTALL skip that payload.
@@ -934,8 +936,9 @@ function Get-LwWinPeUiFolderName {
 }
 
 function Ensure-LwWinPeUiArchDir {
-    # Prefer local publish trees (npm start). Packaged builds download arch zips from
-    # GitHub bin/ (under 100 MB) into a writable cache — resources\payload is often read-only.
+    # Prefer local publish trees (npm start). Else: staged UUP\WinPEUI zips, then
+    # Warehouse - Imaging > WinPEUI on Drive, then GitHub bin/ (under 100 MB).
+    # Cache expands into a writable dir — resources\payload is often read-only.
     param(
         [Parameter(Mandatory)][ValidateSet('AMD64', 'ARM64')][string] $Arch,
         [switch] $Required
@@ -965,6 +968,14 @@ function Ensure-LwWinPeUiArchDir {
         [void]$zipCandidates.Add((Join-Path $AppResourcesPath ("bin\{0}" -f $zipName)))
         [void]$zipCandidates.Add((Join-Path (Split-Path -Parent $AppResourcesPath) ("bin\{0}" -f $zipName)))
     }
+    if (Get-Command -Name Get-LwDestageUupLayout -ErrorAction SilentlyContinue) {
+        try {
+            $uupWinPeUi = Join-Path (Get-LwDestageUupLayout).Root 'WinPEUI'
+            [void]$zipCandidates.Add((Join-Path $uupWinPeUi $zipName))
+        } catch { }
+    } else {
+        [void]$zipCandidates.Add((Join-Path 'C:\Repos\Windows_Installation\UUP\25h2\WinPEUI' $zipName))
+    }
     $localZip = $null
     foreach ($c in $zipCandidates) {
         if ($c -and (Test-Path -LiteralPath $c)) { $localZip = $c; break }
@@ -972,26 +983,55 @@ function Ensure-LwWinPeUiArchDir {
 
     $downloadZip = Join-Path $cacheRoot $zipName
     if (-not $localZip) {
-        $base = [string]$WinPeUiZipBaseUrl
-        if ([string]::IsNullOrWhiteSpace($base)) {
-            if ($Required) {
-                throw ("WinPeUi {0}: no local tree/zip and -WinPeUiZipBaseUrl was not set (run npm run winpe-ui:publish for destage, or pass the public bin/ URL for packaged builds)." -f $Arch)
-            }
-            return ''
-        }
-        $base = $base.TrimEnd('/')
-        $url = "$base/$zipName"
         New-Item -ItemType Directory -Path $cacheRoot -Force -ErrorAction SilentlyContinue | Out-Null
-        EmitLog -Disk 0 -Msg ("WinPeUi: downloading {0} -> {1}" -f $url, $downloadZip)
-        Emit @{ event = 'progress'; disk = 0; phase = 'winpe-ui'; pct = 0; message = ("Downloading WinPE UI ({0})..." -f $Arch) }
-        try {
-            Invoke-WebRequest -Uri $url -OutFile $downloadZip -UseBasicParsing -ErrorAction Stop
-        } catch {
-            if ($Required) { throw ("WinPeUi {0}: download failed from {1}: {2}" -f $Arch, $url, $_.Exception.Message) }
-            EmitLog -Disk 0 -Msg ("WinPeUi: download failed ({0}) - splash stays USB-only" -f $_.Exception.Message)
-            return ''
+        $driveOk = $false
+        if (Get-Command -Name Invoke-LwDriveHttpWinPeUiZip -ErrorAction SilentlyContinue) {
+            Emit @{ event = 'progress'; disk = 0; phase = 'winpe-ui'; pct = 0; message = ("Downloading WinPE UI ({0}) from Drive..." -f $Arch) }
+            EmitLog -Disk 0 -Msg ("WinPeUi: Drive WinPEUI/{0} -> {1}" -f $zipName, $downloadZip)
+            try {
+                Invoke-LwDriveHttpWinPeUiZip -DestPath $downloadZip -FileName $zipName -OnJsonLine {
+                    param($line)
+                    if ([string]::IsNullOrWhiteSpace($line)) { return }
+                    $trim = $line.TrimStart()
+                    if (-not $trim.StartsWith('{')) { return }
+                    try {
+                        $obj = $trim | ConvertFrom-Json -ErrorAction Stop
+                        if ($obj.event -eq 'log' -and $obj.message) {
+                            EmitLog -Disk 0 -Msg ([string]$obj.message)
+                        } elseif ($obj.event -eq 'progress' -and ($null -ne $obj.pct)) {
+                            Emit @{ event = 'progress'; disk = 0; phase = 'winpe-ui'; pct = [int]$obj.pct; message = ("Downloading WinPE UI ({0})..." -f $Arch) }
+                        }
+                    } catch { }
+                }
+                if (Test-Path -LiteralPath $downloadZip) {
+                    $localZip = $downloadZip
+                    $driveOk = $true
+                }
+            } catch {
+                EmitLog -Disk 0 -Msg ("WinPeUi: Drive download skipped ({0})" -f $_.Exception.Message)
+            }
         }
-        $localZip = $downloadZip
+        if (-not $driveOk) {
+            $base = [string]$WinPeUiZipBaseUrl
+            if ([string]::IsNullOrWhiteSpace($base)) {
+                if ($Required) {
+                    throw ("WinPeUi {0}: no local/Drive zip and -WinPeUiZipBaseUrl was not set (run npm run winpe-ui:stage-drive, or pass the public bin/ URL)." -f $Arch)
+                }
+                return ''
+            }
+            $base = $base.TrimEnd('/')
+            $url = "$base/$zipName"
+            EmitLog -Disk 0 -Msg ("WinPeUi: downloading {0} -> {1}" -f $url, $downloadZip)
+            Emit @{ event = 'progress'; disk = 0; phase = 'winpe-ui'; pct = 0; message = ("Downloading WinPE UI ({0})..." -f $Arch) }
+            try {
+                Invoke-WebRequest -Uri $url -OutFile $downloadZip -UseBasicParsing -ErrorAction Stop
+            } catch {
+                if ($Required) { throw ("WinPeUi {0}: download failed from {1}: {2}" -f $Arch, $url, $_.Exception.Message) }
+                EmitLog -Disk 0 -Msg ("WinPeUi: download failed ({0}) - splash stays USB-only" -f $_.Exception.Message)
+                return ''
+            }
+            $localZip = $downloadZip
+        }
     }
 
     if (-not $localZip -or -not (Test-Path -LiteralPath $localZip)) {
@@ -1939,10 +1979,21 @@ $workerDiskBlock = {
         [string] $DriveHttpFolderId,
         [string] $DriveHttpLibPath,
         # Main-thread Ensure-LwWinPeUiForBuild cache (…\AMD64, …\ARM64). Empty = ContentRoot only.
-        [string] $WinPeUiCacheRoot
+        [string] $WinPeUiCacheRoot,
+        [string] $LcuLibPath,
+        [string] $LcuRefreshSetDir,
+        [string] $InstallLcuKb,
+        [string] $OsBuild,
+        [string] $LcuImageVersion,
+        [string] $LcuImageBuildDate
     )
 
     $ErrorActionPreference = 'Stop'
+    $lcuDidRefresh = $false
+    $refreshedLcuKb = ''
+    $refreshedOsBuild = ''
+    $refreshedImageVersion = ''
+    $refreshedImageDate = ''
 
     # Dot-source the shared split helper into THIS job runspace (see $SplitLibPath note).
     # The on-the-fly fallback split (Split-LWImageForFat32) and the producer both use this
@@ -1952,6 +2003,9 @@ $workerDiskBlock = {
     }
     if (-not [string]::IsNullOrWhiteSpace($Arm64DriverLibPath) -and (Test-Path -LiteralPath $Arm64DriverLibPath)) {
         . $Arm64DriverLibPath
+    }
+    if (-not [string]::IsNullOrWhiteSpace($LcuLibPath) -and (Test-Path -LiteralPath $LcuLibPath)) {
+        . $LcuLibPath
     }
     if (-not [string]::IsNullOrWhiteSpace($UsbOverlayLibPath) -and (Test-Path -LiteralPath $UsbOverlayLibPath)) {
         . $UsbOverlayLibPath
@@ -3661,6 +3715,86 @@ $workerDiskBlock = {
             J @{ event='log'; disk=$DiskNumber; message=("secure-boot: signed loaders verified present - \EFI\Boot\{0} ({1} bytes), \EFI\Microsoft\Boot\bootmgfw.efi ({2} bytes); copied verbatim from ISO (Secure Boot preserved)" -f $p2FallbackName, $p2FallbackSize, $p2BootmgfwSize) }
         }
 
+        # -- Quick Update: replace install*.swm when Image Ready is newer (same family) --
+        $lcuDidRefresh = $false
+        $refreshedLcuKb = ''
+        $refreshedOsBuild = ''
+        $refreshedImageVersion = ''
+        $refreshedImageDate = ''
+        if ($OverlayOnly -and $dataRoot) {
+            $stickLcuKb = ''
+            $stickOsBuild = ''
+            $stickImageVersion = ''
+            try {
+                $stickStampPath = Join-Path $dataRoot 'FirstBase\LW_VERSION.json'
+                if (Test-Path -LiteralPath $stickStampPath) {
+                    $stickStamp = Get-Content -Raw -LiteralPath $stickStampPath | ConvertFrom-Json
+                    if ($stickStamp.installLcuKb) { $stickLcuKb = [string]$stickStamp.installLcuKb }
+                    if ($stickStamp.osBuild) { $stickOsBuild = [string]$stickStamp.osBuild }
+                    if ($stickStamp.imageVersion) { $stickImageVersion = [string]$stickStamp.imageVersion }
+                }
+            } catch { }
+            $refreshSet = [string]$LcuRefreshSetDir
+            if ([string]::IsNullOrWhiteSpace($refreshSet) -and -not [string]::IsNullOrWhiteSpace($PreSplitSetDir)) {
+                $refreshSet = [string]$PreSplitSetDir
+            }
+            $refreshKb = [string]$InstallLcuKb
+            $refreshBuild = [string]$OsBuild
+            $refreshIv = [string]$LcuImageVersion
+            if ([string]::IsNullOrWhiteSpace($refreshIv) -and -not [string]::IsNullOrWhiteSpace($refreshSet)) {
+                try { $refreshIv = [string](Split-Path -Leaf $refreshSet) } catch { }
+            }
+            $lcuBehind = $false
+            if (Get-Command -Name Test-LwInstallLcuBehind -ErrorAction SilentlyContinue) {
+                $lcuBehind = [bool](Test-LwInstallLcuBehind -StickKb $stickLcuKb -StickBuild $stickOsBuild -CurrentKb $refreshKb -CurrentBuild $refreshBuild)
+            }
+            $imageBehind = $false
+            if (-not [string]::IsNullOrWhiteSpace($stickImageVersion) -and -not [string]::IsNullOrWhiteSpace($refreshIv) -and
+                $stickImageVersion -ne $refreshIv) {
+                $imageBehind = $true
+            }
+            $behind = $lcuBehind -or $imageBehind
+            if ($behind -and [string]::IsNullOrWhiteSpace($refreshSet) -and
+                -not [string]::IsNullOrWhiteSpace($DriveHttpLibPath) -and
+                (Test-Path -LiteralPath $DriveHttpLibPath) -and
+                -not (Get-Command -Name Invoke-LwDriveHttpMediaToVolume -ErrorAction SilentlyContinue)) {
+                . $DriveHttpLibPath
+            }
+            if ($behind -and [string]::IsNullOrWhiteSpace($refreshSet) -and
+                -not [string]::IsNullOrWhiteSpace($DriveHttpFolderId) -and
+                (Get-Command -Name Invoke-LwDriveHttpMediaToVolume -ErrorAction SilentlyContinue)) {
+                $dl = Join-Path $env:TEMP ('LW-LcuStick-' + $DiskNumber)
+                try {
+                    J @{ event='log'; disk=$DiskNumber; message='Refreshing install image: downloading Image Ready from Drive' }
+                    Invoke-LwDriveHttpMediaToVolume -DiskNumber $DiskNumber -DestRoot $dl -FolderId $DriveHttpFolderId `
+                        -Arch $WorkflowType -Edition $WindowsEdition
+                    if (Test-Path -LiteralPath (Join-Path $dl 'sources\install.swm')) { $refreshSet = $dl }
+                } catch {
+                    J @{ event='log'; disk=$DiskNumber; message=("Refreshing install image: Drive download skipped ({0})" -f $_.Exception.Message) }
+                }
+            }
+            if ($behind -and -not [string]::IsNullOrWhiteSpace($refreshSet)) {
+                JPhase 'install-refresh'
+                J @{ event='progress'; disk=$DiskNumber; phase='install-refresh'; pct=10; message='Refreshing install image...' }
+                Copy-LwInstallSwmSetToVolume -SetDir $refreshSet -VolumeRoot $dataRoot -Log {
+                    param($m)
+                    J @{ event='log'; disk=$DiskNumber; message=$m }
+                }
+                $lcuDidRefresh = $true
+                $refreshedLcuKb = $refreshKb
+                $refreshedOsBuild = $refreshBuild
+                if (-not [string]::IsNullOrWhiteSpace($refreshIv)) { $refreshedImageVersion = $refreshIv }
+                elseif ($refreshSet) {
+                    try { $refreshedImageVersion = [string](Split-Path -Leaf $refreshSet) } catch { }
+                }
+                if (-not [string]::IsNullOrWhiteSpace($LcuImageBuildDate)) { $refreshedImageDate = [string]$LcuImageBuildDate }
+                J @{ event='progress'; disk=$DiskNumber; phase='install-refresh'; pct=100; message='Refreshing install image...' }
+                JPhase 'overlay-update'
+            } elseif ($behind) {
+                J @{ event='log'; disk=$DiskNumber; message='Refreshing install image: Image Ready is newer but no install*.swm set was found locally or on Drive' }
+            }
+        }
+
         # -- BCD: ship the ISO's own stock BCDs verbatim; NEVER rebuild or edit -----
         # HISTORY: 5.0.28 hand-authored a WinPE BCD from scratch (bcdedit /createstore
         # + /set calls); 5.0.29 tweaked the {bootmgr} device (locate -> boot); 5.0.30
@@ -3720,9 +3854,16 @@ $workerDiskBlock = {
                             if ($existingStamp.archLabel) { $stampArchLabel = [string]$existingStamp.archLabel }
                             if ($existingStamp.windowsEdition) { $WindowsEdition = [string]$existingStamp.windowsEdition }
                             elseif ($existingStamp.edition) { $WindowsEdition = [string]$existingStamp.edition }
+                            if (-not $lcuDidRefresh) {
+                                if ($existingStamp.installLcuKb) { $refreshedLcuKb = [string]$existingStamp.installLcuKb }
+                                if ($existingStamp.osBuild) { $refreshedOsBuild = [string]$existingStamp.osBuild }
+                            }
                             # Same image on stick and staging: adopt canonical imageBuildDate
                             # (heals UUP LastWrite 2024-04-01 without replacing the image).
-                            if ($stampImageVersion -and $ImageVersion -and
+                            if ($lcuDidRefresh) {
+                                if ($refreshedImageVersion) { $stampImageVersion = [string]$refreshedImageVersion }
+                                if ($refreshedImageDate) { $stampImageDate = [string]$refreshedImageDate }
+                            } elseif ($stampImageVersion -and $ImageVersion -and
                                 ([string]$stampImageVersion -eq [string]$ImageVersion) -and
                                 -not [string]::IsNullOrWhiteSpace($ImageBuildDate)) {
                                 $stampImageDate = [string]$ImageBuildDate
@@ -3755,6 +3896,10 @@ $workerDiskBlock = {
                 }
                 if ($stampImageVersion) { $stamp.imageVersion = [string]$stampImageVersion }
                 if ($stampImageDate) { $stamp.imageBuildDate = [string]$stampImageDate }
+                $stampLcu = if ($lcuDidRefresh -and $InstallLcuKb) { [string]$InstallLcuKb } elseif ($refreshedLcuKb) { [string]$refreshedLcuKb } elseif (-not $OverlayOnly -and $InstallLcuKb) { [string]$InstallLcuKb } else { '' }
+                $stampOs = if ($lcuDidRefresh -and $OsBuild) { [string]$OsBuild } elseif ($refreshedOsBuild) { [string]$refreshedOsBuild } elseif (-not $OverlayOnly -and $OsBuild) { [string]$OsBuild } else { '' }
+                if ($stampLcu) { $stamp.installLcuKb = $stampLcu }
+                if ($stampOs) { $stamp.osBuild = $stampOs }
                 if ($DevBuild) {
                     $stamp.destage = $true
                     $stamp.channel = 'destage'
@@ -4658,6 +4803,48 @@ try {
         EmitLog -Disk 0 -Msg ("WinPeUi ensure: {0}" -f $_.Exception.Message)
     }
 
+    $installLcuKb = ''
+    $osBuildStamp = ''
+    $lcuRefreshSetDir = ''
+    $lcuImageVersion = ''
+    $lcuImageBuildDate = ''
+    $lcuPreRoot = ''
+    if ($OverlayOnly -and (Get-Command -Name Get-LwDestageUupLayout -ErrorAction SilentlyContinue)) {
+        try { $lcuPreRoot = [string](Get-LwDestageUupLayout).PreSplitRoot } catch { }
+    } elseif (-not [string]::IsNullOrWhiteSpace($PreSplitRoot)) {
+        $lcuPreRoot = [string]$PreSplitRoot
+    }
+    if ($lcuPreRoot -and (Get-Command -Name Read-LWRemoteVersionSku -ErrorAction SilentlyContinue)) {
+        try {
+            $lcuSku = Read-LWRemoteVersionSku -PreSplitRoot $lcuPreRoot -Arch $wfUpper -Edition $winEdition
+            if ($lcuSku) {
+                if ($lcuSku.installLcuKb) { $installLcuKb = [string]$lcuSku.installLcuKb }
+                if ($lcuSku.osBuild) { $osBuildStamp = [string]$lcuSku.osBuild }
+                if ($lcuSku.imageVersion) {
+                    $lcuImageVersion = [string]$lcuSku.imageVersion
+                    $cand = Join-Path $lcuPreRoot $lcuImageVersion
+                    $swm = Join-Path $cand 'sources\install.swm'
+                    if (Test-Path -LiteralPath $swm) { $lcuRefreshSetDir = $cand }
+                }
+                if ($lcuSku.imageBuildDate) { $lcuImageBuildDate = [string]$lcuSku.imageBuildDate }
+            }
+        } catch { }
+    }
+    if (-not $OverlayOnly -and -not [string]::IsNullOrWhiteSpace($PreSplitSetDir)) {
+        $lcuRefreshSetDir = ''
+        try {
+            $manPath = Join-Path $PreSplitSetDir 'presplit-manifest.json'
+            if (Test-Path -LiteralPath $manPath) {
+                $man = Get-Content -Raw -LiteralPath $manPath | ConvertFrom-Json
+                if ($man.installLcuKb) { $installLcuKb = [string]$man.installLcuKb }
+                if ($man.osBuild) { $osBuildStamp = [string]$man.osBuild }
+            }
+        } catch { }
+    }
+    if ($OverlayOnly -and $lcuRefreshSetDir) {
+        EmitLog -Disk 0 -Msg ("lcu: Quick Update can refresh install*.swm from '$lcuRefreshSetDir' ($installLcuKb)")
+    }
+
     foreach ($diskNum in $requestedDisks) {
         EmitStart -Disk $diskNum
         if ($Sequential) {
@@ -4702,7 +4889,13 @@ try {
                 ([bool]$DriveHttpDirect),
                 $DriveHttpFolderId,
                 $DriveHttpLibPath,
-                $script:LwWinPeUiCacheRoot
+                $script:LwWinPeUiCacheRoot,
+                $LcuLibPath,
+                $lcuRefreshSetDir,
+                $installLcuKb,
+                $osBuildStamp,
+                $lcuImageVersion,
+                $lcuImageBuildDate
             )
 
         if ($Sequential) {

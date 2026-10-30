@@ -322,12 +322,23 @@ function Test-LWIsoMatchesEdition {
         [string] $Edition
     )
     $want = Get-LWWindowsEdition $Edition
-    $fromName = Get-LWIsoEditionFromName $FullName
-    if ($fromName) { return ($fromName -eq $want) }
-    $parent = ''
-    try { $parent = [System.IO.Path]::GetFileName([System.IO.Path]::GetDirectoryName($FullName)) } catch { }
-    if ($parent -match '^(?i)home$') { return ($want -eq 'Home') }
-    if ($parent -match '^(?i)pro$') { return ($want -eq 'Pro') }
+    # Check the leaf and a few parent segments so Keyes LCU work dirs like
+    # ...\amd64-Home\media (and ISO names like 25h2-home-....iso) all match.
+    $cursor = $FullName
+    for ($i = 0; $i -lt 4 -and -not [string]::IsNullOrWhiteSpace($cursor); $i++) {
+        $leaf = [System.IO.Path]::GetFileName($cursor.TrimEnd('\', '/'))
+        if (-not [string]::IsNullOrWhiteSpace($leaf)) {
+            $fromName = Get-LWIsoEditionFromName $leaf
+            if ($fromName) { return ($fromName -eq $want) }
+        }
+        try {
+            $next = [System.IO.Path]::GetDirectoryName($cursor)
+        } catch {
+            $next = $null
+        }
+        if ([string]::IsNullOrWhiteSpace($next) -or $next -eq $cursor) { break }
+        $cursor = $next
+    }
     # Untagged file in a non-SKU folder (flat ISO\ or Staging\): Pro-only legacy.
     return ($want -eq 'Pro')
 }
@@ -538,7 +549,9 @@ function Write-LWPreSplitCurrentMarkers {
         [Parameter(Mandatory)] [string] $Arch,
         [string] $Edition,
         [Parameter(Mandatory)] [string] $ImageVersion,
-        [string] $UpdatedUtc
+        [string] $UpdatedUtc,
+        [string] $InstallLcuKb = '',
+        [string] $OsBuild = ''
     )
     if ([string]::IsNullOrWhiteSpace($PreSplitRoot)) { return }
     $ed = Get-LWWindowsEdition $Edition
@@ -554,6 +567,8 @@ function Write-LWPreSplitCurrentMarkers {
         arch            = $arch
         updatedUtc      = $UpdatedUtc
     }
+    if (-not [string]::IsNullOrWhiteSpace($InstallLcuKb)) { $payload.installLcuKb = [string]$InstallLcuKb }
+    if (-not [string]::IsNullOrWhiteSpace($OsBuild)) { $payload.osBuild = [string]$OsBuild }
     $utf8 = [System.Text.UTF8Encoding]::new($false)
     if (-not [string]::IsNullOrWhiteSpace($SetDir) -and (Test-Path -LiteralPath $SetDir)) {
         try {
@@ -610,6 +625,8 @@ function Write-LWRemoteVersionJson {
                 $arch = ''
                 $upd = ''
                 $explicit = ''
+                $lcuKb = ''
+                $osBuild = ''
                 if ($entry -is [string]) {
                     $iv = [string]$entry
                 } elseif ($entry) {
@@ -618,6 +635,8 @@ function Write-LWRemoteVersionJson {
                     try { if ($entry.PSObject.Properties['arch']) { $arch = [string]$entry.arch } } catch { }
                     try { if ($entry.PSObject.Properties['updatedUtc']) { $upd = [string]$entry.updatedUtc } } catch { }
                     try { if ($entry.PSObject.Properties['imageBuildDate']) { $explicit = [string]$entry.imageBuildDate } } catch { }
+                    try { if ($entry.PSObject.Properties['installLcuKb']) { $lcuKb = [string]$entry.installLcuKb } } catch { }
+                    try { if ($entry.PSObject.Properties['osBuild']) { $osBuild = [string]$entry.osBuild } } catch { }
                 }
                 if ([string]::IsNullOrWhiteSpace($iv)) { continue }
                 if (-not $arch -or -not $ed) {
@@ -628,13 +647,16 @@ function Write-LWRemoteVersionJson {
                 $arch = Get-LWBareArch $arch
                 $ed = Get-LWWindowsEdition $ed
                 $ymd = [string](Get-LWCanonicalImageBuildDateYmd -ImageVersion $iv -UpdatedUtc $upd -ExplicitBuildDate $explicit)
-                $skus[$p.Name] = [ordered]@{
+                $skuDoc = [ordered]@{
                     arch           = $arch
                     windowsEdition = $ed
                     imageVersion   = $iv
                     imageBuildDate = $ymd
                     updatedUtc     = $upd
                 }
+                if (-not [string]::IsNullOrWhiteSpace($lcuKb)) { $skuDoc.installLcuKb = $lcuKb }
+                if (-not [string]::IsNullOrWhiteSpace($osBuild)) { $skuDoc.osBuild = $osBuild }
+                $skus[$p.Name] = $skuDoc
                 if ($upd -and ($upd -gt $newestUtc)) { $newestUtc = $upd }
             }
         } catch { }
@@ -673,11 +695,15 @@ function Read-LWRemoteVersionSku {
                 $iv = ''
                 $ymd = ''
                 $upd = ''
+                $lcuKb = ''
+                $osBuild = ''
                 if ($e -is [string]) { $iv = [string]$e }
                 else {
                     try { if ($e.PSObject.Properties['imageVersion']) { $iv = [string]$e.imageVersion } } catch { }
                     try { if ($e.PSObject.Properties['imageBuildDate']) { $ymd = [string]$e.imageBuildDate } } catch { }
                     try { if ($e.PSObject.Properties['updatedUtc']) { $upd = [string]$e.updatedUtc } } catch { }
+                    try { if ($e.PSObject.Properties['installLcuKb']) { $lcuKb = [string]$e.installLcuKb } } catch { }
+                    try { if ($e.PSObject.Properties['osBuild']) { $osBuild = [string]$e.osBuild } } catch { }
                 }
                 if ($iv) {
                     if (-not $ymd) {
@@ -687,6 +713,8 @@ function Read-LWRemoteVersionSku {
                         imageVersion   = $iv
                         imageBuildDate = $ymd
                         updatedUtc     = $upd
+                        installLcuKb   = $lcuKb
+                        osBuild        = $osBuild
                         source         = 'version.json'
                     }
                 }
@@ -702,11 +730,15 @@ function Read-LWRemoteVersionSku {
                 $iv = ''
                 $upd = ''
                 $explicit = ''
+                $lcuKb = ''
+                $osBuild = ''
                 if ($e -is [string]) { $iv = [string]$e }
                 else {
                     try { if ($e.PSObject.Properties['imageVersion']) { $iv = [string]$e.imageVersion } } catch { }
                     try { if ($e.PSObject.Properties['updatedUtc']) { $upd = [string]$e.updatedUtc } } catch { }
                     try { if ($e.PSObject.Properties['imageBuildDate']) { $explicit = [string]$e.imageBuildDate } } catch { }
+                    try { if ($e.PSObject.Properties['installLcuKb']) { $lcuKb = [string]$e.installLcuKb } } catch { }
+                    try { if ($e.PSObject.Properties['osBuild']) { $osBuild = [string]$e.osBuild } } catch { }
                 }
                 if ($iv) {
                     $ymd = [string](Get-LWCanonicalImageBuildDateYmd -ImageVersion $iv -UpdatedUtc $upd -ExplicitBuildDate $explicit)
@@ -714,6 +746,8 @@ function Read-LWRemoteVersionSku {
                         imageVersion   = $iv
                         imageBuildDate = $ymd
                         updatedUtc     = $upd
+                        installLcuKb   = $lcuKb
+                        osBuild        = $osBuild
                         source         = 'current.json'
                     }
                 }

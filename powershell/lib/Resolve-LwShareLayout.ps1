@@ -212,6 +212,7 @@ function Get-LwDestageUupLayout {
         Root         = $root
         IsoRoot      = Join-Path $root 'ISO'
         PreSplitRoot = Join-Path $root 'PreSplit'
+        WinPeUiRoot  = Join-Path $root 'WinPEUI'
     }
 }
 

@@ -141,3 +141,42 @@ function Invoke-LwDriveHttpSupportFolders {
     )
     Invoke-LwDriveHttpNodeScript -ScriptPath $script -ArgParts $argParts -OnJsonLine $OnJsonLine
 }
+
+function Invoke-LwDriveHttpWinPeUiZip {
+    # Download WinPeUi-<ARCH>.zip from Warehouse - Imaging > WinPEUI (Drive staging child).
+    param(
+        [Parameter(Mandatory)][string] $DestPath,
+        [Parameter(Mandatory)][string] $FileName,
+        [string] $FolderId = '',
+        [string] $ChildFolderName = 'WinPEUI',
+        [scriptblock] $OnJsonLine
+    )
+    if ([string]::IsNullOrWhiteSpace($DestPath)) { throw 'drive-http-winpeui: DestPath is empty' }
+    if ([string]::IsNullOrWhiteSpace($FileName)) { throw 'drive-http-winpeui: FileName is empty' }
+    $script = $env:LONEWOLF_DRIVE_HTTP_WINPEUI_SCRIPT
+    if ([string]::IsNullOrWhiteSpace($script) -or -not (Test-Path -LiteralPath $script)) {
+        $pkgScript = $env:LONEWOLF_DRIVE_HTTP_SCRIPT
+        if (-not [string]::IsNullOrWhiteSpace($pkgScript)) {
+            $candidate = Join-Path (Split-Path -Parent $pkgScript) 'drive-http-winpeui-zip.js'
+            if (Test-Path -LiteralPath $candidate) { $script = $candidate }
+        }
+    }
+    if ([string]::IsNullOrWhiteSpace($script) -or -not (Test-Path -LiteralPath $script)) {
+        throw 'drive-http-winpeui: download script not found (set LONEWOLF_DRIVE_HTTP_WINPEUI_SCRIPT)'
+    }
+    $parent = Split-Path -Parent $DestPath
+    if (-not [string]::IsNullOrWhiteSpace($parent)) {
+        New-Item -ItemType Directory -Force -Path $parent | Out-Null
+    }
+    $fid = if (-not [string]::IsNullOrWhiteSpace($FolderId)) { $FolderId } else { '1xxCL3FrNjKOPCOB_zWUC2NJLKCfKry8d' }
+    $child = if (-not [string]::IsNullOrWhiteSpace($ChildFolderName)) { $ChildFolderName } else { 'WinPEUI' }
+    $argParts = @(
+        (Format-LwDriveHttpWinArg $script),
+        '--folder-id', (Format-LwDriveHttpWinArg $fid),
+        '--child-folder', (Format-LwDriveHttpWinArg $child),
+        '--dest', (Format-LwDriveHttpWinArg ($DestPath.TrimEnd('\'))),
+        '--file-name', (Format-LwDriveHttpWinArg $FileName),
+        '--disk', '0'
+    )
+    Invoke-LwDriveHttpNodeScript -ScriptPath $script -ArgParts $argParts -OnJsonLine $OnJsonLine
+}

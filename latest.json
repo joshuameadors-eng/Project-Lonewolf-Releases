@@ -1,6 +1,6 @@
 {
-    "launcherVersion":  "7.0.0",
-    "payloadVersion":  "7.0.0",
+    "launcherVersion":  "7.0.1",
+    "payloadVersion":  "7.0.1",
     "channel":  "release",
     "source":  "github-public-source",
     "latestReleaseUrl":  "https://github.com/joshuameadors-eng/Project-Lonewolf-Releases/releases/latest",
@@ -35,9 +35,23 @@
                  "winpeUiZipBase":  "https://raw.githubusercontent.com/joshuameadors-eng/Project-Lonewolf-Releases/main/bin",
                  "manifest":  "https://raw.githubusercontent.com/joshuameadors-eng/Project-Lonewolf-Releases/main/latest.json"
              },
-    "portableSha256":  "84ff38377e29bbacb1e5eb4798e711e8ae386408b58beae94483fbe95c866031",
-    "portableSize":  73225962,
+    "portableSha256":  "467d828c87d7d028833ba447be69b2844ffc0d0fcdd37c5df953b76ad30a3285",
+    "portableSize":  73227921,
     "changelog":  [
+                      {
+                          "version":  "7.0.1",
+                          "date":  "2026-11-02",
+                          "changes":  [
+                                          "Official release 7.0.1 â€” follow-up to 7.0.0 (RELEASE 0â†’1). Launcher, payload, and product version are all 7.0.1.",
+                                          "Added",
+                                          "Destage image-in-RAM apply test â€” optional Builder toggle stamps the stick; WinPE stages install*.swm to RAM scratch when memory allows, then falls back to USB",
+                                          "Changed",
+                                          "USB Builder â€” recommend Full Rebuild when PreSplit identity or offline cumulative OS build on staging is newer than the stick; imageVersion family matching ignores calendar M-D segments in folder names",
+                                          "Builder ISO sources â€” deployment share ISOs hidden by default; Show share / Hide share restores the prior list",
+                                          "Google Drive HTTP and PreSplit â€” packaged and destage USB rebuild reliability (Drive HTTP media copy, split-WIM staging, overlay profile)",
+                                          "Quick Update â€” can replace install*.swm when staging carries a newer offline cumulative build than the stick"
+                                      ]
+                      },
                       {
                           "version":  "7.0.0",
                           "date":  "2026-10-30",

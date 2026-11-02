@@ -27,7 +27,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-$FB_DismApplyRev = '2026-08-24.3'
+$FB_DismApplyRev = '2026-11-02.1'
 
 # Encoding once at process start. Do NOT set console font, restore geometry,
 # chcp, or Clear-Host on progress ticks (that resized the window every percent).
@@ -220,6 +220,148 @@ function Get-DriveFreeBytes {
     }
 }
 
+function Test-FbJsonTruthy {
+    param($Value)
+    if ($null -eq $Value) { return $false }
+    if ($Value -is [bool]) { return $Value }
+    $s = [string]$Value
+    if ([string]::IsNullOrWhiteSpace($s)) { return $false }
+    return ($s -match '^(?i)(1|true|yes|on)$')
+}
+
+function Get-FbImageInRamFromLwVersion {
+    param([string]$ImageFile)
+    if ([string]::IsNullOrWhiteSpace($ImageFile)) { return $false }
+    try {
+        $sourcesDir = Split-Path -Parent $ImageFile
+        $volRoot = Split-Path -Parent $sourcesDir
+        if ([string]::IsNullOrWhiteSpace($volRoot)) { return $false }
+        $candidates = @(
+            (Join-Path $volRoot 'FirstBase\LW_VERSION.json')
+            (Join-Path $sourcesDir '..\FirstBase\LW_VERSION.json')
+        )
+        foreach ($p in $candidates) {
+            try {
+                $resolved = [System.IO.Path]::GetFullPath($p)
+            } catch { continue }
+            if (-not (Test-Path -LiteralPath $resolved)) { continue }
+            $json = Get-Content -Raw -LiteralPath $resolved | ConvertFrom-Json
+            if ($json.PSObject.Properties['imageInRam'] -and (Test-FbJsonTruthy $json.imageInRam)) {
+                return $true
+            }
+            return $false
+        }
+    } catch {
+        Write-WLog ("imageInRam stamp read failed: {0}" -f $_.Exception.Message)
+    }
+    return $false
+}
+
+function Get-FbInstallImageCopyBytes {
+    param(
+        [string]$ImageFile,
+        [string]$SwmPattern
+    )
+    $sum = [long]0
+    try {
+        if (-not [string]::IsNullOrWhiteSpace($SwmPattern)) {
+            $dir = Split-Path -Parent $SwmPattern
+            $leaf = Split-Path -Leaf $SwmPattern
+            if ([string]::IsNullOrWhiteSpace($dir)) { $dir = Split-Path -Parent $ImageFile }
+            $parts = @(Get-ChildItem -LiteralPath $dir -Filter $leaf -ErrorAction SilentlyContinue)
+            if ($parts.Count -eq 0 -and (Test-Path -LiteralPath $ImageFile)) {
+                $parts = @(Get-Item -LiteralPath $ImageFile)
+            }
+            foreach ($f in $parts) { $sum += [long]$f.Length }
+        } elseif (Test-Path -LiteralPath $ImageFile) {
+            $sum = [long](Get-Item -LiteralPath $ImageFile).Length
+        }
+    } catch {
+        Write-WLog ("image copy size estimate failed: {0}" -f $_.Exception.Message)
+    }
+    return $sum
+}
+
+function Invoke-FbStageInstallImageToRamScratch {
+    param(
+        [string]$ImageFile,
+        [string]$SwmPattern,
+        [string]$ScratchRoot = 'X:\FbImageScratch'
+    )
+    $result = [pscustomobject]@{
+        ImageFile     = $ImageFile
+        SwmPattern    = $SwmPattern
+        StagedToRam   = $false
+        FallbackUsb   = $false
+        ScratchRoot   = $ScratchRoot
+    }
+    if (-not (Get-FbImageInRamFromLwVersion -ImageFile $ImageFile)) {
+        return $result
+    }
+
+    $needBytes = Get-FbInstallImageCopyBytes -ImageFile $ImageFile -SwmPattern $SwmPattern
+    if ($needBytes -le 0) {
+        Write-WLog 'imageInRam: could not estimate install image size; applying from USB'
+        $result.FallbackUsb = $true
+        return $result
+    }
+    $headroom = [long]256MB
+    $scratchDrive = 'X:'
+    if (-not [string]::IsNullOrWhiteSpace($ScratchRoot)) {
+        $scratchDrive = $ScratchRoot.Substring(0, 1) + ':'
+    }
+    $freeScratch = Get-DriveFreeBytes -DriveLetter $scratchDrive
+    if ($freeScratch -ge 0 -and $freeScratch -lt ($needBytes + $headroom)) {
+        Write-WLog ("imageInRam: insufficient RAM scratch on {0} (need {1} bytes, free {2}); applying from USB" -f $scratchDrive, ($needBytes + $headroom), $freeScratch)
+        $result.FallbackUsb = $true
+        return $result
+    }
+
+    try {
+        if (Test-Path -LiteralPath $ScratchRoot) {
+            Remove-Item -LiteralPath $ScratchRoot -Recurse -Force -ErrorAction SilentlyContinue
+        }
+        New-Item -ItemType Directory -Path $ScratchRoot -Force | Out-Null
+    } catch {
+        Write-WLog ("imageInRam: could not create scratch '{0}': {1}; applying from USB" -f $ScratchRoot, $_.Exception.Message)
+        $result.FallbackUsb = $true
+        return $result
+    }
+
+    Write-WLog ("imageInRam: staging {0} bytes to {1}" -f $needBytes, $ScratchRoot)
+    Write-Host '   Staging install image to RAM (X:\FbImageScratch)...' -ForegroundColor Cyan
+
+    try {
+        if (-not [string]::IsNullOrWhiteSpace($SwmPattern)) {
+            $dir = Split-Path -Parent $SwmPattern
+            $leaf = Split-Path -Leaf $SwmPattern
+            if ([string]::IsNullOrWhiteSpace($dir)) { $dir = Split-Path -Parent $ImageFile }
+            $parts = @(Get-ChildItem -LiteralPath $dir -Filter $leaf -ErrorAction SilentlyContinue | Sort-Object Name)
+            if ($parts.Count -eq 0) { throw "No SWM parts matched '$SwmPattern' under '$dir'" }
+            foreach ($f in $parts) {
+                Copy-Item -LiteralPath $f.FullName -Destination (Join-Path $ScratchRoot $f.Name) -Force
+            }
+            $first = Get-ChildItem -LiteralPath $ScratchRoot -Filter $leaf -ErrorAction Stop | Sort-Object Name | Select-Object -First 1
+            $result.ImageFile = $first.FullName
+            $result.SwmPattern = Join-Path $ScratchRoot $leaf
+        } else {
+            $dest = Join-Path $ScratchRoot (Split-Path -Leaf $ImageFile)
+            Copy-Item -LiteralPath $ImageFile -Destination $dest -Force
+            $result.ImageFile = $dest
+            $result.SwmPattern = ''
+        }
+        $result.StagedToRam = $true
+        Write-WLog ("imageInRam: staged apply sources ImageFile={0} Swm={1}" -f $result.ImageFile, $result.SwmPattern)
+    } catch {
+        Write-WLog ("imageInRam: copy to scratch failed: {0}; applying from USB" -f $_.Exception.Message)
+        $result.ImageFile = $ImageFile
+        $result.SwmPattern = $SwmPattern
+        $result.FallbackUsb = $true
+        $result.StagedToRam = $false
+    }
+    return $result
+}
+
 function Get-DiskUsagePct {
     # Cheap per-second progress signal: how much free space has disappeared from the
     # apply drive since the apply started, relative to the WIM's uncompressed size.
@@ -240,6 +382,16 @@ function Get-DiskUsagePct {
     if ($pct -gt 99) { $pct = 99 }
     if ($pct -lt 0)  { $pct = 0 }
     return $pct
+}
+
+$ramStage = Invoke-FbStageInstallImageToRamScratch -ImageFile $ImageFile -SwmPattern $SwmFilePattern
+$ImageFile = [string]$ramStage.ImageFile
+$SwmFilePattern = [string]$ramStage.SwmPattern
+$script:FbApplyFromRamScratch = [bool]$ramStage.StagedToRam
+if ($ramStage.StagedToRam) {
+    Write-WLog 'imageInRam: DISM apply will read from RAM scratch'
+} elseif ($ramStage.FallbackUsb) {
+    Write-WLog 'imageInRam: using USB source path (RAM staging skipped or failed)'
 }
 
 $argLine = [System.Collections.Generic.List[string]]::new()
@@ -394,7 +546,8 @@ function Write-ProgressLine {
     # Indent aligns under the DeployUi step list (spinner column).
     Write-Host '   ' -NoNewline
     Write-Host $spin -ForegroundColor $labelColor -NoNewline
-    Write-Host '  Applying image  ' -ForegroundColor $labelColor -NoNewline
+    $applyLabel = if ($script:FbApplyFromRamScratch) { '  Applying image (RAM scratch)  ' } else { '  Applying image  ' }
+    Write-Host $applyLabel -ForegroundColor $labelColor -NoNewline
     Write-Host ('[' ) -ForegroundColor DarkCyan -NoNewline
     if ($parts.Filled.Length -gt 0) {
         Write-Host $parts.Filled -ForegroundColor $fillColor -NoNewline

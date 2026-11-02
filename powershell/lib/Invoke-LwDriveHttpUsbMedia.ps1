@@ -25,7 +25,7 @@ function Format-LwDriveHttpNodeFailureText {
     $t = $Text.Trim()
     if ($t -match '(?im)Cannot find module\s+[''"]?([^''"\r\n]+)') {
         $mod = $Matches[1].Trim()
-        return ("missing module '{0}' — Drive HTTP packaging is incomplete; reinstall or update the launcher" -f $mod)
+        return ("missing module '{0}' - Drive HTTP packaging is incomplete; reinstall or update the launcher" -f $mod)
     }
     if ($t -match '(?im)^Error:\s*(.+)$') {
         return ($Matches[1].Trim())

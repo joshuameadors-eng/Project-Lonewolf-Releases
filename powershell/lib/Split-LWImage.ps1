@@ -999,6 +999,96 @@ function Get-LWImageVersionBuildDateYmd {
     return ''
 }
 
+# Release family for Quick Update install*.swm refresh (mirrors launcher recommendUsbBuildMode.js).
+function Get-LWImageVersionFamily {
+    param([string] $ImageVersion)
+    $s = [string]$ImageVersion
+    if ([string]::IsNullOrWhiteSpace($s)) { return '' }
+    $s = $s.Trim()
+    $s = [regex]::Replace($s, '-\d{8}T\d{6}Z$', '', 'IgnoreCase')
+    $s = [regex]::Replace($s, '-(home|pro)-(\d{1,2}-\d{1,2})-(amd64|arm64)$', '-$1-$3', 'IgnoreCase')
+    return $s.ToLowerInvariant()
+}
+
+function Compare-LWImageBuildDateYmd {
+    param(
+        [string] $Left = '',
+        [string] $Right = ''
+    )
+    $parse = {
+        param([string] $v)
+        if ([string]::IsNullOrWhiteSpace($v)) { return $null }
+        if ($v -match '^(\d{4})-(\d{2})-(\d{2})') {
+            try { return [int64]($Matches[1] + $Matches[2] + $Matches[3]) } catch { return $null }
+        }
+        $digits = [regex]::Replace([string]$v, '[^0-9]', '')
+        if ($digits.Length -ge 8) {
+            try { return [int64]$digits.Substring(0, 8) } catch { return $null }
+        }
+        return $null
+    }
+    $a = & $parse $Left
+    $b = & $parse $Right
+    if ($null -eq $a -and $null -eq $b) { return 0 }
+    if ($null -eq $a) { return -1 }
+    if ($null -eq $b) { return 1 }
+    if ($a -lt $b) { return -1 }
+    if ($a -gt $b) { return 1 }
+    return 0
+}
+
+function Resolve-LWPreSplitSetDirForImageVersion {
+    param(
+        [Parameter(Mandatory)] [string] $PreSplitRoot,
+        [Parameter(Mandatory)] [string] $ImageVersion,
+        [Parameter(Mandatory)] [string] $Arch,
+        [string] $Edition = 'Pro'
+    )
+    if ([string]::IsNullOrWhiteSpace($PreSplitRoot) -or [string]::IsNullOrWhiteSpace($ImageVersion)) { return '' }
+    $ed = if (Get-Command -Name Get-LWWindowsEdition -ErrorAction SilentlyContinue) {
+        Get-LWWindowsEdition $Edition
+    } else { 'Pro' }
+    $bare = if (Get-Command -Name Get-LWBareArch -ErrorAction SilentlyContinue) {
+        Get-LWBareArch $Arch
+    } else {
+        $a = [string]$Arch
+        if ($a -match 'ARM') { 'ARM64' } else { 'AMD64' }
+    }
+    $tryDir = {
+        param([string] $Dir)
+        if ([string]::IsNullOrWhiteSpace($Dir)) { return '' }
+        $swm = Join-Path $Dir 'sources\install.swm'
+        if (Test-Path -LiteralPath $swm) { return $Dir }
+        return ''
+    }
+    $direct = Join-Path $PreSplitRoot $ImageVersion
+    $hit = & $tryDir $direct
+    if ($hit) { return $hit }
+    if (Get-Command -Name Get-LWPreSplitCandidateDirs -ErrorAction SilentlyContinue) {
+        foreach ($cand in @(Get-LWPreSplitCandidateDirs -PreSplitRoot $PreSplitRoot -Arch $bare -Edition $ed)) {
+            if ([string]::IsNullOrWhiteSpace($cand)) { continue }
+            try {
+                if ([string](Split-Path -Leaf $cand) -eq $ImageVersion) {
+                    $hit = & $tryDir $cand
+                    if ($hit) { return $hit }
+                }
+            } catch { }
+        }
+    }
+    $scanDirs = if (Get-Command -Name Get-LWPreSplitScanDirs -ErrorAction SilentlyContinue) {
+        @(Get-LWPreSplitScanDirs -PreSplitRoot $PreSplitRoot -Arch $bare -Edition $ed)
+    } else {
+        @($PreSplitRoot, (Join-Path $PreSplitRoot $bare))
+    }
+    foreach ($scan in $scanDirs) {
+        if ([string]::IsNullOrWhiteSpace($scan)) { continue }
+        $nested = Join-Path $scan $ImageVersion
+        $hit = & $tryDir $nested
+        if ($hit) { return $hit }
+    }
+    return ''
+}
+
 # Canonical Windows image calendar day for display / rebuild advice.
 # Prefers an explicit imageBuildDate, then the folder stamp — unless that stamp
 # is clearly a UUP/SkipISO preserved LastWrite (days before staging updatedUtc),

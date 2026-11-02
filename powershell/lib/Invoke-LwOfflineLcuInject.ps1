@@ -63,6 +63,51 @@ function Test-LwInstallLcuBehind {
     return $false
 }
 
+function Test-LwInstallImageRefreshNeeded {
+    param(
+        [string] $StickImageVersion = '',
+        [string] $StickImageBuildDate = '',
+        [string] $CurrentImageVersion = '',
+        [string] $CurrentImageBuildDate = '',
+        [string] $StickKb = '',
+        [string] $StickBuild = '',
+        [string] $CurrentKb = '',
+        [string] $CurrentBuild = ''
+    )
+    if (Test-LwInstallLcuBehind -StickKb $StickKb -StickBuild $StickBuild -CurrentKb $CurrentKb -CurrentBuild $CurrentBuild) {
+        return $true
+    }
+    $stickIv = [string]$StickImageVersion
+    $curIv = [string]$CurrentImageVersion
+    $stickYmd = [string]$StickImageBuildDate
+    if ([string]::IsNullOrWhiteSpace($stickYmd) -and $stickIv -and
+        (Get-Command -Name Get-LWImageVersionBuildDateYmd -ErrorAction SilentlyContinue)) {
+        $stickYmd = [string](Get-LWImageVersionBuildDateYmd -ImageVersion $stickIv)
+    }
+    $curYmd = [string]$CurrentImageBuildDate
+    if ([string]::IsNullOrWhiteSpace($curYmd) -and $curIv -and
+        (Get-Command -Name Get-LWImageVersionBuildDateYmd -ErrorAction SilentlyContinue)) {
+        $curYmd = [string](Get-LWImageVersionBuildDateYmd -ImageVersion $curIv)
+    }
+    if (-not [string]::IsNullOrWhiteSpace($curIv)) {
+        if ([string]::IsNullOrWhiteSpace($stickIv)) { return $true }
+        if ($stickIv -ne $curIv) {
+            if (Get-Command -Name Get-LWImageVersionFamily -ErrorAction SilentlyContinue) {
+                $sf = [string](Get-LWImageVersionFamily -ImageVersion $stickIv)
+                $cf = [string](Get-LWImageVersionFamily -ImageVersion $curIv)
+                if ($sf -and $cf -and ($sf -eq $cf)) { return $true }
+                return $false
+            }
+            return $true
+        }
+    }
+    if ((Get-Command -Name Compare-LWImageBuildDateYmd -ErrorAction SilentlyContinue) -and
+        (Compare-LWImageBuildDateYmd -Left $stickYmd -Right $curYmd) -lt 0) {
+        return $true
+    }
+    return $false
+}
+
 function Get-LwCatalogUpdates {
     param(
         [Parameter(Mandatory)][string] $Query
@@ -799,7 +844,8 @@ function Copy-LwInstallSwmSetToVolume {
     param(
         [Parameter(Mandatory)][string] $SetDir,
         [Parameter(Mandatory)][string] $VolumeRoot,
-        [scriptblock] $Log
+        [scriptblock] $Log,
+        [scriptblock] $Progress
     )
     $src = Join-Path $SetDir 'sources'
     if (-not (Test-Path -LiteralPath (Join-Path $src 'install.swm'))) {
@@ -813,8 +859,30 @@ function Copy-LwInstallSwmSetToVolume {
         Where-Object { $_.Name -match '^(?i)install(\d+)?\.(swm|wim|esd)$' } |
         Remove-Item -Force -ErrorAction Stop
     if ($Log) { & $Log ("Refreshing install image from $src") }
-    & robocopy.exe $src $destSources 'install*.swm' /R:2 /W:2 /NFL /NDL /NJH /NJS | Out-Null
-    if ($LASTEXITCODE -gt 7) { throw "robocopy failed (exit $LASTEXITCODE) copying install*.swm" }
+    if ($Progress) { & $Progress 5 }
+    $psSrcBytes = (Get-ChildItem -LiteralPath $src -File -ErrorAction SilentlyContinue |
+        Where-Object { $_.Name -match '^install(\d*)\.swm$' } |
+        Measure-Object -Property Length -Sum -ErrorAction SilentlyContinue).Sum
+    if (-not $psSrcBytes -or $psSrcBytes -le 0) { $psSrcBytes = 1 }
+    $psJob = Start-Job -ScriptBlock {
+        param($from, $to)
+        & robocopy.exe $from $to 'install*.swm' /R:2 /W:2 /NFL /NDL /NJH /NJS
+        $LASTEXITCODE
+    } -ArgumentList $src, $destSources
+    while ($psJob.State -eq 'Running') {
+        Start-Sleep -Seconds 1
+        try {
+            $dstBytes = (Get-ChildItem -LiteralPath $destSources -File -ErrorAction SilentlyContinue |
+                Where-Object { $_.Name -match '^install(\d*)\.swm$' } |
+                Measure-Object -Property Length -Sum -ErrorAction SilentlyContinue).Sum
+            if (-not $dstBytes) { $dstBytes = 0 }
+            $pct = [math]::Min(95, [int](100 * $dstBytes / $psSrcBytes))
+            if ($Progress) { & $Progress $pct }
+        } catch { }
+    }
+    $psRc = Receive-Job -Job $psJob | Select-Object -Last 1
+    Remove-Job -Job $psJob -Force
+    if ($psRc -gt 7) { throw "robocopy failed (exit $psRc) copying install*.swm" }
     if (-not (Test-Path -LiteralPath (Join-Path $destSources 'install.swm'))) {
         throw 'install.swm was not copied to the stick'
     }
@@ -822,4 +890,5 @@ function Copy-LwInstallSwmSetToVolume {
     if (Test-Path -LiteralPath $man) {
         Copy-Item -LiteralPath $man -Destination (Join-Path $destSources 'presplit-manifest.json') -Force
     }
+    if ($Progress) { & $Progress 100 }
 }

@@ -3,12 +3,23 @@
   Resolve ISO / PreSplit / WinPE-OCs roots for the deployment share.
 
 .DESCRIPTION
-  Functions only - safe to dot-source.   Prefers share-root folders:
+  Functions only - safe to dot-source.
+
+  Preferred HQ / SMB layout (Image Ready at share root):
+
+    <ShareRoot>\{Windows image build}\     (PreSplit / Image Ready packages)
+    <ShareRoot>\.old
+    <ShareRoot>\.requirements
+
+  Legacy share-root folders (still supported):
 
     <ShareRoot>\ISO
     <ShareRoot>\PreSplit
     <ShareRoot>\WinPE-OCs          (arch cabs live in AMD64\ and ARM64\)
     <ShareRoot>\Edge
+
+  Google Drive (HTTPS): Windows Images\Builds\{Windows image build}
+  (siblings .docs, Bitraser-ISOs, Builds). SMB has no Builds\ wrapper.
 
   HQ default ShareRoot is \\WIN-HQ5JDEACV3S\Images\FB Image Creation, so WinPE OCs are:
 
@@ -37,6 +48,63 @@
 
 function Get-LwHqShareRoot {
     return '\\WIN-HQ5JDEACV3S\Images\FB Image Creation'
+}
+
+function Get-LwShareIgnoredDirNames {
+    return @(
+        '.old', '.requirements', '.docs',
+        'Bitraser-ISOs', 'Bitraser',
+        'Builds', 'ISO', 'PreSplit',
+        'WinPE-OCs', 'WinPE-Drivers', 'WinPEUI', 'Edge', 'Remote'
+    )
+}
+
+function Test-LwShareDirNameIgnored {
+    param([string]$Name)
+    if ([string]::IsNullOrWhiteSpace($Name)) { return $true }
+    if ($Name -like '*.tmp-*') { return $true }
+    foreach ($n in @(Get-LwShareIgnoredDirNames)) {
+        if ($Name -ieq $n) { return $true }
+    }
+    if ($Name -match '^(?i)(AMD64|ARM64|Home|Pro)$') { return $true }
+    return $false
+}
+
+function Resolve-LwShareBuildContainer {
+    param([string]$ShareRoot)
+    if ([string]::IsNullOrWhiteSpace($ShareRoot)) { return '' }
+    if (-not (Test-LwSharePath -Path $ShareRoot -PathType Container)) { return '' }
+
+    $buildsDir = Join-Path $ShareRoot 'Builds'
+    if (Test-LwShareDir $buildsDir) { return $buildsDir }
+
+    if (Test-LwSharePath -Path (Join-Path $ShareRoot 'current.json')) { return $ShareRoot }
+    if (Test-LwSharePath -Path (Join-Path $ShareRoot 'version.json')) { return $ShareRoot }
+
+    $rootIso = Join-Path $ShareRoot 'ISO'
+    $rootPre = Join-Path $ShareRoot 'PreSplit'
+    if ((Test-LwShareDir $rootIso) -or (Test-LwShareDir $rootPre)) { return '' }
+
+    $hasCandidate = $false
+    try {
+        foreach ($d in @(Get-ChildItem -LiteralPath $ShareRoot -Directory -ErrorAction SilentlyContinue)) {
+            if (Test-LwShareDirNameIgnored $d.Name) { continue }
+            $hasCandidate = $true
+            break
+        }
+    } catch { }
+    if ($hasCandidate) { return $ShareRoot }
+    return ''
+}
+
+function Resolve-LwBitraserIsoRoot {
+    param([string]$ShareRoot = '')
+    $root = if (-not [string]::IsNullOrWhiteSpace($ShareRoot)) { $ShareRoot } else { Get-LwHqShareRoot }
+    foreach ($rel in @('Bitraser-ISOs', 'Bitraser', 'Remote\Staging\Bitraser')) {
+        $p = Join-Path $root $rel
+        if (Test-LwShareDir $p) { return $p }
+    }
+    return (Join-Path $root 'Bitraser-ISOs')
 }
 
 function Get-LwHqWpeOcRoot {
@@ -76,11 +144,13 @@ function Test-LwLooksLikeStagingRoot {
     param([string]$Path)
     if (-not (Test-LwShareRootIsFilesystem $Path)) { return $false }
     if (-not (Test-LwSharePath -Path $Path -PathType Container)) { return $false }
-    foreach ($n in @('ISO', 'PreSplit', 'WinPE-OCs', 'Edge')) {
+    foreach ($n in @('ISO', 'PreSplit', 'WinPE-OCs', 'Edge', 'Builds')) {
         if (Test-LwSharePath -Path (Join-Path $Path $n)) { return $true }
     }
-    # Flat Google Drive package root: current.json + set folders (no PreSplit\ wrapper).
+    # Flat Image Ready container: current.json + set folders (no PreSplit\ wrapper).
     if (Test-LwSharePath -Path (Join-Path $Path 'current.json')) { return $true }
+    if (Test-LwSharePath -Path (Join-Path $Path 'version.json')) { return $true }
+    if (-not [string]::IsNullOrWhiteSpace((Resolve-LwShareBuildContainer -ShareRoot $Path))) { return $true }
     return $false
 }
 
@@ -234,12 +304,25 @@ function Resolve-LwShareLayout {
         }
     }
 
-    # Google Drive shared folder: set packages + current.json at the root (no PreSplit\).
+    $buildContainer = Resolve-LwShareBuildContainer -ShareRoot $ShareRoot
+    if (-not [string]::IsNullOrWhiteSpace($buildContainer)) {
+        $layoutName = if ($buildContainer -ieq $ShareRoot) { 'share-builds-flat' } else { 'share-builds' }
+        return [pscustomobject]@{
+            Layout       = $layoutName
+            StagingRoot  = $ShareRoot
+            IsoRoot      = $(if (Test-LwShareDir $rootIso) { $rootIso } else { $buildContainer })
+            PreSplitRoot = $buildContainer
+            WpeOcRoot    = $wpeOcRoot
+            EdgeRoot     = $(if (Test-LwShareDir $rootEdge) { $rootEdge } else { '' })
+        }
+    }
+
+    # Image Ready packages + current.json at the root (no PreSplit\ wrapper).
     if ($flatPackageRoot) {
         return [pscustomobject]@{
             Layout       = 'drive-package-root'
             StagingRoot  = $ShareRoot
-            IsoRoot      = $(if (Test-LwShareDir $rootIso) { $rootIso } else { '' })
+            IsoRoot      = $(if (Test-LwShareDir $rootIso) { $rootIso } else { $ShareRoot })
             PreSplitRoot = $ShareRoot
             WpeOcRoot    = $wpeOcRoot
             EdgeRoot     = $(if (Test-LwShareDir $rootEdge) { $rootEdge } else { '' })

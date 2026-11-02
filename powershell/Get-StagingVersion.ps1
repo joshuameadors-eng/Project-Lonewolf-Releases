@@ -24,7 +24,7 @@
    "wimAvailable":true,"isoAvailable":true,
    "isoFile":"25h2_updates_6.18(amd64).ISO","buildMode":"wim"}
 
-  Share layout: share-root ISO / PreSplit / WinPE-OCs (or legacy Remote\Staging).
+  Share layout: FB Image Creation\{build} Image Ready (or Builds\{build} on Drive), legacy share-root ISO / PreSplit / WinPE-OCs, or Remote\Staging.
   HQ share does not host launcher exe or VERSION.json. Destage product version is
   this script's VERSION.json; packaged feeds use GitHub latest.json in main.js.
 #>

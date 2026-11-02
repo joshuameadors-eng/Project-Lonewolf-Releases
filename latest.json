@@ -1,6 +1,6 @@
 {
-    "launcherVersion":  "7.0.2",
-    "payloadVersion":  "7.0.2",
+    "launcherVersion":  "7.0.3",
+    "payloadVersion":  "7.0.3",
     "channel":  "release",
     "source":  "github-public-source",
     "latestReleaseUrl":  "https://github.com/joshuameadors-eng/Project-Lonewolf-Releases/releases/latest",
@@ -35,9 +35,20 @@
                  "winpeUiZipBase":  "https://raw.githubusercontent.com/joshuameadors-eng/Project-Lonewolf-Releases/main/bin",
                  "manifest":  "https://raw.githubusercontent.com/joshuameadors-eng/Project-Lonewolf-Releases/main/latest.json"
              },
-    "portableSha256":  "9601dc4b2eb6576069ca47e9125533918f0bb13bc51ebc1a21e6ae2face85b36",
-    "portableSize":  73228023,
+    "portableSha256":  "7fadd29452187f65564b4f6b829d1ec3540f4dd0fc57d9a790da157fde582bc2",
+    "portableSize":  73231223,
     "changelog":  [
+                      {
+                          "version":  "7.0.3",
+                          "date":  "2026-11-02",
+                          "changes":  [
+                                          "Official release 7.0.3 â€” follow-up to 7.0.2 (RELEASE 2â†’3). Launcher, payload, and product version are all 7.0.3.",
+                                          "Changed",
+                                          "Media layout â€” Google Drive Image Ready lives under Windows Images\\Builds\\{build}; HQ SMB uses flat Image Ready folders at FB Image Creation\\{build} (no Builds wrapper)",
+                                          "Share discovery â€” Bitraser-ISOs at share root or Drive Windows Images; staging scans skip .old, .requirements, and .docs",
+                                          "ISO, PreSplit, WinPE-OCs, and Edge â€” legacy share-root and Remote\\Staging trees remain supported when flat build folders are absent"
+                                      ]
+                      },
                       {
                           "version":  "7.0.2",
                           "date":  "2026-11-02",

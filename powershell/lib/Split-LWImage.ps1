@@ -401,7 +401,8 @@ function Get-LWIsoSearchDirs {
     $dirs.Add($IsoRoot)
     $dirs.Add((Join-Path $IsoRoot $ed))
     $dirs.Add($StagingRoot)
-    return @($dirs)
+    # PS 5.1: avoid `return @($genericList)` (can throw Argument types do not match).
+    return $dirs.ToArray()
 }
 
 function Find-LWWindowsIso {
@@ -429,6 +430,30 @@ function Find-LWWindowsIso {
                 [void]$hits.Add($f)
             }
         }
+    }
+    # Image Ready build folders: ISO may live at the root of each version-named set dir.
+    foreach ($container in @($IsoRoot, $StagingRoot)) {
+        if ([string]::IsNullOrWhiteSpace($container) -or -not (Test-Path -LiteralPath $container)) { continue }
+        try {
+            foreach ($sub in @(Get-ChildItem -LiteralPath $container -Directory -ErrorAction SilentlyContinue)) {
+                if (Get-Command -Name Test-LwShareDirNameIgnored -ErrorAction SilentlyContinue) {
+                    if (Test-LwShareDirNameIgnored $sub.Name) { continue }
+                } elseif ($sub.Name -match '^(?i)(AMD64|ARM64|Home|Pro|ISO|PreSplit|Builds|Bitraser-ISOs|\.old|\.requirements|\.docs)$') {
+                    continue
+                }
+                $files = @(Get-ChildItem -LiteralPath $sub.FullName -File -Filter '*.iso' -ErrorAction SilentlyContinue |
+                    Where-Object {
+                        $_.Name -like "*($arch)*.iso" -and
+                        (Test-LWIsoMatchesEdition -FullName $_.FullName -Edition $ed)
+                    })
+                foreach ($f in $files) {
+                    if (-not $seen.ContainsKey($f.FullName)) {
+                        $seen[$f.FullName] = $true
+                        [void]$hits.Add($f)
+                    }
+                }
+            }
+        } catch { }
     }
     if ($hits.Count -gt 0) {
         return ($hits | Sort-Object LastWriteTime -Descending | Select-Object -First 1)
@@ -498,7 +523,8 @@ function Get-LWPreSplitScanDirs {
     if ($ed -eq 'Pro') {
         $dirs.Add((Join-Path $PreSplitRoot $arch))
     }
-    return @($dirs)
+    # PS 5.1: avoid `return @($genericList)` (can throw Argument types do not match).
+    return $dirs.ToArray()
 }
 
 function Get-LWPreSplitCandidateDirs {
@@ -572,7 +598,11 @@ function Get-LWPreSplitCandidateDirs {
         foreach ($d in @(Get-ChildItem -LiteralPath $scanDir -Directory -ErrorAction SilentlyContinue |
                 Sort-Object LastWriteTime -Descending)) {
             if ($d.Name -like '*.tmp-*') { continue }
-            if ($d.Name -match '^(?i)(AMD64|ARM64|Home|Pro)$') { continue }
+            if (Get-Command -Name Test-LwShareDirNameIgnored -ErrorAction SilentlyContinue) {
+                if (Test-LwShareDirNameIgnored $d.Name) { continue }
+            } else {
+                if ($d.Name -match '^(?i)(AMD64|ARM64|Home|Pro)$') { continue }
+            }
             if (-not (Test-LWPreSplitFolderMatches -FolderName $d.Name -Arch $arch -Edition $ed -RequireArchInName:$isRoot)) { continue }
             [void]$pending.Add($d.FullName)
         }
@@ -587,7 +617,9 @@ function Get-LWPreSplitCandidateDirs {
             }
         }
     }
-    return @($out)
+    # PS 5.1: avoid `return @($genericList)` (can throw Argument types do not match).
+    if ($out.Count -eq 0) { return @() }
+    return $out.ToArray()
 }
 
 function Write-LWPreSplitCurrentMarkers {

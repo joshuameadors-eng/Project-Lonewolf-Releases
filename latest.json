@@ -1,6 +1,6 @@
 {
-    "launcherVersion":  "7.0.1",
-    "payloadVersion":  "7.0.1",
+    "launcherVersion":  "7.0.2",
+    "payloadVersion":  "7.0.2",
     "channel":  "release",
     "source":  "github-public-source",
     "latestReleaseUrl":  "https://github.com/joshuameadors-eng/Project-Lonewolf-Releases/releases/latest",
@@ -35,9 +35,20 @@
                  "winpeUiZipBase":  "https://raw.githubusercontent.com/joshuameadors-eng/Project-Lonewolf-Releases/main/bin",
                  "manifest":  "https://raw.githubusercontent.com/joshuameadors-eng/Project-Lonewolf-Releases/main/latest.json"
              },
-    "portableSha256":  "467d828c87d7d028833ba447be69b2844ffc0d0fcdd37c5df953b76ad30a3285",
-    "portableSize":  73227921,
+    "portableSha256":  "9601dc4b2eb6576069ca47e9125533918f0bb13bc51ebc1a21e6ae2face85b36",
+    "portableSize":  73228023,
     "changelog":  [
+                      {
+                          "version":  "7.0.2",
+                          "date":  "2026-11-02",
+                          "changes":  [
+                                          "Official release 7.0.2 â€” follow-up to 7.0.1 (RELEASE 1â†’2). Launcher, payload, and product version are all 7.0.2.",
+                                          "Changed",
+                                          "Share layout â€” UNC-safe Test-Path when the HQ share is offline or unreachable so staging detection does not throw",
+                                          "USB Builder â€” Image in RAM toggle on packaged production for share-ISO workflows; stamps sticks and WinPE may stage install*.swm to RAM when memory allows",
+                                          "Quick Install â€” Builder offers Quick Update when scripts are newer than the stick (overlay), same as Updates sticks"
+                                      ]
+                      },
                       {
                           "version":  "7.0.1",
                           "date":  "2026-11-02",

@@ -162,8 +162,7 @@ param(
     # AND --destage-updates-finished / LONEWOLF_DESTAGE_UPDATES_FINISHED). Packaged Destage
     # must never pass this. Stamps destageSkipWu on slim LW_VERSION.json (destage only).
     [switch] $DestageSkipWu,
-    # npm start destage only (main.js passes -ImageInRam when !app.isPackaged and Builder
-    # toggle on). Stamps imageInRam on slim LW_VERSION.json (destage only).
+    # Builder toggle (npm start or packaged). Stamps imageInRam on slim LW_VERSION.json.
     [switch] $ImageInRam,
     [ValidateSet('local', 'share', 'googleDrive', '')]
     [string] $MediaSource = '',
@@ -2058,7 +2057,7 @@ $workerDiskBlock = {
         [string] $EdgeToolsDir,
         # Destage skip-WU (npm start:updatesfinished). Only honored when $DevBuild is true.
         [bool]   $DestageSkipWu,
-        # Destage image-in-RAM test stick. Only stamped when $DevBuild and $ImageInRam are true.
+        # WinPE DISM apply may stage install image to RAM when LW_VERSION imageInRam is set.
         [bool]   $ImageInRam,
         # ARM64 driver folder. Empty on AMD64 and on overlay-only.
         [string] $Arm64UsbDriverDir,
@@ -3999,8 +3998,8 @@ $workerDiskBlock = {
                     $stamp.destage = $true
                     $stamp.channel = 'destage'
                     if ($DestageSkipWu) { $stamp.destageSkipWu = $true }
-                    if ($ImageInRam) { $stamp.imageInRam = $true }
                 }
+                if ($ImageInRam) { $stamp.imageInRam = $true }
                 $stamp.builtAt = (Get-Date -Format 'o')
                 if (Test-Path -LiteralPath $stampPath) {
                     Remove-Item -LiteralPath $stampPath -Force -ErrorAction SilentlyContinue
@@ -5052,7 +5051,7 @@ try {
                 $winEdition,
                 $edgeToolsDir,
                 ([bool]($DevBuild -and $DestageSkipWu)),
-                ([bool]($DevBuild -and $ImageInRam)),
+                ([bool]$ImageInRam),
                 $arm64UsbDriverDir,
                 $Arm64DriverLibPath,
                 $arm64InstallImageDir,

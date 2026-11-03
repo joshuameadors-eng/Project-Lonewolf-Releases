@@ -142,7 +142,7 @@ if ($LaunchHost -and -not $Library) {
 # Windows PowerShell 5.1 (ErrorActionPreference is optimized).
 Set-Variable -Name ErrorActionPreference -Value SilentlyContinue -Scope Script
 
-$FbImVersion = '2.0.39'
+$FbImVersion = '2.0.43'
 
 function Initialize-FbImWpf {
     # Must run BEFORE Show-FbImWindow is invoked. Parameter binding resolves
@@ -376,6 +376,39 @@ function Clear-FbImStaleHwRunningMarker {
             }
         }
     } catch {}
+}
+
+function Get-FbImCheckedStatusLines {
+    $lines = New-Object System.Collections.ArrayList
+    $add = {
+        param([string]$Text, [string]$Level)
+        if ([string]::IsNullOrWhiteSpace($Text)) { return }
+        [void]$lines.Add([pscustomobject]@{ Text = $Text; Level = $Level })
+    }
+    $labels = @{
+        sound      = @{ Pass = 'Sound is working'; Fail = 'Sound needs attention' }
+        camera     = @{ Pass = 'Camera is working'; Fail = 'Camera needs attention' }
+        wifi       = @{ Pass = 'Wi-Fi is working'; Fail = 'Wi-Fi needs attention' }
+        pnp        = @{ Pass = 'Devices are working'; Fail = 'A device needs attention' }
+        secureboot = @{ Pass = 'Secure Boot is on'; Fail = 'Secure Boot is off' }
+    }
+    $hw = $null
+    try { $hw = Get-FbImHwResultObject } catch { $hw = $null }
+    if ($hw -and $hw.Checks) {
+        foreach ($c in @($hw.Checks)) {
+            if (-not $c) { continue }
+            $name = ''
+            try { $name = [string]$c.Name } catch { $name = '' }
+            $name = $name.ToLower()
+            if (-not $labels.ContainsKey($name)) { continue }
+            $passed = $false
+            try { $passed = [bool]$c.Passed } catch {}
+            $pair = $labels[$name]
+            if ($passed) { & $add $pair.Pass 'pass' }
+            else { & $add $pair.Fail 'fail' }
+        }
+    }
+    return @($lines.ToArray())
 }
 
 function Get-FbImHwResultObject {
@@ -762,13 +795,13 @@ function Get-FbImSecurityShipState {
         }
     } catch {}
 
-    if ($result.DefenderOff) { [void]$result.Reasons.Add('Defender real-time is off') }
-    if ($result.DefenderFlagBad) { [void]$result.Reasons.Add('Defender restore did not finish') }
-    if ($result.DefenderQueryFail) { [void]$result.Reasons.Add('Defender status could not be read') }
-    if ($result.ExclusionsLeftover) { [void]$result.Reasons.Add('Defender exclusions still present') }
-    if ($result.MdmKeysLeftover) { [void]$result.Reasons.Add('MDM enrollment suppress still applied') }
-    if ($result.DmEnrollmentBad) { [void]$result.Reasons.Add('MDM enrollment service is disabled') }
-    if ($result.WuAuLeftover) { [void]$result.Reasons.Add('Windows Update auto-update suppress still applied') }
+    if ($result.DefenderOff) { [void]$result.Reasons.Add('Virus protection is turned off') }
+    if ($result.DefenderFlagBad) { [void]$result.Reasons.Add('Virus protection was not turned back on') }
+    if ($result.DefenderQueryFail) { [void]$result.Reasons.Add('Could not check virus protection') }
+    if ($result.ExclusionsLeftover) { [void]$result.Reasons.Add('Extra virus-protection exceptions are still on') }
+    if ($result.MdmKeysLeftover) { [void]$result.Reasons.Add('Device management block is still on') }
+    if ($result.DmEnrollmentBad) { [void]$result.Reasons.Add('Device management is turned off') }
+    if ($result.WuAuLeftover) { [void]$result.Reasons.Add('Windows Update is still blocked') }
     return [pscustomobject]$result
 }
 
@@ -851,27 +884,27 @@ function Get-FbImStatusKind {
     if ($ScriptsPresent -or $IncompleteUpdates -or $Audit -or $SecurityLeftover) {
         return [pscustomobject]@{
             ColorKind = 'Red'
-            Headline  = 'NOT READY'
+            Headline  = 'Not ready'
             Ready     = $false
         }
     }
     if ($HardwareFailed -or $UpdatesFailed -or $HardwareNotPassed) {
         return [pscustomobject]@{
             ColorKind = 'Orange'
-            Headline  = 'CHECK'
+            Headline  = 'Needs attention'
             Ready     = $false
         }
     }
     if ($NeedsManualSeal) {
         return [pscustomobject]@{
             ColorKind = 'Purple'
-            Headline  = 'MANUAL SEAL'
+            Headline  = 'Sealed'
             Ready     = $false
         }
     }
     return [pscustomobject]@{
         ColorKind = 'Green'
-        Headline  = 'READY'
+        Headline  = 'Ready'
         Ready     = $true
     }
 }
@@ -1026,7 +1059,7 @@ function Get-FbImDeviceStatus {
     if (-not $audit) {
         if (-not $sec) {
             $securityLeftover = $true
-            $secReasons = @('Security status could not be read')
+            $secReasons = @('Could not check security')
         } else {
             $securityLeftover = [bool](
                 $sec.DefenderOff -or $sec.DefenderFlagBad -or $sec.DefenderQueryFail -or
@@ -1051,19 +1084,21 @@ function Get-FbImDeviceStatus {
     }
 
     if (-not $admin) {
-        & $addIssue 'Not running as Administrator' 'fail'
+        & $addIssue 'Open this tool as Administrator' 'fail'
     }
     if ($sysFail) {
-        & $addIssue 'Sysprep failed on this device' 'fail'
+        & $addIssue 'Windows setup did not finish' 'fail'
     }
     if ($gateFail) {
-        & $addIssue 'Hardware check failed' 'fail'
+        & $addIssue 'Hardware check did not pass' 'fail'
     } elseif ((-not $hwPassed)) {
-        & $addIssue 'Hardware check not recorded (manual seal still available)' 'warn'
+        & $addIssue 'Hardware check has not been done yet' 'warn'
     }
     if ($fwGate) {
         foreach ($fr in @($fwGate.Reasons)) {
-            if (-not [string]::IsNullOrWhiteSpace([string]$fr)) { & $addIssue ([string]$fr) 'fail' }
+            if ([string]::IsNullOrWhiteSpace([string]$fr)) { continue }
+            if ([string]$fr -match '(?i)^Secure Boot') { continue }
+            & $addIssue ([string]$fr) 'fail'
         }
     }
     if ((-not $audit) -and $secReasons.Count -gt 0) {
@@ -1072,44 +1107,44 @@ function Get-FbImDeviceStatus {
         }
     }
     if ($actuallyInstalling) {
-        & $addIssue 'Updates are still running' 'fail'
+        & $addIssue 'Windows updates are still running' 'fail'
     } elseif ($stuckCompleteNoGate) {
-        & $addIssue 'Updates finished but hardware check did not start' 'fail'
+        & $addIssue 'Updates are done. The hardware check has not started.' 'fail'
     } elseif ($loopProc -and $operatorGate -and (-not $hwDone)) {
-        & $addIssue 'Hardware check is waiting on the operator step' 'warn'
+        & $addIssue 'Waiting for you to finish the hardware check' 'warn'
     } elseif ($loopProc -and $wuPhaseIncomplete) {
-        & $addIssue 'Updates are still running' 'fail'
+        & $addIssue 'Windows updates are still running' 'fail'
     }
     if ($techStopped -and (-not $stuckCompleteNoGate) -and (-not $updatesFinished)) {
-        & $addIssue 'Updates were stopped (incomplete)' 'fail'
+        & $addIssue 'Updates were stopped before they finished' 'fail'
     }
     if ($wuFailed -and (-not $sysFail)) {
-        & $addIssue 'Updates failed' 'fail'
+        & $addIssue 'Windows updates did not finish' 'fail'
     }
     if ($wuPhaseIncomplete -and (-not $techStopped) -and (-not $loopProc) -and (-not $stuckCompleteNoGate) -and (-not $actuallyInstalling)) {
-        & $addIssue 'Updates are not finished' 'fail'
+        & $addIssue 'Windows updates are not finished' 'fail'
     }
     if ($scriptsPresent -and (-not $sealed)) {
-        & $addIssue 'FirstBase scripts are still on the device' 'fail'
+        & $addIssue 'Setup files are still on this PC' 'fail'
     }
     if ($audit) {
-        & $addIssue 'Device is in Audit mode' 'fail'
+        & $addIssue 'This PC is still in setup' 'fail'
     }
     if ($sealed) {
-        if (-not $pipeline) { & $addIssue 'Seal is incomplete (pipeline mark missing)' 'fail' }
-        if ($tasks.Count -gt 0) { & $addIssue 'Leftover scheduled tasks still registered' 'warn' }
-        if ($autostart.Count -gt 0) { & $addIssue 'Leftover startup entries still registered' 'warn' }
-        if ($residue.Count -gt 0) { & $addIssue 'Leftover FirstBase files still on the device' 'fail' }
-        if ($setupPresent) { & $addIssue 'Setup leftovers still present' 'fail' }
+        if (-not $pipeline) { & $addIssue 'Seal did not finish' 'fail' }
+        if ($tasks.Count -gt 0) { & $addIssue 'Old setup tasks are still on this PC' 'warn' }
+        if ($autostart.Count -gt 0) { & $addIssue 'Old startup items are still on this PC' 'warn' }
+        if ($residue.Count -gt 0) { & $addIssue 'Setup files are still on this PC' 'fail' }
+        if ($setupPresent) { & $addIssue 'Setup leftovers are still on this PC' 'fail' }
     }
     if ($suppress -and -not $sealed) {
-        & $addIssue 'Finalize did not finish' 'warn'
+        & $addIssue 'The finish step did not complete' 'warn'
     }
     if ($cbsUnsafe) {
-        & $addIssue 'Windows is still committing boot files' 'fail'
+        & $addIssue 'Windows is still finishing an update' 'fail'
     }
     if ($manualSealed -and ([string]$kind.ColorKind -eq 'Purple')) {
-        & $addIssue 'Technician completed a manual seal' 'warn'
+        & $addIssue 'A technician sealed this PC' 'warn'
     }
 
     $hasFail = $false
@@ -1162,12 +1197,52 @@ function Get-FbImDeviceStatus {
     elseif ($sealed) { [void]$facts.Add('Seal: finished') }
     else { [void]$facts.Add('Seal: not finished') }
 
+    $checks = New-Object System.Collections.ArrayList
+    $addCheck = {
+        param([string]$Text, [string]$Level)
+        if ([string]::IsNullOrWhiteSpace($Text)) { return }
+        [void]$checks.Add([pscustomobject]@{ Text = $Text; Level = $Level })
+    }
+    $hwLines = @(Get-FbImCheckedStatusLines)
+    foreach ($line in $hwLines) {
+        if ($line) { [void]$checks.Add($line) }
+    }
+    $haveHwItems = @($hwLines | Where-Object { $_ }).Count -gt 0
+    if (-not $haveHwItems -and $fwGate) {
+        if ([bool]$fwGate.SecureBootOk) { & $addCheck 'Secure Boot is on' 'pass' }
+        else { & $addCheck 'Secure Boot is off' 'fail' }
+    }
+    if ($sec -and -not $audit) {
+        if ($sec.DefenderQueryFail) { & $addCheck 'Could not check virus protection' 'fail' }
+        elseif ($sec.DefenderOff -or $sec.DefenderFlagBad) { & $addCheck 'Virus protection is off' 'fail' }
+        else { & $addCheck 'Virus protection is on' 'pass' }
+        if ($sec.ExclusionsLeftover) { & $addCheck 'Extra virus-protection exceptions are still on' 'fail' }
+        else { & $addCheck 'No extra virus-protection exceptions' 'pass' }
+        if ($sec.MdmKeysLeftover -or $sec.DmEnrollmentBad) { & $addCheck 'Device management is still blocked' 'fail' }
+        else { & $addCheck 'Device management is clear' 'pass' }
+        if ($sec.WuAuLeftover) { & $addCheck 'Windows Update is still blocked' 'fail' }
+        else { & $addCheck 'Windows Update is allowed' 'pass' }
+    }
+    if ($updatesFinished -and -not $wuFailed -and -not $techStopped) {
+        & $addCheck 'Updates are finished' 'pass'
+    } elseif ($actuallyInstalling -or ($loopProc -and $wuPhaseIncomplete)) {
+        & $addCheck 'Updates are still running' 'warn'
+    } elseif ($wuFailed -or $techStopped -or $wuPhaseIncomplete) {
+        & $addCheck 'Updates are not finished' 'fail'
+    }
+    if ($manualSealed -or $sealed) {
+        & $addCheck 'This PC is sealed' 'pass'
+    } else {
+        & $addCheck 'This PC is not sealed yet' 'warn'
+    }
+
     $factArr = @($facts.ToArray())
     return [pscustomobject]@{
         Ready      = [bool]$kind.Ready
         Headline   = [string]$kind.Headline
         ColorKind  = [string]$kind.ColorKind
         Issues     = @($issues.ToArray())
+        Checks     = @($checks.ToArray())
         Reasons    = @($issues | ForEach-Object { $_.Text })
         Details    = $factArr
         Facts      = $factArr
@@ -1771,6 +1846,28 @@ function Invoke-FbImImmediateRestart {
 
 function Invoke-FbImImmediateFirmware {
     return Invoke-FbImImmediatePower -Kind 'Firmware'
+}
+
+function Start-FbImOpenWindowsUpdate {
+    $uri = 'ms-settings:windowsupdate'
+    $cmdExe = Join-Path $env:SystemRoot 'System32\cmd.exe'
+    if (-not (Test-Path -LiteralPath $cmdExe)) { $cmdExe = 'cmd.exe' }
+    $explorerExe = Join-Path $env:SystemRoot 'explorer.exe'
+    try {
+        Start-Process -FilePath $cmdExe -ArgumentList @('/c', 'start', '""', $uri) -WindowStyle Hidden -ErrorAction Stop | Out-Null
+        return $true
+    } catch {}
+    if (Test-Path -LiteralPath $explorerExe) {
+        try {
+            Start-Process -FilePath $explorerExe -ArgumentList $uri -WindowStyle Hidden -ErrorAction Stop | Out-Null
+            return $true
+        } catch {}
+    }
+    try {
+        Start-Process -FilePath $uri -ErrorAction Stop | Out-Null
+        return $true
+    } catch {}
+    return $false
 }
 
 function Write-FbImManualSealMarker {
@@ -2738,19 +2835,10 @@ function Show-FbImWindow {
         Background="#FF02040A"
         FontFamily="Segoe UI"
         ResizeMode="CanResize">
-  <!-- ScrollViewer is the embed root. Nested Viewbox plus a fixed 640px canvas
-       clipped notes off the splash DesignCanvas with no wheel target.
-       Fill the host; scroll only if details overflow. -->
-  <ScrollViewer Name="FbImScroller"
-                VerticalScrollBarVisibility="Auto"
-                HorizontalScrollBarVisibility="Disabled"
-                CanContentScroll="False"
-                PanningMode="VerticalOnly"
-                HorizontalAlignment="Stretch"
-                VerticalAlignment="Stretch"
-                Background="#FF02040A"
-                Focusable="True">
-  <Grid Name="FbImRoot" Margin="14,10,14,10" MinWidth="560">
+  <!-- Viewbox scales the layout with the window or the splash host. -->
+  <Grid Name="FbImScroller" Background="#FF02040A">
+  <Viewbox Stretch="Uniform" StretchDirection="Both">
+  <Grid Name="FbImRoot" Width="1100" Height="680" Margin="16">
     <Grid.Resources>
     <Style TargetType="Button" x:Key="PrimaryBtn">
       <Setter Property="Background" Value="#FF0A1B33"/>
@@ -2821,20 +2909,15 @@ function Show-FbImWindow {
       </StackPanel>
     </DockPanel>
 
-    <!-- Status | actions on one row; notes take leftover height (on-screen in splash). -->
+    <!-- Status and actions side by side. Logs replaces the actions column. -->
     <Grid Name="MainWorkArea" Grid.Row="1">
-      <Grid.RowDefinitions>
-        <RowDefinition Height="Auto"/>
-        <RowDefinition Height="*" MinHeight="132"/>
-      </Grid.RowDefinitions>
-        <Grid.ColumnDefinitions>
-        <ColumnDefinition Width="340"/>
-          <ColumnDefinition Width="*"/>
-        </Grid.ColumnDefinitions>
+      <Grid.ColumnDefinitions>
+        <ColumnDefinition Width="*"/>
+        <ColumnDefinition Width="*"/>
+      </Grid.ColumnDefinitions>
 
-    <Border Grid.Row="0" Grid.Column="0" Name="StatusHero" CornerRadius="8" Padding="14,12"
-            Margin="0,0,10,8" Background="#FF071325" BorderBrush="#FF123154" BorderThickness="1"
-            VerticalAlignment="Stretch">
+    <Border Grid.Column="0" Name="StatusHero" CornerRadius="8" Padding="14,12"
+            Margin="0,0,10,0" Background="#FF071325" BorderBrush="#FF123154" BorderThickness="1">
       <Grid>
         <Grid.RowDefinitions>
           <RowDefinition Height="Auto"/>
@@ -2846,10 +2929,11 @@ function Show-FbImWindow {
                    DockPanel.Dock="Left" VerticalAlignment="Center" Margin="0,0,8,0"/>
           <Button Name="BtnRefresh" DockPanel.Dock="Right" Content="Check"
                   Style="{StaticResource QuietBtn}" Padding="8,4" FontSize="11" MinWidth="64"/>
-          <TextBlock Name="StatusLabel" Text="Device" FontSize="12" Foreground="#FF6B8CB0"
+          <TextBlock Name="StatusLabel" Text="Status" FontSize="12" Foreground="#FF6B8CB0"
                      FontWeight="SemiBold" VerticalAlignment="Center"/>
         </DockPanel>
-        <StackPanel Grid.Row="1">
+        <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+        <StackPanel>
           <StackPanel Orientation="Horizontal" Margin="0,0,0,10">
             <Border Name="StatusSealChipBorder" Padding="10,3" CornerRadius="4" HorizontalAlignment="Left"
                     Background="#FF1A0A0A" BorderBrush="#FFC62828" BorderThickness="1" Margin="0,0,8,0">
@@ -2861,106 +2945,107 @@ function Show-FbImWindow {
               <TextBlock Name="StatusElapsedChip" Text="ELAPSED --:--:--" FontSize="12" FontWeight="Bold"
                          Foreground="#FF81D4FA"/>
             </Border>
-        </StackPanel>
-          <TextBlock Name="StatusHeadline" Text="..." FontSize="36" FontWeight="Bold"
+          </StackPanel>
+          <TextBlock Name="StatusHeadline" Text="..." FontSize="32" FontWeight="Bold"
                      Foreground="#FFB0C4DE" TextWrapping="Wrap"/>
-          <TextBlock Name="StatusIdentity" Text="" FontSize="12" Foreground="#FF8FB4D9" Margin="0,6,0,8"
-                     TextWrapping="Wrap"/>
-          <TextBlock Name="ActionMessage" Text="" FontSize="13" TextWrapping="Wrap" Margin="0,0,0,8"
+          <TextBlock Name="ActionMessage" Text="" FontSize="13" TextWrapping="Wrap" Margin="0,8,0,8"
                      Foreground="#FF22D3EE"/>
           <StackPanel Name="StatusIssues" Margin="0,4,0,0"/>
         </StackPanel>
+        </ScrollViewer>
       </Grid>
     </Border>
 
-    <Border Grid.Row="0" Grid.Column="1" Name="ActionsPanel" CornerRadius="8" Padding="10,10"
-            Margin="0,0,0,8" Background="#FF071325" BorderBrush="#FF123154" BorderThickness="1">
-      <Grid>
-        <Grid.RowDefinitions>
-          <RowDefinition Height="Auto"/>
-          <RowDefinition Height="Auto"/>
-        </Grid.RowDefinitions>
-        <StackPanel Grid.Row="0">
-          <TextBlock Text="Actions" FontSize="11" Foreground="#FF6B8CB0"
-                     FontWeight="SemiBold" Margin="0,0,0,6"/>
+    <Grid Grid.Column="1">
+    <Border Name="ActionsPanel" CornerRadius="8" Padding="14,12"
+            Background="#FF071325" BorderBrush="#FF123154" BorderThickness="1">
+      <StackPanel>
           <TextBlock Name="DestageSkipWuHint"
-                     Text="This destage skipped Windows Update and auto-passed hardware probes. Start Hardware Checks runs the real Wi-Fi, sound, and camera probes. Pass hardware is marker-only and does not re-arm security."
-                     FontSize="11" Foreground="#FF22D3EE" TextWrapping="Wrap" Margin="0,0,0,8"
+                     Text="Updates were skipped on this test stick. Start Hardware Checks to test Wi-Fi, sound, and camera."
+                     FontSize="12" Foreground="#FF22D3EE" TextWrapping="Wrap" Margin="0,0,0,10"
                      Visibility="$skipWuHintVisibility"/>
-        </StackPanel>
-        <UniformGrid Grid.Row="1" Name="ActionsGrid" Rows="2" Columns="2" Margin="0,0,0,0">
-          <StackPanel Margin="0,0,6,6">
-          <Button Name="BtnRestart" Content="Restart updates" Style="{StaticResource PrimaryBtn}"
-                    HorizontalAlignment="Stretch" MinHeight="34"/>
+          <TextBlock Text="Updates" FontSize="11" Foreground="#FF6B8CB0"
+                     FontWeight="SemiBold" Margin="0,0,0,6"/>
+          <WrapPanel Margin="0,0,0,4">
+            <Button Name="BtnRestart" Content="Restart updates" Style="{StaticResource PrimaryBtn}"
+                    MinHeight="34" MinWidth="140" Margin="0,0,8,8"/>
             <Button Name="BtnStopUpdates" Content="Stop updates" Style="{StaticResource PrimaryBtn}"
-                    HorizontalAlignment="Stretch" MinHeight="34" Margin="0,6,0,0"
+                    MinHeight="34" MinWidth="140" Margin="0,0,8,8"
                     BorderBrush="#FFEF5350" Visibility="$stopVisibility" IsEnabled="False"/>
-          </StackPanel>
-          <StackPanel Margin="6,0,0,6">
-          <Button Name="BtnCollect" Content="Collect logs" Style="{StaticResource PrimaryBtn}"
-                    HorizontalAlignment="Stretch" MinHeight="34"/>
-            <Button Name="BtnChooseDumpFolder" Content="Choose export folder" Style="{StaticResource QuietBtn}"
-                    HorizontalAlignment="Stretch" MinHeight="34" Margin="0,6,0,0"/>
-          </StackPanel>
-          <StackPanel Margin="0,6,6,0">
-            <Button Name="BtnBios" Content="BIOS" Style="{StaticResource PrimaryBtn}"
-                    HorizontalAlignment="Stretch" MinHeight="34" Visibility="Collapsed"/>
-            <Button Name="BtnPowerRestart" Content="Restart" Style="{StaticResource PrimaryBtn}"
-                    HorizontalAlignment="Stretch" MinHeight="34" Margin="0,6,0,0"
-                    Visibility="Collapsed"/>
-            <Button Name="BtnShutdown" Content="Shutdown" Style="{StaticResource PrimaryBtn}"
-                    HorizontalAlignment="Stretch" MinHeight="34" Margin="0,6,0,0"
-                    BorderBrush="#FFEF5350" Visibility="Collapsed"/>
-          </StackPanel>
-          <StackPanel Margin="6,6,0,0">
+            <Button Name="BtnOpenSettings" Content="Settings" Style="{StaticResource QuietBtn}"
+                    MinHeight="34" MinWidth="140" Margin="0,0,8,8"
+                    ToolTip="Open Windows Update settings."/>
+          </WrapPanel>
+          <TextBlock Text="Hardware" FontSize="11" Foreground="#FF6B8CB0"
+                     FontWeight="SemiBold" Margin="0,4,0,6"/>
+          <WrapPanel Margin="0,0,0,4">
             <Button Name="BtnStartHardwareGate" Content="Start Hardware Checks"
-                    Style="{StaticResource PrimaryBtn}" HorizontalAlignment="Stretch" MinHeight="34"
+                    Style="{StaticResource PrimaryBtn}" MinHeight="34" MinWidth="140" Margin="0,0,8,8"
                     BorderBrush="#FFFFB74D" Visibility="Collapsed" IsEnabled="False"/>
             <Button Name="BtnPassHardware" Content="Pass hardware check" Style="{StaticResource PrimaryBtn}"
-                    HorizontalAlignment="Stretch" MinHeight="34" Margin="0,6,0,0"/>
-          <Button Name="BtnSeal" Content="Manual seal" Style="{StaticResource PrimaryBtn}"
-                    HorizontalAlignment="Stretch" MinHeight="34" Margin="0,6,0,0"
-                  BorderBrush="#FFEF5350"
-                  ToolTip="Stop updates if running, scrub FirstBase leftovers, sysprep /oobe to customer OOBE. Available during updates in Audit or destage."/>
-        </StackPanel>
-        </UniformGrid>
-      </Grid>
+                    MinHeight="34" MinWidth="140" Margin="0,0,8,8"/>
+            <Button Name="BtnSeal" Content="Manual seal" Style="{StaticResource PrimaryBtn}"
+                    MinHeight="34" MinWidth="140" Margin="0,0,8,8"
+                    BorderBrush="#FFEF5350"
+                    ToolTip="Stop updates if running, remove setup files, and return this PC to the customer setup screens."/>
+          </WrapPanel>
+          <StackPanel Name="PowerSection" Visibility="Collapsed">
+            <TextBlock Text="Power" FontSize="11" Foreground="#FF6B8CB0"
+                       FontWeight="SemiBold" Margin="0,4,0,6"/>
+            <WrapPanel>
+              <Button Name="BtnPowerRestart" Content="Restart" Style="{StaticResource PrimaryBtn}"
+                      MinHeight="34" MinWidth="140" Margin="0,0,8,8"/>
+              <Button Name="BtnShutdown" Content="Shutdown" Style="{StaticResource PrimaryBtn}"
+                      MinHeight="34" MinWidth="140" Margin="0,0,8,8"
+                      BorderBrush="#FFEF5350"/>
+              <Button Name="BtnBios" Content="BIOS" Style="{StaticResource PrimaryBtn}"
+                      MinHeight="34" MinWidth="140" Margin="0,0,8,8"/>
+            </WrapPanel>
+          </StackPanel>
+          <TextBlock Text="Logs" FontSize="11" Foreground="#FF6B8CB0"
+                     FontWeight="SemiBold" Margin="0,8,0,6"/>
+          <Button Name="BtnOpenLogs" Content="Open logs" Style="{StaticResource PrimaryBtn}"
+                  HorizontalAlignment="Left" MinHeight="34" MinWidth="140" Margin="0,0,8,0"/>
+      </StackPanel>
       </Border>
 
-    <Border Grid.Row="1" Grid.Column="0" Grid.ColumnSpan="2" Name="NotesPanel" CornerRadius="8"
-            Padding="12,10" Background="#FF071325" BorderBrush="#FF22D3EE" BorderThickness="1"
-            Visibility="Collapsed" MinHeight="132">
-        <Grid>
-          <Grid.RowDefinitions>
-            <RowDefinition Height="Auto"/>
-            <RowDefinition Height="Auto"/>
-          <RowDefinition Height="*" MinHeight="88"/>
-            <RowDefinition Height="Auto"/>
-          </Grid.RowDefinitions>
-        <StackPanel Grid.Row="0" Name="CollectBanner" Margin="0,0,0,8" Visibility="Collapsed">
+    <Border Name="NotesPanel" CornerRadius="8" Padding="14,12"
+            Background="#FF071325" BorderBrush="#FF123154" BorderThickness="1"
+            Visibility="Collapsed">
+      <DockPanel>
+        <Button Name="BtnLogsBack" DockPanel.Dock="Top" Content="Back" HorizontalAlignment="Left"
+                Style="{StaticResource QuietBtn}" Margin="0,0,0,10" Padding="12,6"/>
+        <WrapPanel DockPanel.Dock="Top" Margin="0,0,0,8">
+          <Button Name="BtnCollect" Content="Collect logs" Style="{StaticResource PrimaryBtn}"
+                  MinHeight="34" MinWidth="140" Margin="0,0,8,8"/>
+          <Button Name="BtnChooseDumpFolder" Content="Choose export folder" Style="{StaticResource QuietBtn}"
+                  MinHeight="34" MinWidth="140" Margin="0,0,8,8"/>
+          <Button Name="BtnOpenFolder" Content="Open folder" Style="{StaticResource QuietBtn}"
+                  MinHeight="34" MinWidth="140" Margin="0,0,8,8" Visibility="Collapsed"/>
+        </WrapPanel>
+        <StackPanel DockPanel.Dock="Top" Name="CollectBanner" Margin="0,0,0,8" Visibility="Collapsed">
           <TextBlock Text="Collecting logs" FontSize="13" FontWeight="SemiBold" Foreground="#FF22D3EE" Margin="0,0,0,6"/>
           <ProgressBar Name="CollectProgress" Height="8" Margin="0,0,0,6"
                        IsIndeterminate="False" Minimum="0" Maximum="100" Value="0"
                        Background="#FF0A1B33" Foreground="#FF22D3EE" BorderThickness="0"/>
-          <TextBlock Name="CollectStatus" Text="Gathering logs... You can type notes below."
+          <TextBlock Name="CollectStatus" Text="Gathering logs. You can type notes below."
                      FontSize="12" Foreground="#FF6B8CB0" TextWrapping="Wrap"/>
         </StackPanel>
-        <TextBlock Grid.Row="1" Text="What went wrong?" FontSize="13" FontWeight="SemiBold"
+        <DockPanel DockPanel.Dock="Bottom" Margin="0,8,0,0">
+          <Button Name="BtnSaveNotes" DockPanel.Dock="Right" Content="Save notes"
+                  Style="{StaticResource PrimaryBtn}" Margin="12,0,0,0"/>
+          <TextBlock Name="LogsSavedConfirm" Text="" FontSize="13" FontWeight="SemiBold"
+                     Foreground="#FF66BB6A" TextWrapping="Wrap" VerticalAlignment="Center"/>
+        </DockPanel>
+        <TextBlock DockPanel.Dock="Top" Text="What went wrong?" FontSize="13" FontWeight="SemiBold"
                    Foreground="#FFE8F4FF" Margin="0,0,0,6"/>
-        <TextBox Grid.Row="2" Name="NotesBox" AcceptsReturn="True" TextWrapping="Wrap"
-                   VerticalScrollBarVisibility="Auto" FontSize="14"
-                   Background="#FF030609" Foreground="#FFE8F4FF" BorderBrush="#FF123154"
-                 BorderThickness="1" Padding="8" CaretBrush="#FF22D3EE" MinHeight="88"/>
-        <DockPanel Grid.Row="3" Margin="0,8,0,0">
-            <Button Name="BtnSaveNotes" DockPanel.Dock="Right" Content="Save notes"
-                    Style="{StaticResource QuietBtn}" Margin="12,0,0,0" Visibility="Collapsed"/>
-            <Button Name="BtnOpenFolder" DockPanel.Dock="Right" Content="Open folder"
-                    Style="{StaticResource QuietBtn}" Margin="12,0,0,0" Visibility="Collapsed"/>
-          <TextBlock Text="Notes save into FirstBase-Issue.md while collection runs."
-                     FontSize="11" Foreground="#FF6B8CB0" TextWrapping="Wrap" VerticalAlignment="Center"/>
-          </DockPanel>
-        </Grid>
-      </Border>
+        <TextBox Name="NotesBox" AcceptsReturn="True" TextWrapping="Wrap"
+                 VerticalScrollBarVisibility="Auto" FontSize="14"
+                 Background="#FF030609" Foreground="#FFE8F4FF" BorderBrush="#FF123154"
+                 BorderThickness="1" Padding="8" CaretBrush="#FF22D3EE"/>
+      </DockPanel>
+    </Border>
+    </Grid>
     </Grid>
 
     <!-- Seal page (same window; Restart / Shutdown) -->
@@ -2970,7 +3055,7 @@ function Show-FbImWindow {
             Width="520" MaxWidth="520">
       <StackPanel>
         <TextBlock Text="Manual seal" FontSize="20" FontWeight="Bold" Foreground="#FFE8F4FF" HorizontalAlignment="Center"/>
-        <TextBlock Text="Stops the update loop if it is still running, restores Defender, scrubs MDM and FirstBase leftovers (same full exit as seal_command.txt), then sysprep /oobe. Restart uses /reboot. Shutdown uses /shutdown. Next boot is customer OOBE, not DefaultUser0."
+        <TextBlock Text="Stops updates if they are still running, turns security back on, removes setup files, then restarts into the customer setup screens."
                    FontSize="13" Foreground="#FF6B8CB0" TextWrapping="Wrap" TextAlignment="Center"
                    HorizontalAlignment="Center" Margin="0,10,0,20"/>
         <Button Name="BtnSealRestart" Content="Restart" Style="{StaticResource PrimaryBtn}"
@@ -2998,12 +3083,11 @@ function Show-FbImWindow {
       </StackPanel>
     </Grid>
   </Grid>
-  </ScrollViewer>
+  </Viewbox>
+  </Grid>
 </Window>
 "@
 
-    $reader = $null
-    $window = $null
     try {
         $reader = New-Object System.Xml.XmlNodeReader $xaml
         $window = [Windows.Markup.XamlReader]::Load($reader)
@@ -3077,8 +3161,13 @@ function Show-FbImWindow {
     $btnRefresh     = & $find 'BtnRefresh'
     $btnRestart     = & $find 'BtnRestart'
     $btnStopUpdates = & $find 'BtnStopUpdates'
+    $btnOpenSettings = & $find 'BtnOpenSettings'
+    $powerSection   = & $find 'PowerSection'
     $btnStartHardwareGate = & $find 'BtnStartHardwareGate'
     $btnCollect     = & $find 'BtnCollect'
+    $btnOpenLogs    = & $find 'BtnOpenLogs'
+    $btnLogsBack    = & $find 'BtnLogsBack'
+    $logsSavedConfirm = & $find 'LogsSavedConfirm'
     $btnChooseDump  = & $find 'BtnChooseDumpFolder'
     $btnSeal        = & $find 'BtnSeal'
     $btnPassHardware = & $find 'BtnPassHardware'
@@ -3104,7 +3193,7 @@ function Show-FbImWindow {
     $busyOverlay    = & $find 'FbImBusyOverlay'
     $busyText       = & $find 'FbImBusyText'
 
-    foreach ($tipEl in @($window, $uiRoot, $btnRefresh, $btnRestart, $btnStopUpdates, $btnStartHardwareGate, $btnCollect, $btnChooseDump, $btnSeal, $btnPassHardware, $btnBios, $btnPowerRestart, $btnShutdown, $btnSealRestart, $btnSealShutdown, $btnSealCancel, $btnOpenFolder, $btnSaveNotes, $btnEmbedBack, $statusHero, $actionsPanel, $notesPanel, $notesBox, $sealPage)) {
+    foreach ($tipEl in @($window, $uiRoot, $btnRefresh, $btnRestart, $btnStopUpdates, $btnStartHardwareGate, $btnCollect, $btnChooseDump, $btnSeal, $btnPassHardware, $btnBios, $btnPowerRestart, $btnShutdown, $btnSealRestart, $btnSealShutdown, $btnSealCancel, $btnOpenFolder, $btnSaveNotes, $btnEmbedBack, $statusHero, $actionsPanel, $notesPanel, $notesBox, $sealPage, $powerSection)) {
         if (-not $tipEl) { continue }
         try { $tipEl.ClearValue([System.Windows.FrameworkElement]::ToolTipProperty) } catch {}
         try { $tipEl.ToolTip = $null } catch {}
@@ -3118,6 +3207,7 @@ function Show-FbImWindow {
         BtnCollect       = $btnCollect
         BtnOpenFolder    = $btnOpenFolder
         BtnSaveNotes     = $btnSaveNotes
+        LogsSavedConfirm = $logsSavedConfirm
         BtnPassHardware  = $btnPassHardware
         BtnStartHardwareGate = $btnStartHardwareGate
         BtnBios          = $btnBios
@@ -3139,16 +3229,7 @@ function Show-FbImWindow {
     }
 
     $script:FbImFitRoot = {
-        $sv = $script:FbImScroller
-        $root = $script:FbImRootEl
-        if (-not $sv -or -not $root) { return }
-        try {
-            $vh = [double]$sv.ViewportHeight
-            if ($vh -lt 1) { $vh = [double]$sv.ActualHeight }
-            $m = $root.Margin
-            $need = $vh - [double]$m.Top - [double]$m.Bottom
-            if ($need -gt 80) { $root.MinHeight = $need }
-        } catch {}
+        return
     }
     $script:FbImScroller = $scroller
     $script:FbImRootEl = $uiRoot
@@ -3174,6 +3255,7 @@ function Show-FbImWindow {
                     if (-not $parent) { try { $parent = $walk.Parent } catch {} }
                     $walk = $parent
                 }
+                if (-not ($scroller.PSObject.Methods.Name -contains 'ScrollToVerticalOffset')) { return }
                 $scroller.ScrollToVerticalOffset($scroller.VerticalOffset - [double]$e.Delta)
                 $e.Handled = $true
             } catch {}
@@ -3369,25 +3451,24 @@ function Show-FbImWindow {
         param([string]$StatusText)
         $ui = $script:FbImUi
         & $writeNotesLive
-        if ($ui -and $ui.BtnSaveNotes) { $ui.BtnSaveNotes.Visibility = 'Collapsed' }
+        $confirm = 'Notes saved.'
+        if (-not [string]::IsNullOrWhiteSpace($StatusText)) { $confirm = [string]$StatusText }
+        if ($ui -and $ui.LogsSavedConfirm) { $ui.LogsSavedConfirm.Text = $confirm }
         if ($script:FbImDumpDest -and (Test-Path -LiteralPath $script:FbImDumpDest)) {
             if ($ui -and $ui.CollectStatus) {
-                $ui.CollectStatus.Text = ('Logs saved to {0}' -f $script:FbImDumpDest)
+                $ui.CollectStatus.Text = $confirm
                 $ui.CollectStatus.Foreground = [System.Windows.Media.BrushConverter]::new().ConvertFromString('#FF66BB6A')
             }
             if ($ui -and $ui.CollectBanner) { $ui.CollectBanner.Visibility = 'Visible' }
             if ($ui -and $ui.BtnOpenFolder) { $ui.BtnOpenFolder.Visibility = 'Visible' }
             if ($ui -and $ui.ActionMessage) {
                 $ui.ActionMessage.Foreground = [System.Windows.Media.BrushConverter]::new().ConvertFromString('#FF66BB6A')
-            if ([string]::IsNullOrWhiteSpace($StatusText)) {
-                    $ui.ActionMessage.Text = 'Log collection finished. Keep typing notes - they save live; panel hides after 8s idle.'
-            } else {
-                    $ui.ActionMessage.Text = $StatusText
-                }
+                $ui.ActionMessage.Text = $confirm
             }
+        } elseif ($ui -and $ui.LogsSavedConfirm) {
+            $ui.LogsSavedConfirm.Text = 'Collect logs first, then your notes can be saved.'
         }
-        $script:FbImNotesIdleArmed = $true
-        if ($script:FbImRestartNotesIdleTimer) { & $script:FbImRestartNotesIdleTimer }
+        $script:FbImNotesIdleArmed = $false
     }
 
     $script:FbImShowNotesPanel = $showNotesPanel
@@ -3400,16 +3481,6 @@ function Show-FbImWindow {
     $script:FbImNotesHideTimer = $notesHideTimer
     $notesHideTimer.Add_Tick({
         try { $script:FbImNotesHideTimer.Stop() } catch {}
-        if ($script:FbImWriteNotesLive) { & $script:FbImWriteNotesLive }
-        $ui = $script:FbImUi
-        if ($ui) {
-            if ($ui.NotesPanel) { $ui.NotesPanel.Visibility = 'Collapsed' }
-            if ($ui.CollectBanner) { $ui.CollectBanner.Visibility = 'Collapsed' }
-            if ($ui.CollectProgress) { $ui.CollectProgress.Visibility = 'Collapsed' }
-            if ($ui.BtnOpenFolder) { $ui.BtnOpenFolder.Visibility = 'Collapsed' }
-            if ($ui.BtnSaveNotes) { $ui.BtnSaveNotes.Visibility = 'Collapsed' }
-            try { if ($ui.NotesBox) { $ui.NotesBox.Text = '' } } catch {}
-        }
         $script:FbImNotesIdleArmed = $false
     })
 
@@ -3452,7 +3523,7 @@ function Show-FbImWindow {
             $heroBg = '#FF1A1024'
             $heroBd = '#FFAB47BC'
         }
-        if ($statusLabel) { $statusLabel.Text = 'Device' }
+        if ($statusLabel) { $statusLabel.Text = 'Status' }
         if ($statusHeadline) {
             $statusHeadline.Text = [string]$st.Headline
             $statusHeadline.Foreground = $bc.ConvertFromString($headBrush)
@@ -3470,7 +3541,7 @@ function Show-FbImWindow {
             try { if ($st.PSObject.Properties['ManualSealed'] -and $st.ManualSealed) { $manualChip = $true } } catch {}
             if (-not $manualChip -and $kind -eq 'Purple') { $manualChip = $true }
             if ($manualChip) {
-                $statusSealChip.Text = 'MANUAL SEAL'
+                $statusSealChip.Text = 'SEALED'
                 $statusSealChip.Foreground = $bc.ConvertFromString('#FFE1BEE7')
                 $statusSealChipBorder.Background = $bc.ConvertFromString('#FF2A1038')
                 $statusSealChipBorder.BorderBrush = $bc.ConvertFromString('#FFCE93D8')
@@ -3489,31 +3560,25 @@ function Show-FbImWindow {
         if ($statusElapsedChip) {
             try { $statusElapsedChip.Text = Get-FbImPipelineElapsedLabel } catch { $statusElapsedChip.Text = 'ELAPSED --:--:--' }
         }
-        $factBits = New-Object System.Collections.Generic.List[string]
-        if ($subtitle) { [void]$factBits.Add([string]$subtitle) }
-        try { if ($FbBuild.Dev) { [void]$factBits.Add('DEV') } } catch {}
-        $factList = @()
-        try {
-            if ($st.PSObject.Properties['Facts'] -and $st.Facts) { $factList = @($st.Facts) }
-            elseif ($st.PSObject.Properties['Details'] -and $st.Details) { $factList = @($st.Details) }
-        } catch { $factList = @() }
-        foreach ($f in $factList) {
-            if (-not [string]::IsNullOrWhiteSpace([string]$f)) { [void]$factBits.Add([string]$f) }
-        }
-        if ($statusIdentity) {
-            $statusIdentity.Text = [string]::Join('   ', @($factBits))
-        }
         if ($statusIssues) {
             try { $statusIssues.Children.Clear() } catch {}
-            foreach ($f in $factList) {
-                if ([string]::IsNullOrWhiteSpace([string]$f)) { continue }
-                $factTb = New-Object System.Windows.Controls.TextBlock
-                $factTb.Text = [string]$f
-                $factTb.FontSize = 14
-                $factTb.Foreground = $bc.ConvertFromString('#FF8FB4D9')
-                $factTb.TextWrapping = [System.Windows.TextWrapping]::Wrap
-                $factTb.Margin = [System.Windows.Thickness]::new(0, 2, 0, 2)
-                [void]$statusIssues.Children.Add($factTb)
+            $checkList = @()
+            try {
+                if ($st.PSObject.Properties['Checks'] -and $st.Checks) { $checkList = @($st.Checks) }
+            } catch { $checkList = @() }
+            foreach ($check in $checkList) {
+                if (-not $check) { continue }
+                $ctb = New-Object System.Windows.Controls.TextBlock
+                $ctb.Text = [string]$check.Text
+                $ctb.FontSize = 16
+                $ctb.FontWeight = [System.Windows.FontWeights]::SemiBold
+                $ctb.TextWrapping = [System.Windows.TextWrapping]::Wrap
+                $ctb.Margin = [System.Windows.Thickness]::new(0, 4, 0, 4)
+                $checkColor = '#FF66BB6A'
+                if ([string]$check.Level -eq 'fail') { $checkColor = '#FFEF5350' }
+                elseif ([string]$check.Level -eq 'warn') { $checkColor = '#FFFF9800' }
+                $ctb.Foreground = $bc.ConvertFromString($checkColor)
+                [void]$statusIssues.Children.Add($ctb)
             }
             foreach ($issue in @($st.Issues)) {
                 if (-not $issue) { continue }
@@ -3563,6 +3628,9 @@ function Show-FbImWindow {
         }
         if ($btnBios) {
             $btnBios.Visibility = $(if ($showShutdown) { 'Visible' } else { 'Collapsed' })
+        }
+        if ($powerSection) {
+            $powerSection.Visibility = $(if ($showShutdown) { 'Visible' } else { 'Collapsed' })
         }
         $hwFailed = $false
         $hwPassed = $false
@@ -3629,7 +3697,7 @@ function Show-FbImWindow {
                 $bc = [System.Windows.Media.BrushConverter]::new()
                 if ($statusLabel) { $statusLabel.Text = 'Device' }
                 if ($statusHeadline) {
-                    $statusHeadline.Text = 'CHECK FAILED'
+                    $statusHeadline.Text = 'Check failed'
                     $statusHeadline.Foreground = $bc.ConvertFromString('#FFEF5350')
                 }
                 if ($statusIdentity) { $statusIdentity.Text = $errText }
@@ -3873,11 +3941,11 @@ function Show-FbImWindow {
                 }
             } elseif ($exitCode -eq 0 -and $script:FbImDumpDest -and (Test-Path -LiteralPath $script:FbImDumpDest)) {
                 if ($script:FbImFinishNotesKeepOpen) {
-                    & $script:FbImFinishNotesKeepOpen 'Log collection finished. Keep typing notes - they save live; panel hides after 8s idle.'
+                    & $script:FbImFinishNotesKeepOpen 'Logs saved.'
                 }
             } else {
                 if ($script:FbImFinishNotesKeepOpen) {
-                    & $script:FbImFinishNotesKeepOpen 'Log collection finished with problems. Notes still save live; panel hides after 8s idle.'
+                    & $script:FbImFinishNotesKeepOpen 'Logs saved. Some items could not be collected.'
                 }
                 $collectStatus.Text = 'Log collection finished with problems. Check the USB stick for a partial folder.'
                 $collectStatus.Foreground = [System.Windows.Media.BrushConverter]::new().ConvertFromString('#FFFFB74D')
@@ -4009,7 +4077,7 @@ function Show-FbImWindow {
                     & $setMsg 'Dump helper did not start; on-device logs were still copied to the export folder.' '#FFFFB74D'
                     if ($ui -and $ui.BtnOpenFolder) { $ui.BtnOpenFolder.Visibility = 'Visible' }
                     if ($script:FbImFinishNotesKeepOpen) {
-                        & $script:FbImFinishNotesKeepOpen 'On-device logs were copied. Keep typing notes if needed.'
+                        & $script:FbImFinishNotesKeepOpen 'Logs copied to the folder you chose.'
                     }
                 } else {
                     & $setMsg ('Could not start log collection: {0}' -f $_.Exception.Message) '#FFEF5350'
@@ -4054,8 +4122,8 @@ function Show-FbImWindow {
                 )
                 if ($confirm -ne [System.Windows.MessageBoxResult]::Yes) { return }
             }
-            $script:FbImNotesIdleArmed = $true
-            & $script:FbImFinishNotesKeepOpen 'Notes saved. Keep typing if needed - panel hides after 8s idle.'
+            $script:FbImNotesIdleArmed = $false
+            & $script:FbImFinishNotesKeepOpen 'Notes saved.'
         } catch {
             try {
                 $actionMessage.Foreground = [System.Windows.Media.BrushConverter]::new().ConvertFromString('#FFEF5350')
@@ -4110,6 +4178,31 @@ function Show-FbImWindow {
                     & $hideFbImBusy
                     $actionMessage.Foreground = [System.Windows.Media.BrushConverter]::new().ConvertFromString('#FFEF5350')
                     $actionMessage.Text = ('Restart failed: {0}' -f $_.Exception.Message)
+                } catch {}
+            }
+        })
+    }
+
+    if ($btnOpenSettings) {
+        $btnOpenSettings.Add_Click({
+            try {
+                if ($script:FbImClearStaleBusy) { & $script:FbImClearStaleBusy }
+                $opened = Start-FbImOpenWindowsUpdate
+                if ($actionMessage) {
+                    if ($opened) {
+                        $actionMessage.Foreground = [System.Windows.Media.BrushConverter]::new().ConvertFromString('#FF22D3EE')
+                        $actionMessage.Text = 'Opened Windows Update settings.'
+                    } else {
+                        $actionMessage.Foreground = [System.Windows.Media.BrushConverter]::new().ConvertFromString('#FFEF5350')
+                        $actionMessage.Text = 'Could not open Windows Update settings.'
+                    }
+                }
+            } catch {
+                try {
+                    if ($actionMessage) {
+                        $actionMessage.Foreground = [System.Windows.Media.BrushConverter]::new().ConvertFromString('#FFEF5350')
+                        $actionMessage.Text = ('Settings failed: {0}' -f $_.Exception.Message)
+                    }
                 } catch {}
             }
         })
@@ -4219,6 +4312,24 @@ function Show-FbImWindow {
                 if ($script:FbImClearStaleBusy) { & $script:FbImClearStaleBusy }
                 if ($script:FbImBusy) { return }
                 & $hideSealPage
+            } catch {}
+        })
+    }
+
+    if ($btnOpenLogs) {
+        $btnOpenLogs.Add_Click({
+            try {
+                $ui = $script:FbImUi
+                if ($ui -and $ui.NotesPanel) { $ui.NotesPanel.Visibility = 'Visible' }
+                try { if ($ui -and $ui.NotesBox) { [void]$ui.NotesBox.Focus() } } catch {}
+            } catch {}
+        })
+    }
+    if ($btnLogsBack) {
+        $btnLogsBack.Add_Click({
+            try {
+                $ui = $script:FbImUi
+                if ($ui -and $ui.NotesPanel) { $ui.NotesPanel.Visibility = 'Collapsed' }
             } catch {}
         })
     }

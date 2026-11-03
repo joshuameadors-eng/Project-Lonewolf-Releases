@@ -1,6 +1,6 @@
 {
-    "launcherVersion":  "7.0.3",
-    "payloadVersion":  "7.0.8",
+    "launcherVersion":  "7.0.4",
+    "payloadVersion":  "7.0.9",
     "channel":  "release",
     "source":  "github-public-source",
     "latestReleaseUrl":  "https://github.com/joshuameadors-eng/Project-Lonewolf-Releases/releases/latest",
@@ -35,9 +35,19 @@
                  "winpeUiZipBase":  "https://raw.githubusercontent.com/joshuameadors-eng/Project-Lonewolf-Releases/main/bin",
                  "manifest":  "https://raw.githubusercontent.com/joshuameadors-eng/Project-Lonewolf-Releases/main/latest.json"
              },
-    "portableSha256":  "fcef334589f70789909f4a838f276387a414347fce94dc06a2dbae016c75315e",
-    "portableSize":  73233048,
+    "portableSha256":  "9600cfce7a65061f042a542807d3c6dc6ba22b9c010d0afe028d6d8a78e11131",
+    "portableSize":  73233931,
     "changelog":  [
+                      {
+                          "version":  "7.0.9",
+                          "date":  "2026-11-03",
+                          "changes":  [
+                                          "Official release 7.0.9 â€” follow-up to 7.0.8. Launcher is 7.0.4; product and payload are 7.0.9.",
+                                          "Changed",
+                                          "Google Drive HTTP â€” real HTML files such as credits.htm download instead of being treated as a blocked page; Image Ready folder match ignores calendar month-day and requires the requested architecture",
+                                          "Technician tool â€” status lists each check that passed or failed (sound, camera, Wi-Fi, devices, Secure Boot, virus protection, updates, seal)"
+                                      ]
+                      },
                       {
                           "version":  "7.0.8",
                           "date":  "2026-11-03",

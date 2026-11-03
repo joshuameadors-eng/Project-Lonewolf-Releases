@@ -1,6 +1,6 @@
 {
     "launcherVersion":  "7.0.3",
-    "payloadVersion":  "7.0.3",
+    "payloadVersion":  "7.0.8",
     "channel":  "release",
     "source":  "github-public-source",
     "latestReleaseUrl":  "https://github.com/joshuameadors-eng/Project-Lonewolf-Releases/releases/latest",
@@ -35,9 +35,20 @@
                  "winpeUiZipBase":  "https://raw.githubusercontent.com/joshuameadors-eng/Project-Lonewolf-Releases/main/bin",
                  "manifest":  "https://raw.githubusercontent.com/joshuameadors-eng/Project-Lonewolf-Releases/main/latest.json"
              },
-    "portableSha256":  "7fadd29452187f65564b4f6b829d1ec3540f4dd0fc57d9a790da157fde582bc2",
-    "portableSize":  73231223,
+    "portableSha256":  "fcef334589f70789909f4a838f276387a414347fce94dc06a2dbae016c75315e",
+    "portableSize":  73233048,
     "changelog":  [
+                      {
+                          "version":  "7.0.8",
+                          "date":  "2026-11-03",
+                          "changes":  [
+                                          "Official release 7.0.8 â€” follow-up to 7.0.3 (payload 7.0.4â€“7.0.8). Launcher stays 7.0.3; product and payload are 7.0.8.",
+                                          "Changed",
+                                          "Hardware-fail splash â€” holds on FAIL with Restart and Restart to BIOS; Secure Boot status shown for the operator",
+                                          "Updates splash timers â€” ELAPSED and TOTAL freeze once hardware checks finish (pass or fail) so the fail page does not keep counting",
+                                          "Manual seal â€” allowed when hardware checks did not record a result; still blocked when the hardware gate failed"
+                                      ]
+                      },
                       {
                           "version":  "7.0.3",
                           "date":  "2026-11-02",

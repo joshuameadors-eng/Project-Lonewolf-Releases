@@ -14309,7 +14309,7 @@ function Get-FbAuditSplashCopy {
         'checks-fail' {
             @{
                 Phase   = 'HardwareFail'
-                Message = 'Hardware failed. Opening Windows Settings next. Close Settings to continue.'
+                Message = 'Hardware failed. The splash lists failed checks. Use Restart or Restart to BIOS. The device stays on until checks pass.'
             }
         }
         'sealing' {
@@ -14405,6 +14405,7 @@ function Invoke-FbHardwareGateChecks {
                 [pscustomobject]@{ Name = 'camera'; Passed = $true; Detail = 'bypassed (destageSkipWu)' }
                 [pscustomobject]@{ Name = 'wifi'; Passed = $true; Detail = 'bypassed (destageSkipWu)' }
                 [pscustomobject]@{ Name = 'pnp'; Passed = $true; Detail = 'bypassed (destageSkipWu)' }
+                [pscustomobject]@{ Name = 'secureboot'; Passed = $true; Detail = 'bypassed (destageSkipWu)' }
             )
         }
         $resultPath = Join-Path $FbProgramDataFirstBase '.hardware-gate-result.json'
@@ -14413,7 +14414,9 @@ function Invoke-FbHardwareGateChecks {
         return $parsed
     }
     $resultPath = Join-Path $FbProgramDataFirstBase '.hardware-gate-result.json'
+    $failHoldPath = Join-Path $FbProgramDataFirstBase '.hardware-gate-fail-hold'
     try { if (Test-Path -LiteralPath $resultPath) { Remove-Item -LiteralPath $resultPath -Force -ErrorAction SilentlyContinue } } catch {}
+    try { if (Test-Path -LiteralPath $failHoldPath) { Remove-Item -LiteralPath $failHoldPath -Force -ErrorAction SilentlyContinue } } catch {}
     $ps1 = Join-Path $FbRoot 'FirstBaseHardwareCheck.ps1'
     if (-not (Test-Path -LiteralPath $ps1)) {
         try { $ps1 = Join-Path $PSScriptRoot 'FirstBaseHardwareCheck.ps1' } catch { $ps1 = '' }
@@ -14546,32 +14549,51 @@ function Invoke-FbHardwareGateOperatorStep {
     }
 
     $script:FbHardwareGateFailed = $true
+    $failHoldMarker = Join-Path $FbProgramDataFirstBase '.hardware-gate-fail-hold'
     try {
         Set-Content -LiteralPath $failMarker -Value ('hardware-gate FAIL at {0} summary={1}' -f (Get-Date -Format 'o'), $(if ($hw) { [string]$hw.Summary } else { 'unknown' })) -Encoding ascii -Force
     } catch {}
+    $failLines = New-Object System.Collections.Generic.List[string]
+    try {
+        foreach ($chk in @($hw.Checks)) {
+            if (-not $chk) { continue }
+            $ok = $false
+            try { $ok = [bool]$chk.Passed } catch { $ok = $false }
+            if ($ok) { continue }
+            $nm = [string]$chk.Name
+            $st = ''
+            try { $st = [string]$chk.State } catch { $st = '' }
+            $dt = if (-not [string]::IsNullOrWhiteSpace($st)) { $st } else { [string]$chk.Detail }
+            if ([string]::IsNullOrWhiteSpace($nm)) { $nm = 'check' }
+            if ([string]::IsNullOrWhiteSpace($dt)) { $dt = 'failed' }
+            switch ($nm.Trim().ToLowerInvariant()) {
+                'wifi' { $nm = 'Wi-Fi' }
+                'secureboot' { $nm = 'Secure Boot' }
+                'pnp' { $nm = 'PnP drivers' }
+                default {
+                    if ($nm.Length -gt 1) { $nm = $nm.Substring(0, 1).ToUpperInvariant() + $nm.Substring(1) }
+                }
+            }
+            [void]$failLines.Add(('{0}: {1}' -f $nm, $dt))
+        }
+    } catch {}
+    if ($failLines.Count -eq 0) {
+        try {
+            foreach ($nm in @($hw.Failed)) {
+                if (-not [string]::IsNullOrWhiteSpace([string]$nm)) { [void]$failLines.Add(('{0}: failed' -f [string]$nm)) }
+            }
+        } catch {}
+    }
+    $failMsg = if ($failLines.Count -gt 0) { ($failLines -join ' | ') } else { 'Hardware checks failed.' }
     try { Start-FbHandoffSplashIndicator -Phase 'checks-fail' -AutoCloseSeconds 8 } catch {}
     Start-Sleep -Seconds 2
-    try { Set-UiPhase -Phase 'OperatorGate' -Message 'Hardware failed. Opening Windows Settings. Close Settings to continue.' } catch {}
-    Stop-FbHandoffSplashIndicator
-    $failGate = $null
-    try { $failGate = Invoke-FbOperatorSettingsGateInSession } catch {
-        Write-FbLog ("Hardware gate FAIL Settings gate threw: {0}" -f $_.Exception.Message) 'WARN'
-    }
-    $failReason = ''
-    try { $failReason = [string]$failGate.Reason } catch { $failReason = '' }
-    $realSettingsClose = ($failReason -eq 'window-closed' -or $failReason -eq 'process-exit')
-    if (-not $realSettingsClose) {
-        $script:FbHardwareGateAwaitingOperator = $true
-        Write-FbLog ("Hardware gate FAIL: Settings was not closed on the interactive desktop (reason={0}). Not sealing." -f $failReason) 'ERROR'
-        try { Set-UiPhase -Phase 'HardwareFail' -Message 'Hardware failed. Close Windows Settings to continue. The device stays on.' } catch {}
-        return $false
-    }
+    try { Set-UiPhase -Phase 'HardwareFail' -Message ('Hardware failed. {0}' -f $failMsg) } catch {}
     try {
-        Set-Content -LiteralPath $doneMarker -Value ('hardware-gate FAIL at {0} settings-closed' -f (Get-Date -Format 'o')) -Encoding ascii -Force
-        Clear-FbHandoffPendingMarker
+        Set-Content -LiteralPath $failHoldMarker -Value ('hold at {0} {1}' -f (Get-Date -Format 'o'), $failMsg) -Encoding ascii -Force
     } catch {}
-    try { Start-FbHandoffSplashIndicator -Phase 'gate-fail-restart' -AutoCloseSeconds 90 } catch {}
-    Write-FbLog 'Hardware gate FAIL: Settings closed; continuing scrub + sysprep /oobe /reboot (not shutdown, not YouTube).' 'WARN'
+    Stop-FbHandoffSplashIndicator
+    $script:FbHardwareGateAwaitingOperator = $true
+    Write-FbLog ("Hardware gate FAIL: holding at splash (no Settings, no seal). {0}" -f $failMsg) 'ERROR'
     return $false
 }
 
@@ -15981,8 +16003,8 @@ function Invoke-FbOobeHandoff {
                 if ($fbAwaitVar) { $fbAwaitingOperator = [bool]$fbAwaitVar.Value }
             } catch { $fbAwaitingOperator = $false }
             if ($fbAwaitingOperator) {
-                Write-FbLog 'Hardware gate is waiting for Settings to open and close. Not scrubbing or sealing. Device stays in Audit.' 'WARN'
-                try { Set-UiPhase -Phase 'HardwareFail' -Message 'Hardware failed. Close Windows Settings to continue. The device stays on.' } catch {}
+                Write-FbLog 'Hardware gate is waiting on the splash after a failed check. Not scrubbing or sealing. Device stays in Audit.' 'WARN'
+                try { Set-UiPhase -Phase 'HardwareFail' -Message 'Hardware failed. Use Restart or Restart to BIOS on the splash. The device stays on.' } catch {}
                 return
             }
             if (-not $fbHwConfirmed -and -not $script:FbHardwareGateFailed) {

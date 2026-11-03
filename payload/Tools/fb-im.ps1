@@ -142,7 +142,7 @@ if ($LaunchHost -and -not $Library) {
 # Windows PowerShell 5.1 (ErrorActionPreference is optimized).
 Set-Variable -Name ErrorActionPreference -Value SilentlyContinue -Scope Script
 
-$FbImVersion = '2.0.38'
+$FbImVersion = '2.0.39'
 
 function Initialize-FbImWpf {
     # Must run BEFORE Show-FbImWindow is invoked. Parameter binding resolves
@@ -772,6 +772,63 @@ function Get-FbImSecurityShipState {
     return [pscustomobject]$result
 }
 
+function Get-FbImFirmwareGateState {
+    $sbProbe = $null
+    $hwCheck = Join-Path $PSScriptRoot '..\FirstBaseHardwareCheck.ps1'
+    if (-not (Test-Path -LiteralPath $hwCheck)) {
+        $hwCheck = 'C:\Windows\Setup\FirstBase\FirstBaseHardwareCheck.ps1'
+    }
+    if (Test-Path -LiteralPath $hwCheck) {
+        try {
+            if (-not (Get-Command Get-FbSecureBootProbeState -ErrorAction SilentlyContinue)) {
+                . $hwCheck -DefinitionsOnly -Quiet
+            }
+        } catch {}
+    }
+    if (Get-Command Get-FbSecureBootProbeState -ErrorAction SilentlyContinue) {
+        try { $sbProbe = Get-FbSecureBootProbeState } catch { $sbProbe = $null }
+    }
+    if (-not $sbProbe) {
+        $sbProbe = [pscustomobject]@{ Passed = $false; State = 'Not available'; Detail = '' }
+        try {
+            $sbReg = Get-ItemProperty `
+                -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\SecureBoot\State' `
+                -Name 'UEFISecureBootEnabled' `
+                -ErrorAction Stop
+            if ([int]$sbReg.UEFISecureBootEnabled -eq 1) {
+                $sbProbe = [pscustomobject]@{ Passed = $true; State = 'Enabled'; Detail = '' }
+            } else {
+                $sbProbe = [pscustomobject]@{ Passed = $false; State = 'Disabled'; Detail = '' }
+            }
+        } catch {
+            try {
+                if (Get-Command Confirm-SecureBootUEFI -ErrorAction SilentlyContinue) {
+                    $sbCmd = Confirm-SecureBootUEFI -ErrorAction SilentlyContinue
+                    if ($sbCmd -eq $true) {
+                        $sbProbe = [pscustomobject]@{ Passed = $true; State = 'Enabled'; Detail = '' }
+                    } elseif ($sbCmd -eq $false) {
+                        $sbProbe = [pscustomobject]@{ Passed = $false; State = 'Disabled'; Detail = '' }
+                    }
+                }
+            } catch {}
+        }
+    }
+
+    $reasons = New-Object System.Collections.Generic.List[string]
+    $sbOk = [bool]$sbProbe.Passed
+    $sbState = [string]$sbProbe.State
+    if (-not $sbOk) {
+        if ([string]::IsNullOrWhiteSpace($sbState)) { $sbState = 'Not available' }
+        [void]$reasons.Add(('Secure Boot: {0}' -f $sbState))
+    }
+
+    return [pscustomobject]@{
+        SecureBootOk    = [bool]$sbOk
+        SecureBootState = [string]$sbState
+        Reasons         = @($reasons | Select-Object -Unique)
+    }
+}
+
 # KEEP IN SYNC: Get-FbImStatusKind / Get-FbImDeviceStatus / Invoke-FbImSealToOobe
 # GATE: green READY is not crypto-proof. It must include live AV + MDM/exclusion leftovers + ProgramData residue + HardwarePassed.
 # CLEANUP: leftover FirstBase audit exclusions / MDM keys / DmEnrollmentSvc Disabled / WU AU suppress / unrestored Defender are NOT READY.
@@ -943,13 +1000,14 @@ function Get-FbImDeviceStatus {
         $incompleteUpdates = $false
     }
 
-    # Manual seal (Audit / destage): available during updates. Hardware pass is still
-    # required outside Audit unless destage. Hardware FAIL always blocks.
-    $hwOkForSeal = (-not $gateFail) -and ($hwPassed -or $destage -or $audit)
-    $modeOkForSeal = $destage -or $audit -or $hwPassed
+    # Manual seal: hardware FAIL blocks. Passed OR not-recorded is allowed
+    # (technician may seal when probes never ran). Audit/destage no longer required
+    # just because HW is unrecorded.
+    $hwOkForSeal = (-not $gateFail)
+    $modeOkForSeal = $true
     # Seal markers written before sysprep must not block a retry while still in Audit.
     $sealFinished = [bool]($sealed -and (-not $audit))
-    # cbsUnsafe here is hard CBS only (not active WU install) — see Test-FbImCbsRebootUnsafe.
+    # cbsUnsafe here is hard CBS only (not active WU install) - see Test-FbImCbsRebootUnsafe.
     $canSeal = $admin -and (-not $sealFinished) -and (-not $cbsUnsafe) -and $hwOkForSeal -and $modeOkForSeal
     $manualSealed = $false
     try { $manualSealed = [bool](Test-Path -LiteralPath $ManualSealMarker) } catch { $manualSealed = $false }
@@ -977,6 +1035,8 @@ function Get-FbImDeviceStatus {
             )
         }
     }
+    $fwGate = $null
+    try { $fwGate = Get-FbImFirmwareGateState } catch { $fwGate = $null }
     $hardwareNotPassed = [bool]((-not $hwPassed) -and (-not $gateFail))
 
     $kind = Get-FbImStatusKind -ScriptsPresent $scriptsPresent -IncompleteUpdates $incompleteUpdates `
@@ -999,7 +1059,12 @@ function Get-FbImDeviceStatus {
     if ($gateFail) {
         & $addIssue 'Hardware check failed' 'fail'
     } elseif ((-not $hwPassed)) {
-        & $addIssue 'Hardware check not recorded' 'fail'
+        & $addIssue 'Hardware check not recorded (manual seal still available)' 'warn'
+    }
+    if ($fwGate) {
+        foreach ($fr in @($fwGate.Reasons)) {
+            if (-not [string]::IsNullOrWhiteSpace([string]$fr)) { & $addIssue ([string]$fr) 'fail' }
+        }
     }
     if ((-not $audit) -and $secReasons.Count -gt 0) {
         foreach ($r in $secReasons) {
@@ -1060,8 +1125,6 @@ function Get-FbImDeviceStatus {
     elseif (-not $admin) { $sealBlock = 'Not running as Administrator - open fb-im.cmd from the USB stick.' }
     elseif ($cbsUnsafe) { $sealBlock = 'Seal is blocked while Windows is committing boot files. Wait for the update loop to reboot.' }
     elseif ($gateFail) { $sealBlock = 'Hardware check failed - fix hardware before sealing.' }
-    elseif ((-not $hwPassed) -and (-not $destage) -and (-not $audit)) { $sealBlock = 'Pass the hardware check before sealing (or seal from Audit / destage).' }
-    elseif (-not $modeOkForSeal) { $sealBlock = 'Seal is available after the hardware check passes, in Audit mode, or on a destage stick.' }
 
     $facts = New-Object System.Collections.ArrayList
     $pc = [string]$env:COMPUTERNAME
@@ -1079,6 +1142,13 @@ function Get-FbImDeviceStatus {
     if ($hwPassed) { [void]$facts.Add('Hardware: passed') }
     elseif ($gateFail) { [void]$facts.Add('Hardware: failed') }
     else { [void]$facts.Add('Hardware: not recorded') }
+    if ($fwGate) {
+        $sbFact = [string]$fwGate.SecureBootState
+        if ([string]::IsNullOrWhiteSpace($sbFact)) {
+            $sbFact = if ($fwGate.SecureBootOk) { 'Enabled' } else { 'Not available' }
+        }
+        [void]$facts.Add(('Secure Boot: {0}' -f $sbFact))
+    }
     if ($actuallyInstalling) { [void]$facts.Add('Updates: running') }
     elseif ($stuckCompleteNoGate) { [void]$facts.Add('Updates: finished (hardware check not started)') }
     elseif ($loopProc -and $operatorGate) { [void]$facts.Add('Updates: finished (operator step)') }
@@ -2339,7 +2409,7 @@ function Invoke-FbImSealToOobe {
     # KEEP IN SYNC: STAGE 2 seal in Invoke-FbOobeHandoff + Tools\seal_command.txt.
     # Full exit: stop loop → USO/AU → Defender → MDM → task/autostart → drop overlay
     # → tree scrub → durable markers → ship reaper → sysprep /oobe.
-    # GATE: technician Manual seal from fb-im (Audit / destage; HW fail still blocked in UI).
+    # GATE: technician Manual seal from fb-im (HW fail still blocked in UI; not-recorded allowed).
     # SEAL: Defender restore or MDM scrub HARD-fail must not write .firstbase-sealed / sysprep.
     param(
         [ValidateSet('Restart', 'Shutdown')]

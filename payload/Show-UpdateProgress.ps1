@@ -347,6 +347,10 @@ $FbSealedMarker = 'C:\ProgramData\FirstBase\.firstbase-sealed'
 # 2380 (5.0.39): operator Settings gate active - splash stands down (Topmost off + minimize)
 # so the operator's Settings window can take the foreground.
 $FbSplashOperatorGateActive = 'C:\ProgramData\FirstBase\.operator-settings-gate-active'
+$FbSplashHwResultMarker = 'C:\ProgramData\FirstBase\.hardware-gate-result.json'
+$FbSplashHwRunningMarker = 'C:\ProgramData\FirstBase\.hardware-gate-running'
+$FbSplashHwDoneMarker = 'C:\ProgramData\FirstBase\.hardware-gate-complete'
+$FbSplashHwFailHoldMarker = 'C:\ProgramData\FirstBase\.hardware-gate-fail-hold'
 $script:FbSplashOperatorGateStoodDown = $false
 $script:FbSplashLoopKickAttempted = $false
 
@@ -1478,6 +1482,11 @@ try {
                                 </Ellipse>
                                 <TextBlock Name="StatusNoticeTitle" Text="" Foreground="White" FontSize="20" FontWeight="SemiBold" TextAlignment="Center" TextWrapping="Wrap"/>
                                 <TextBlock Name="StatusNoticeDetail" Text="" Foreground="#FFB8D4EA" FontSize="14" TextAlignment="Center" TextWrapping="Wrap" Margin="0,8,0,0" MaxWidth="400"/>
+                                <TextBlock Name="StatusNoticeFailList" Text="" Foreground="#FFFFCDD2" FontSize="13" TextAlignment="Left" TextWrapping="Wrap" Margin="0,10,0,0" MaxWidth="420" Visibility="Collapsed"/>
+                                <StackPanel Name="StatusNoticeFailActions" Orientation="Horizontal" HorizontalAlignment="Center" Margin="0,14,0,0" Visibility="Collapsed">
+                                    <Button Name="StatusNoticeRestartBtn" Content="Restart" MinWidth="120" Margin="0,0,10,0" Padding="14,8" FontSize="14" FontWeight="SemiBold"/>
+                                    <Button Name="StatusNoticeFirmwareBtn" Content="Restart to BIOS" MinWidth="150" Padding="14,8" FontSize="14" FontWeight="SemiBold"/>
+                                </StackPanel>
                                 <TextBlock Name="StatusNoticeTimer" Text="" Foreground="#FF22D3EE" FontSize="28" FontFamily="Consolas" FontWeight="Bold" TextAlignment="Center" Margin="0,10,0,0" Visibility="Collapsed"/>
                             </StackPanel>
                         </Border>
@@ -1530,6 +1539,10 @@ $statusNoticeTimer    = $window.FindName('StatusNoticeTimer')
 $statusNoticeSpinner  = $window.FindName('StatusNoticeSpinner')
 $statusNoticeScale    = $window.FindName('StatusNoticeScale')
 $statusNoticeShift    = $window.FindName('StatusNoticeShift')
+$statusNoticeFailList = $window.FindName('StatusNoticeFailList')
+$statusNoticeFailActions = $window.FindName('StatusNoticeFailActions')
+$statusNoticeRestartBtn = $window.FindName('StatusNoticeRestartBtn')
+$statusNoticeFirmwareBtn = $window.FindName('StatusNoticeFirmwareBtn')
 $script:FbSplashHandoffLayoutActive = $false
 $script:FbSplashPulseRunning = $false
 $script:FbSplashCompletedLatch = $false
@@ -1697,7 +1710,40 @@ function Format-FbSplashDuration {
 function Set-FbSplashElapsedDisplay {
     param([TimeSpan]$Elapsed)
     if (-not $elapsedText) { return }
+    if ($script:FbElapsedFrozen -and $null -ne $script:FbElapsedFrozenValue) {
+        $elapsedText.Text = Format-FbSplashDuration -Elapsed $script:FbElapsedFrozenValue
+        return
+    }
     $elapsedText.Text = Format-FbSplashDuration -Elapsed $Elapsed
+}
+
+function Update-FbSplashElapsed {
+    param([switch]$Freeze)
+    try {
+        if ($script:FbElapsedFrozen -and -not $Freeze) {
+            Set-FbSplashElapsedDisplay -Elapsed $script:FbElapsedFrozenValue
+            return
+        }
+        if ($script:FbElapsedFrozen -and $Freeze) {
+            Set-FbSplashElapsedDisplay -Elapsed $script:FbElapsedFrozenValue
+            return
+        }
+        $span = if ($script:Preview) {
+            if ($script:startTime) { (Get-Date) - $script:startTime } else { [TimeSpan]::Zero }
+        } else {
+            Get-FbSplashSinceBootSpan
+        }
+        if ($span.TotalSeconds -lt 0) { $span = [TimeSpan]::Zero }
+        if ($Freeze) {
+            $script:FbElapsedFrozen = $true
+            $script:FbElapsedFrozenValue = $span
+            Set-FbSplashElapsedDisplay -Elapsed $script:FbElapsedFrozenValue
+            return
+        }
+        Set-FbSplashElapsedDisplay -Elapsed $span
+    } catch {
+        Set-FbSplashElapsedDisplay -Elapsed ([TimeSpan]::Zero)
+    }
 }
 
 function Get-FbSplashTickCount64 {
@@ -1820,17 +1866,157 @@ function Update-FbSplashTotalElapsed {
             Set-FbSplashTotalElapsedDisplay -Elapsed $script:FbTotalElapsedFrozenValue
             return
         }
+        # Already frozen: keep the captured value (do not recompute on every tick).
+        if ($script:FbTotalElapsedFrozen -and $Freeze) {
+            Set-FbSplashTotalElapsedDisplay -Elapsed $script:FbTotalElapsedFrozenValue
+            return
+        }
         $start = Get-FbSplashPipelineStartTime
         $span = (Get-Date) - $start
         if ($span.TotalSeconds -lt 0) { $span = [TimeSpan]::Zero }
         if ($Freeze) {
             $script:FbTotalElapsedFrozen = $true
             $script:FbTotalElapsedFrozenValue = $span
+            Set-FbSplashTotalElapsedDisplay -Elapsed $script:FbTotalElapsedFrozenValue
+            return
         }
         Set-FbSplashTotalElapsedDisplay -Elapsed $span
     } catch {
         Set-FbSplashTotalElapsedDisplay -Elapsed ([TimeSpan]::Zero)
     }
+}
+
+function Test-FbSplashShouldFreezeElapsedTimers {
+    # ELAPSED + TOTAL ELAPSED stop when updates are done and hardware checks finished
+    # (pass, fail-hold, or HardwareFail UI). Running marker blocks freeze.
+    try {
+        $phase = [string]$script:FbSplashActivityPhase
+        if ($phase -match '(?i)^(HardwareFail|checks-fail)$') { return $true }
+    } catch {}
+    if (-not (Test-Path -LiteralPath $Marker)) { return $false }
+    try {
+        if (Test-Path -LiteralPath $FbSplashHwRunningMarker) { return $false }
+    } catch {}
+    foreach ($p in @($FbSplashHwFailHoldMarker, $FbSplashHwDoneMarker, $FbSplashHwResultMarker)) {
+        try {
+            if (Test-Path -LiteralPath $p) { return $true }
+        } catch {}
+    }
+    return $false
+}
+
+function Sync-FbSplashTotalElapsedTick {
+    try {
+        if (Test-FbSplashShouldFreezeElapsedTimers) {
+            Update-FbSplashElapsed -Freeze
+            Update-FbSplashTotalElapsed -Freeze
+        } else {
+            Update-FbSplashElapsed
+            Update-FbSplashTotalElapsed
+        }
+    } catch {}
+}
+
+function Get-FbSplashHardwareFailDisplayName {
+    param([string]$Name)
+    $n = if ([string]::IsNullOrWhiteSpace($Name)) { 'check' } else { $Name.Trim().ToLowerInvariant() }
+    switch ($n) {
+        'wifi' { return 'Wi-Fi' }
+        'secureboot' { return 'Secure Boot' }
+        'pnp' { return 'PnP drivers' }
+        default {
+            if ($n.Length -le 1) { return $n.ToUpperInvariant() }
+            return ($n.Substring(0,1).ToUpperInvariant() + $n.Substring(1))
+        }
+    }
+}
+
+function Get-FbSplashHardwareFailLineText {
+    param(
+        [string]$Name,
+        [string]$Detail,
+        [string]$State = ''
+    )
+    $label = Get-FbSplashHardwareFailDisplayName -Name $Name
+    $st = [string]$State
+    if (-not [string]::IsNullOrWhiteSpace($st)) {
+        return ('- {0}: {1}' -f $label, $st.Trim())
+    }
+    $dt = [string]$Detail
+    if ([string]::IsNullOrWhiteSpace($dt)) { $dt = 'Failed.' }
+    return ('- {0}: {1}' -f $label, $dt)
+}
+
+function Get-FbSplashHardwareFailListText {
+    param([string]$Message = '')
+    $lines = New-Object System.Collections.Generic.List[string]
+    try {
+        if (Test-Path -LiteralPath $FbSplashHwResultMarker) {
+            $parsed = Get-Content -LiteralPath $FbSplashHwResultMarker -Raw -ErrorAction Stop | ConvertFrom-Json -ErrorAction Stop
+            if ($parsed -and $parsed.Checks) {
+                foreach ($chk in @($parsed.Checks)) {
+                    if (-not $chk) { continue }
+                    $ok = $false
+                    try { $ok = [bool]$chk.Passed } catch { $ok = $false }
+                    if ($ok) { continue }
+                    $st = ''
+                    try { $st = [string]$chk.State } catch { $st = '' }
+                    [void]$lines.Add((Get-FbSplashHardwareFailLineText -Name ([string]$chk.Name) -Detail ([string]$chk.Detail) -State $st))
+                }
+            }
+        }
+    } catch {}
+    if ($lines.Count -eq 0 -and -not [string]::IsNullOrWhiteSpace($Message)) {
+        if ($Message -match '(?i)Hardware failed\.\s*(.+)') {
+            [void]$lines.Add(('- {0}' -f $Matches[1].Trim()))
+        }
+    }
+    if ($lines.Count -eq 0) { return 'Failed checks could not be read. Inspect C:\ProgramData\FirstBase\.hardware-gate-result.json.' }
+    return ($lines -join [Environment]::NewLine)
+}
+
+function Hide-FbSplashHardwareFailPanel {
+    if ($statusNoticeFailList) {
+        try { $statusNoticeFailList.Visibility = [System.Windows.Visibility]::Collapsed } catch {}
+        try { $statusNoticeFailList.Text = '' } catch {}
+    }
+    if ($statusNoticeFailActions) {
+        try { $statusNoticeFailActions.Visibility = [System.Windows.Visibility]::Collapsed } catch {}
+    }
+}
+
+function Show-FbSplashHardwareFailPanel {
+    param([string]$Message = '')
+    if (-not $statusNoticeFailList) { return }
+    $text = Get-FbSplashHardwareFailListText -Message $Message
+    try {
+        $statusNoticeFailList.Text = $text
+        $statusNoticeFailList.Visibility = [System.Windows.Visibility]::Visible
+    } catch {}
+    if ($statusNoticeFailActions) {
+        try { $statusNoticeFailActions.Visibility = [System.Windows.Visibility]::Visible } catch {}
+    }
+}
+
+function Invoke-FbSplashHardwareFailRestart {
+    param([switch]$Firmware)
+    try {
+        if (Get-Command Start-FbSplashTechRestart -ErrorAction SilentlyContinue) {
+            Start-FbSplashTechRestart -Firmware:$Firmware
+            return
+        }
+    } catch {}
+    try {
+        if (Get-Command Invoke-FbSplashIssueShutdown -ErrorAction SilentlyContinue) {
+            $kind = if ($Firmware) { 'firmware' } else { 'restart' }
+            [void](Invoke-FbSplashIssueShutdown -Kind $kind)
+            return
+        }
+    } catch {}
+    $shutdown = Join-Path $env:SystemRoot 'System32\shutdown.exe'
+    if (-not (Test-Path -LiteralPath $shutdown)) { $shutdown = 'shutdown.exe' }
+    $shutArgs = if ($Firmware) { @('/r', '/fw', '/f', '/t', '0') } else { @('/r', '/f', '/t', '0') }
+    try { Start-Process -FilePath $shutdown -ArgumentList $shutArgs -WindowStyle Hidden -ErrorAction Stop | Out-Null } catch {}
 }
 
 function Get-FbSplashRebootCount {
@@ -2113,6 +2299,12 @@ try {
     } else {
         Write-SplashLog 'tech chrome: FirstBaseSplashTechMenu.ps1 missing' 'WARN'
     }
+    if ($statusNoticeRestartBtn) {
+        $statusNoticeRestartBtn.Add_Click({ try { Invoke-FbSplashHardwareFailRestart } catch {} })
+    }
+    if ($statusNoticeFirmwareBtn) {
+        $statusNoticeFirmwareBtn.Add_Click({ try { Invoke-FbSplashHardwareFailRestart -Firmware } catch {} })
+    }
 } catch {
     try { Write-SplashLog ("tech chrome wire-up failed: {0}" -f $_.Exception.Message) 'WARN' } catch {}
 }
@@ -2146,10 +2338,13 @@ try {
 # $script:startTime is this splash process start (stall watchdog only).
 # ELAPSED = time since this OS boot (TickCount64). A recheck or splash
 # relaunch does not restart it. TOTAL ELAPSED = pipeline StartTime from
-# wu-state (survives reboot) and freezes at OOBE handoff.
+# wu-state (survives reboot). Both stop when updates are done and hardware
+# checks finished (result / complete / fail-hold / HardwareFail UI).
 $script:startTime = Get-Date
 $script:FbTotalElapsedFrozen = $false
 $script:FbTotalElapsedFrozenValue = $null
+$script:FbElapsedFrozen = $false
+$script:FbElapsedFrozenValue = $null
 
 # 2213z: native HWND for SetWindowPos(HWND_TOPMOST)  -  WPF Topmost is insufficient vs OOBE.
 $script:SplashNativeHwnd = [IntPtr]::Zero
@@ -3097,10 +3292,10 @@ function Get-FbSplashHandoffCopyForPhase {
         }
         '^(HardwareFail|checks-fail)$' {
             $copy.Eyebrow = 'HARDWARE'
-            $copy.Header  = 'Hardware needs a look'
-            $copy.Detail  = 'Settings will open next.'
+            $copy.Header  = 'Hardware check failed'
+            $copy.Detail  = 'Failed checks are listed below. Fix hardware or firmware, then restart or open firmware setup.'
             $copy.Status  = 'Hardware failed'
-            $copy.Warning = ''
+            $copy.Warning = 'The device stays on. Seal and customer setup do not continue until checks pass.'
         }
         '^(OperatorGate|close-wait)$' {
             $copy.Eyebrow = 'WAITING ON YOU'
@@ -3159,6 +3354,7 @@ function Stop-FbSplashNoticeTimers {
 
 function Hide-FbSplashStatusNotice {
     Stop-FbSplashNoticeTimers
+    Hide-FbSplashHardwareFailPanel
     $script:FbSplashNoticeOpen = $false
     $script:FbSplashNoticeSig = ''
     if ($updatesWrap) { try { $updatesWrap.Visibility = [System.Windows.Visibility]::Visible } catch {} }
@@ -3426,11 +3622,22 @@ function Set-FbSplashHandoffLayout {
     $phaseKey = [string]$Phase
     if ($phaseKey -match '^(?i)(Waiting|preparing-handoff)$') { $noticeKind = 'Settle'; $countdown = $true }
     elseif ($phaseKey -match '^(?i)(HardwarePass|checks-pass)$') { $noticeKind = 'Passed'; $spinner = $false; $accent = '#FF66BB6A' }
-    elseif ($phaseKey -match '^(?i)(HardwareFail|checks-fail|gate-fail-restart)$') { $noticeKind = 'Failed'; $spinner = $false; $accent = '#FFEF5350' }
+    elseif ($phaseKey -match '^(?i)(HardwareFail|checks-fail)$') { $noticeKind = 'Failed'; $spinner = $false; $accent = '#FFEF5350' }
+    elseif ($phaseKey -match '^(?i)(gate-fail-restart)$') { $noticeKind = 'Failed'; $spinner = $false; $accent = '#FFEF5350' }
     elseif ($phaseKey -match '^(?i)(OperatorGate|close-wait)$') { $noticeKind = 'Gate'; $spinner = $false }
     elseif ($phaseKey -match '^(?i)(Sealing|sealing)$') { $noticeKind = 'Seal' }
     elseif ($phaseKey -match '^(?i)(restart-for-checks)$') { $noticeKind = 'Boot' }
     Show-FbSplashStatusNotice -Kind $noticeKind -Title $Header -Detail $Detail -Accent $accent -Spinner:$spinner -Countdown:$countdown
+    if ($phaseKey -match '^(?i)(HardwareFail|checks-fail)$') {
+        Show-FbSplashHardwareFailPanel -Message $Message
+        # Stop ELAPSED / TOTAL ELAPSED as soon as the fail page is shown.
+        try { Sync-FbSplashTotalElapsedTick } catch {}
+    } else {
+        Hide-FbSplashHardwareFailPanel
+        if ($phaseKey -match '^(?i)(HardwarePass|checks-pass|OperatorGate|Sealing|sealing|close-wait)$') {
+            try { Sync-FbSplashTotalElapsedTick } catch {}
+        }
+    }
 }
 
 function Start-FbHandoffSplashProcess {
@@ -4420,11 +4627,7 @@ $timer.Add_Tick({
         Set-FbSplashUpdatesContent -Items @($script:FbSplashLastKnownUpdates)
     }
 
-    try {
-        $fbElapsed = if ($script:Preview) { (Get-Date) - $script:startTime } else { Get-FbSplashSinceBootSpan }
-        Set-FbSplashElapsedDisplay -Elapsed $fbElapsed
-    } catch {}
-    try { Update-FbSplashTotalElapsed } catch {}
+    try { Sync-FbSplashTotalElapsedTick } catch {}
     try { Set-FbSplashRebootDisplay } catch {}
     try { Invoke-FbSplashHonorOperatorForeground | Out-Null } catch {}
 })
@@ -4802,7 +5005,7 @@ try {
         }
         if (-not $script:Preview) {
             Set-FbSplashElapsedDisplay -Elapsed ([TimeSpan]::Zero)
-            Update-FbSplashTotalElapsed
+            Sync-FbSplashTotalElapsedTick
         }
         $dialogResult = $window.ShowDialog()
         Write-SplashLog "ShowDialog() returned: $dialogResult (window closed normally)"

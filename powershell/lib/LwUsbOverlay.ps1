@@ -204,6 +204,27 @@ function Unlock-LwUsbOverlayForCopy {
     }
 }
 
+function Set-LwUsbHiddenMediaRoot {
+    # Re-apply Full Rebuild hide rules on an existing stick (Quick Update overlay / install refresh).
+    param(
+        [Parameter(Mandatory)][string]$VolRoot,
+        [string]$WorkflowType = '',
+        [bool]$QuickInstall = $false,
+        [bool]$NoPayload = $false
+    )
+    if ([string]::IsNullOrWhiteSpace($VolRoot)) { return }
+    if (Get-Command -Name Move-LwUsbMediaRootArtifacts -ErrorAction SilentlyContinue) {
+        Move-LwUsbMediaRootArtifacts -VolRoot $VolRoot
+    }
+    $chromeProfile = Get-LwUsbOverlayProfile -WorkflowType $WorkflowType -QuickInstall $QuickInstall -NoPayload $NoPayload
+    foreach ($bootItem in $chromeProfile.HiddenRootItems) {
+        $bootPath = Join-Path $VolRoot $bootItem
+        if (Test-Path -LiteralPath $bootPath) {
+            & attrib.exe +H +S $bootPath /D /S 2>&1 | Out-Null
+        }
+    }
+}
+
 function Copy-LwEdgeOfflineInstaller {
     <#
     .SYNOPSIS

@@ -1,4 +1,4 @@
-function Get-LwDriveHttpNodeRuntime {
+﻿function Get-LwDriveHttpNodeRuntime {
     $node = $env:LONEWOLF_NODE
     if ([string]::IsNullOrWhiteSpace($node) -or -not (Test-Path -LiteralPath $node)) {
         $node = (Get-Command -Name node.exe -ErrorAction SilentlyContinue).Source
@@ -18,15 +18,62 @@ function Format-LwDriveHttpWinArg {
     return '"' + ($Value -replace '"', '\"') + '"'
 }
 
+function Format-LwDriveHttpNodeFailureText {
+    # Prefer a short operator-facing line over a full Node stack dump.
+    param([string] $Text)
+    if ([string]::IsNullOrWhiteSpace($Text)) { return '' }
+    $t = $Text.Trim()
+    if ($t -match '(?im)Cannot find module\s+[''"]?([^''"\r\n]+)') {
+        $mod = $Matches[1].Trim()
+        return ("missing module '{0}' - Drive HTTP packaging is incomplete; reinstall or update the launcher" -f $mod)
+    }
+    if ($t -match '(?im)^Error:\s*(.+)$') {
+        return ($Matches[1].Trim())
+    }
+    $first = ($t -split '[\r\n]+' | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -First 1)
+    if ($first -and $first.Length -gt 240) { return ($first.Substring(0, 237) + '...') }
+    return [string]$first
+}
+
+function Test-LwDriveHttpScriptLayout {
+    # Packaged installs need resources/scripts/*.js plus resources/launcher/*.js.
+    param([Parameter(Mandatory)][string] $ScriptPath)
+    if ([string]::IsNullOrWhiteSpace($ScriptPath) -or -not (Test-Path -LiteralPath $ScriptPath)) {
+        return "drive-http: script missing at '$ScriptPath'"
+    }
+    $scriptsDir = Split-Path -Parent $ScriptPath
+    $loadHelper = Join-Path $scriptsDir 'drive-http-load-launcher.js'
+    $launcherDir = Join-Path (Split-Path -Parent $scriptsDir) 'launcher'
+    $srcLauncher = Join-Path (Split-Path -Parent $scriptsDir) 'src\launcher'
+    $need = @('driveHttpMedia.js', 'devDriveStaging.js', 'windowsEdition.js')
+    $ok = $true
+    foreach ($leaf in $need) {
+        $a = Join-Path $launcherDir $leaf
+        $b = Join-Path $srcLauncher $leaf
+        if (-not (Test-Path -LiteralPath $a) -and -not (Test-Path -LiteralPath $b)) { $ok = $false; break }
+    }
+    if (-not $ok) {
+        return 'drive-http: launcher modules missing next to the Drive HTTP scripts (need resources/launcher or src/launcher). Reinstall or update the launcher.'
+    }
+    if (-not (Test-Path -LiteralPath $loadHelper)) {
+        # Older installs without the helper still work if scripts use hard-coded ../src paths;
+        # packaged layouts without the helper + without src/launcher already failed above.
+        $pkgProbe = Join-Path $scriptsDir '..\src\launcher\driveHttpMedia.js'
+        if (-not (Test-Path -LiteralPath $pkgProbe) -and -not (Test-Path -LiteralPath (Join-Path $launcherDir 'driveHttpMedia.js'))) {
+            return 'drive-http: drive-http-load-launcher.js is missing from resources/scripts. Reinstall or update the launcher.'
+        }
+    }
+    return ''
+}
+
 function Invoke-LwDriveHttpNodeScript {
     param(
         [Parameter(Mandatory)][string] $ScriptPath,
         [Parameter(Mandatory)][string[]] $ArgParts,
         [scriptblock] $OnJsonLine
     )
-    if ([string]::IsNullOrWhiteSpace($ScriptPath) -or -not (Test-Path -LiteralPath $ScriptPath)) {
-        throw "drive-http: script missing at '$ScriptPath'"
-    }
+    $layoutErr = Test-LwDriveHttpScriptLayout -ScriptPath $ScriptPath
+    if (-not [string]::IsNullOrWhiteSpace($layoutErr)) { throw $layoutErr }
     $node = Get-LwDriveHttpNodeRuntime
     $psi = New-Object System.Diagnostics.ProcessStartInfo
     $psi.FileName = $node
@@ -72,8 +119,9 @@ function Invoke-LwDriveHttpNodeScript {
         if (-not [string]::IsNullOrWhiteSpace($lastErrorMsg)) {
             throw $lastErrorMsg
         }
-        if (-not [string]::IsNullOrWhiteSpace($errText)) {
-            throw ("drive-http: Node script failed ({0})" -f $errText)
+        $short = Format-LwDriveHttpNodeFailureText $errText
+        if (-not [string]::IsNullOrWhiteSpace($short)) {
+            throw ("drive-http: Node script failed ({0})" -f $short)
         }
         throw ("drive-http: Node script failed (exit {0})" -f $proc.ExitCode)
     }
@@ -114,7 +162,9 @@ function Invoke-LwDriveHttpMediaToVolume {
 function Invoke-LwDriveHttpSupportFolders {
     param(
         [Parameter(Mandatory)][string] $DestRoot,
-        [Parameter(Mandatory)][string] $FolderId,
+        [string] $FolderId = '1xxCL3FrNjKOPCOB_zWUC2NJLKCfKry8d',
+        [string] $OcsFolderId = '1Nmit70WgD0nov4mQs-XWdTRRkHCrRjbP',
+        [string] $DriversFolderId = '1ovDOCBkqKf7k5esZ_dm2o4aOkc_VA6Dg',
         [string[]] $Names = @('WinPE-OCs', 'WinPE-Drivers'),
         [scriptblock] $OnJsonLine
     )
@@ -128,18 +178,121 @@ function Invoke-LwDriveHttpSupportFolders {
         }
     }
     if ([string]::IsNullOrWhiteSpace($script) -or -not (Test-Path -LiteralPath $script)) {
+        # Destage checkout: scripts\ next to src\powershell\lib → ../../scripts
+        $hereLib = $PSScriptRoot
+        if (-not [string]::IsNullOrWhiteSpace($hereLib)) {
+            $candidate = Join-Path (Split-Path -Parent (Split-Path -Parent $hereLib)) 'scripts\drive-http-support-to-dir.js'
+            if (Test-Path -LiteralPath $candidate) { $script = $candidate }
+        }
+    }
+    if ([string]::IsNullOrWhiteSpace($script) -or -not (Test-Path -LiteralPath $script)) {
         throw 'drive-http-support: support download script not found (set LONEWOLF_DRIVE_HTTP_SUPPORT_SCRIPT)'
     }
     New-Item -ItemType Directory -Force -Path $DestRoot | Out-Null
     $nameCsv = ($Names -join ',')
+    $fid = if (-not [string]::IsNullOrWhiteSpace($FolderId)) { $FolderId } else { '1xxCL3FrNjKOPCOB_zWUC2NJLKCfKry8d' }
     $argParts = @(
         (Format-LwDriveHttpWinArg $script),
-        '--folder-id', (Format-LwDriveHttpWinArg $FolderId),
+        '--folder-id', (Format-LwDriveHttpWinArg $fid),
         '--dest', (Format-LwDriveHttpWinArg ($DestRoot.TrimEnd('\'))),
         '--names', (Format-LwDriveHttpWinArg $nameCsv),
         '--disk', '0'
     )
+    if (-not [string]::IsNullOrWhiteSpace($OcsFolderId)) {
+        $argParts += @('--ocs-folder-id', (Format-LwDriveHttpWinArg $OcsFolderId))
+    }
+    if (-not [string]::IsNullOrWhiteSpace($DriversFolderId)) {
+        $argParts += @('--drivers-folder-id', (Format-LwDriveHttpWinArg $DriversFolderId))
+    }
     Invoke-LwDriveHttpNodeScript -ScriptPath $script -ArgParts $argParts -OnJsonLine $OnJsonLine
+}
+
+function Ensure-LwDriveHttpWpeOcRoot {
+    <#
+    .SYNOPSIS
+      When HQ WinPE-OCs is missing, download the public Drive WinPE-OCs folder into DestRoot\WinPE-OCs.
+    #>
+    param(
+        [Parameter(Mandatory)][string] $DestRoot,
+        [string] $Arch = 'AMD64',
+        [scriptblock] $Log
+    )
+    if ([string]::IsNullOrWhiteSpace($DestRoot)) { return '' }
+    $ocRoot = Join-Path $DestRoot.TrimEnd('\') 'WinPE-OCs'
+    $archKey = if ($Arch -match '(?i)ARM64') { 'ARM64' } else { 'AMD64' }
+    if ((Get-Command -Name Test-LwWpeOcRootHasArch -ErrorAction SilentlyContinue) -and
+        (Test-LwWpeOcRootHasArch $ocRoot)) {
+        return $ocRoot
+    }
+    if (Test-Path -LiteralPath (Join-Path $ocRoot $archKey)) { return $ocRoot }
+    if (-not (Get-Command -Name Invoke-LwDriveHttpSupportFolders -ErrorAction SilentlyContinue)) {
+        return ''
+    }
+    if ($Log) { & $Log "drive-http-support: fetching WinPE-OCs from Google Drive into $ocRoot" }
+    try {
+        Invoke-LwDriveHttpSupportFolders -DestRoot $DestRoot -Names @('WinPE-OCs') -OnJsonLine {
+            param($line)
+            if (-not $Log -or [string]::IsNullOrWhiteSpace($line)) { return }
+            try {
+                $ev = $line | ConvertFrom-Json -ErrorAction Stop
+                if ($ev.message) { & $Log ([string]$ev.message) }
+            } catch {
+                & $Log ([string]$line)
+            }
+        }
+    } catch {
+        if ($Log) { & $Log ("drive-http-support: WinPE-OCs download skipped ($($_.Exception.Message))") }
+        return ''
+    }
+    if ((Get-Command -Name Test-LwWpeOcRootHasArch -ErrorAction SilentlyContinue) -and
+        (Test-LwWpeOcRootHasArch $ocRoot)) {
+        return $ocRoot
+    }
+    if (Test-Path -LiteralPath (Join-Path $ocRoot $archKey)) { return $ocRoot }
+    return ''
+}
+
+function Test-LwWinPeDriversRootHasPackages {
+    param([string] $Root)
+    if ([string]::IsNullOrWhiteSpace($Root)) { return $false }
+    if (-not (Test-Path -LiteralPath $Root -PathType Container)) { return $false }
+    $inf = @(Get-ChildItem -LiteralPath $Root -Recurse -Filter '*.inf' -File -ErrorAction SilentlyContinue | Select-Object -First 1)
+    return ($inf.Count -gt 0)
+}
+
+function Ensure-LwDriveHttpWinPeDriversRoot {
+    <#
+    .SYNOPSIS
+      When HQ and local ShareRoot lack WinPE-Drivers packages, download the public Drive WinPE-Drivers folder into DestRoot\WinPE-Drivers.
+    #>
+    param(
+        [Parameter(Mandatory)][string] $DestRoot,
+        [scriptblock] $Log
+    )
+    if ([string]::IsNullOrWhiteSpace($DestRoot)) { return '' }
+    $driverRoot = Join-Path $DestRoot.TrimEnd('\') 'WinPE-Drivers'
+    if (Test-LwWinPeDriversRootHasPackages -Root $driverRoot) { return $driverRoot }
+    if (-not (Get-Command -Name Invoke-LwDriveHttpSupportFolders -ErrorAction SilentlyContinue)) {
+        return ''
+    }
+    if ($Log) { & $Log 'drive-http-support: fetching WinPE-Drivers from Google Drive...' }
+    try {
+        Invoke-LwDriveHttpSupportFolders -DestRoot $DestRoot -Names @('WinPE-Drivers') -OnJsonLine {
+            param($line)
+            if (-not $Log -or [string]::IsNullOrWhiteSpace($line)) { return }
+            try {
+                $ev = $line | ConvertFrom-Json -ErrorAction Stop
+                if ($ev.message) { & $Log ([string]$ev.message) }
+            } catch {
+                & $Log ([string]$line)
+            }
+        }
+    } catch {
+        if ($Log) { & $Log ("drive-http-support: WinPE-Drivers download skipped ($($_.Exception.Message))") }
+        return ''
+    }
+    if (Test-LwWinPeDriversRootHasPackages -Root $driverRoot) { return $driverRoot }
+    return ''
 }
 
 function Invoke-LwDriveHttpWinPeUiZip {

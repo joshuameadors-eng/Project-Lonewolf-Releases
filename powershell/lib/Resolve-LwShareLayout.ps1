@@ -3,12 +3,23 @@
   Resolve ISO / PreSplit / WinPE-OCs roots for the deployment share.
 
 .DESCRIPTION
-  Functions only - safe to dot-source.   Prefers share-root folders:
+  Functions only - safe to dot-source.
+
+  Preferred HQ / SMB layout (Image Ready at share root):
+
+    <ShareRoot>\{Windows image build}\     (PreSplit / Image Ready packages)
+    <ShareRoot>\.old
+    <ShareRoot>\.requirements
+
+  Legacy share-root folders (still supported):
 
     <ShareRoot>\ISO
     <ShareRoot>\PreSplit
     <ShareRoot>\WinPE-OCs          (arch cabs live in AMD64\ and ARM64\)
     <ShareRoot>\Edge
+
+  Google Drive (HTTPS): Windows Images\Builds\{Windows image build}
+  (siblings .docs, Bitraser-ISOs, Builds). SMB has no Builds\ wrapper.
 
   HQ default ShareRoot is \\WIN-HQ5JDEACV3S\Images\FB Image Creation, so WinPE OCs are:
 
@@ -39,13 +50,87 @@ function Get-LwHqShareRoot {
     return '\\WIN-HQ5JDEACV3S\Images\FB Image Creation'
 }
 
+function Get-LwShareIgnoredDirNames {
+    return @(
+        '.old', '.requirements', '.docs',
+        'Bitraser-ISOs', 'Bitraser',
+        'Builds', 'ISO', 'PreSplit',
+        'WinPE-OCs', 'WinPE-Drivers', 'WinPEUI', 'Edge', 'Remote'
+    )
+}
+
+function Test-LwShareDirNameIgnored {
+    param([string]$Name)
+    if ([string]::IsNullOrWhiteSpace($Name)) { return $true }
+    if ($Name -like '*.tmp-*') { return $true }
+    foreach ($n in @(Get-LwShareIgnoredDirNames)) {
+        if ($Name -ieq $n) { return $true }
+    }
+    if ($Name -match '^(?i)(AMD64|ARM64|Home|Pro)$') { return $true }
+    return $false
+}
+
+function Resolve-LwShareBuildContainer {
+    param([string]$ShareRoot)
+    if ([string]::IsNullOrWhiteSpace($ShareRoot)) { return '' }
+    if (-not (Test-LwSharePath -Path $ShareRoot -PathType Container)) { return '' }
+
+    $buildsDir = Join-Path $ShareRoot 'Builds'
+    if (Test-LwShareDir $buildsDir) { return $buildsDir }
+
+    if (Test-LwSharePath -Path (Join-Path $ShareRoot 'current.json')) { return $ShareRoot }
+    if (Test-LwSharePath -Path (Join-Path $ShareRoot 'version.json')) { return $ShareRoot }
+
+    $rootIso = Join-Path $ShareRoot 'ISO'
+    $rootPre = Join-Path $ShareRoot 'PreSplit'
+    if ((Test-LwShareDir $rootIso) -or (Test-LwShareDir $rootPre)) { return '' }
+
+    $hasCandidate = $false
+    try {
+        foreach ($d in @(Get-ChildItem -LiteralPath $ShareRoot -Directory -ErrorAction SilentlyContinue)) {
+            if (Test-LwShareDirNameIgnored $d.Name) { continue }
+            $hasCandidate = $true
+            break
+        }
+    } catch { }
+    if ($hasCandidate) { return $ShareRoot }
+    return ''
+}
+
+function Resolve-LwBitraserIsoRoot {
+    param([string]$ShareRoot = '')
+    $root = if (-not [string]::IsNullOrWhiteSpace($ShareRoot)) { $ShareRoot } else { Get-LwHqShareRoot }
+    foreach ($rel in @('Bitraser-ISOs', 'Bitraser', 'Remote\Staging\Bitraser')) {
+        $p = Join-Path $root $rel
+        if (Test-LwShareDir $p) { return $p }
+    }
+    return (Join-Path $root 'Bitraser-ISOs')
+}
+
 function Get-LwHqWpeOcRoot {
     return (Join-Path (Get-LwHqShareRoot) 'WinPE-OCs')
 }
 
+function Test-LwSharePath {
+    param(
+        [string]$Path,
+        [ValidateSet('Any', 'Container', 'Leaf')]
+        [string]$PathType = 'Any'
+    )
+    if ([string]::IsNullOrWhiteSpace($Path)) { return $false }
+    try {
+        $tp = @{ LiteralPath = $Path; ErrorAction = 'SilentlyContinue' }
+        if ($PathType -eq 'Container') { $tp.PathType = 'Container' }
+        elseif ($PathType -eq 'Leaf') { $tp.PathType = 'Leaf' }
+        return [bool](Test-Path @tp)
+    } catch {
+        return $false
+    }
+}
+
 function Test-LwShareDir {
     param([string]$Path)
-    return (-not [string]::IsNullOrWhiteSpace($Path) -and (Test-Path -LiteralPath $Path))
+    return Test-LwSharePath -Path $Path
 }
 
 function Test-LwShareRootIsFilesystem {
@@ -58,12 +143,14 @@ function Test-LwShareRootIsFilesystem {
 function Test-LwLooksLikeStagingRoot {
     param([string]$Path)
     if (-not (Test-LwShareRootIsFilesystem $Path)) { return $false }
-    if (-not (Test-Path -LiteralPath $Path -PathType Container)) { return $false }
-    foreach ($n in @('ISO', 'PreSplit', 'WinPE-OCs', 'Edge')) {
-        if (Test-Path -LiteralPath (Join-Path $Path $n)) { return $true }
+    if (-not (Test-LwSharePath -Path $Path -PathType Container)) { return $false }
+    foreach ($n in @('ISO', 'PreSplit', 'WinPE-OCs', 'Edge', 'Builds')) {
+        if (Test-LwSharePath -Path (Join-Path $Path $n)) { return $true }
     }
-    # Flat Google Drive package root: current.json + set folders (no PreSplit\ wrapper).
-    if (Test-Path -LiteralPath (Join-Path $Path 'current.json')) { return $true }
+    # Flat Image Ready container: current.json + set folders (no PreSplit\ wrapper).
+    if (Test-LwSharePath -Path (Join-Path $Path 'current.json')) { return $true }
+    if (Test-LwSharePath -Path (Join-Path $Path 'version.json')) { return $true }
+    if (-not [string]::IsNullOrWhiteSpace((Resolve-LwShareBuildContainer -ShareRoot $Path))) { return $true }
     return $false
 }
 
@@ -94,22 +181,59 @@ function Resolve-LwDevShareRoot {
     }
 }
 
+function Test-LwWpeOcRootHasArch {
+    param([string]$OcRoot)
+    if (-not (Test-LwShareDir $OcRoot)) { return $false }
+    foreach ($a in @('AMD64', 'ARM64')) {
+        if (Test-LwSharePath -Path (Join-Path $OcRoot $a)) { return $true }
+    }
+    # Flat ADK-style root (WinPE_OCs with cabs at the top level).
+    if (Test-LwSharePath -Path (Join-Path $OcRoot 'WinPE-PowerShell.cab')) { return $true }
+    return $false
+}
+
+function Get-LwAdkWpeOcArchRoot {
+    <#
+    .SYNOPSIS
+      Local ADK WinPE_OCs folder for one arch (offline fallback when HQ is down).
+      Returns e.g. ...\Windows Preinstallation Environment\amd64\WinPE_OCs
+    #>
+    param([string]$Arch = 'AMD64')
+    $archKey = if ($Arch -match '(?i)ARM64') { 'arm64' } else { 'amd64' }
+    $pf86 = ${env:ProgramFiles(x86)}
+    if ([string]::IsNullOrWhiteSpace($pf86)) { $pf86 = 'C:\Program Files (x86)' }
+    $p = Join-Path $pf86 (
+        "Windows Kits\10\Assessment and Deployment Kit\Windows Preinstallation Environment\$archKey\WinPE_OCs"
+    )
+    if (Test-Path -LiteralPath $p) { return $p }
+    return ''
+}
+
 function Resolve-LwWpeOcRoot {
     <#
     .SYNOPSIS
-      Pick WinPE-OCs root (parent of AMD64\ / ARM64\). Prefer share-root, then HQ, never require legacy Staging.
+      Pick WinPE-OCs root (parent of AMD64\ / ARM64\, or flat ADK-style). Prefer
+      share-root, then HQ. Empty UUP\WinPE-OCs does not win. Local UUP staging
+      roots never invent a missing WinPE-OCs path — return HQ so callers can
+      ADK-fallback per arch.
     #>
     param(
         [string]$ShareRoot = '',
         [string]$LocalOcRoot = ''
     )
-    if (Test-LwShareDir $LocalOcRoot) { return $LocalOcRoot }
+    if (Test-LwWpeOcRootHasArch $LocalOcRoot) { return $LocalOcRoot }
     if (-not [string]::IsNullOrWhiteSpace($ShareRoot)) {
         $rootOc = Join-Path $ShareRoot 'WinPE-OCs'
-        if (Test-LwShareDir $rootOc) { return $rootOc }
+        if (Test-LwWpeOcRootHasArch $rootOc) { return $rootOc }
     }
     $hqOc = Get-LwHqWpeOcRoot
+    if (Test-LwWpeOcRootHasArch $hqOc) { return $hqOc }
     if (Test-LwShareDir $hqOc) { return $hqOc }
+    # Local UUP / Drive staging: OCs are not under this tree. Do not invent
+    # <UUP>\WinPE-OCs when HQ is offline — ADK arch fallback handles inject.
+    if (-not [string]::IsNullOrWhiteSpace($ShareRoot) -and (Test-LwLooksLikeStagingRoot $ShareRoot)) {
+        return $hqOc
+    }
     if (-not [string]::IsNullOrWhiteSpace($ShareRoot)) {
         return (Join-Path $ShareRoot 'WinPE-OCs')
     }
@@ -167,7 +291,7 @@ function Resolve-LwShareLayout {
     $legacyEdge = Join-Path $legacyStaging 'Edge'
     $useRoot = (Test-LwShareDir $rootIso) -or (Test-LwShareDir $rootPre) -or (Test-LwShareDir $rootOc) -or (Test-LwShareDir $rootEdge)
     $wpeOcRoot = Resolve-LwWpeOcRoot -ShareRoot $ShareRoot
-    $flatPackageRoot = Test-Path -LiteralPath (Join-Path $ShareRoot 'current.json')
+    $flatPackageRoot = Test-LwSharePath -Path (Join-Path $ShareRoot 'current.json')
 
     if ($useRoot) {
         return [pscustomobject]@{
@@ -180,12 +304,25 @@ function Resolve-LwShareLayout {
         }
     }
 
-    # Google Drive shared folder: set packages + current.json at the root (no PreSplit\).
+    $buildContainer = Resolve-LwShareBuildContainer -ShareRoot $ShareRoot
+    if (-not [string]::IsNullOrWhiteSpace($buildContainer)) {
+        $layoutName = if ($buildContainer -ieq $ShareRoot) { 'share-builds-flat' } else { 'share-builds' }
+        return [pscustomobject]@{
+            Layout       = $layoutName
+            StagingRoot  = $ShareRoot
+            IsoRoot      = $(if (Test-LwShareDir $rootIso) { $rootIso } else { $buildContainer })
+            PreSplitRoot = $buildContainer
+            WpeOcRoot    = $wpeOcRoot
+            EdgeRoot     = $(if (Test-LwShareDir $rootEdge) { $rootEdge } else { '' })
+        }
+    }
+
+    # Image Ready packages + current.json at the root (no PreSplit\ wrapper).
     if ($flatPackageRoot) {
         return [pscustomobject]@{
             Layout       = 'drive-package-root'
             StagingRoot  = $ShareRoot
-            IsoRoot      = $(if (Test-LwShareDir $rootIso) { $rootIso } else { '' })
+            IsoRoot      = $(if (Test-LwShareDir $rootIso) { $rootIso } else { $ShareRoot })
             PreSplitRoot = $ShareRoot
             WpeOcRoot    = $wpeOcRoot
             EdgeRoot     = $(if (Test-LwShareDir $rootEdge) { $rootEdge } else { '' })
@@ -317,12 +454,12 @@ function Resolve-LwBootInjectSourcesDir {
     if (Get-Command -Name Get-LWPreSplitCandidateDirs -ErrorAction SilentlyContinue) {
         foreach ($setDir in @(Get-LWPreSplitCandidateDirs -PreSplitRoot $BootInjectRoot -Arch $archKey -Edition $ed)) {
             $sources = Join-Path $setDir 'sources'
-            if (Test-Path -LiteralPath (Join-Path $sources 'boot.wim')) { return $sources }
+            if (Test-LwSharePath -Path (Join-Path $sources 'boot.wim')) { return $sources }
         }
     }
     $editionFolder = $Edition.ToLowerInvariant()
     $legacySources = Join-Path (Join-Path (Join-Path $BootInjectRoot $archKey) $editionFolder) 'sources'
-    if (Test-Path -LiteralPath (Join-Path $legacySources 'boot.wim')) { return $legacySources }
+    if (Test-LwSharePath -Path (Join-Path $legacySources 'boot.wim')) { return $legacySources }
     return ''
 }
 

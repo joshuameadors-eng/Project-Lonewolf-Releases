@@ -1,8 +1,8 @@
 {
     "_comment": "Product/payload version (version and payloadVersion) is independent of launcherVersion. npm start destage staging product version (chips, image dates, changelog, arch enablement) always comes from this file. Changelog entries are only for official RELEASE/MAJOR cuts pushed to the public main release feed (not per-DEV destage bumps). Packaged Dev and production changelog/update feeds use public GitHub latest.json (main) or latest-dev.json (packaged Dev). The ISO share and Drive VERSION.json must not host launcher exe, payload zip, or live version overlay.",
-    "version": "7.0.17",
-    "payloadVersion": "7.0.17",
-    "launcherVersion": "6.3.6",
+    "version": "7.0.8",
+    "payloadVersion": "7.0.8",
+    "launcherVersion": "7.0.3",
     "launcherExeName": "LoneWolf-Launcher.exe",
     "dev": {
         "_comment": "npm start destage always versions from this checkout VERSION.json (local ISO, HQ UNC, or Drive HTTPS Image Ready). Packaged Dev uses the public dev branch / latest-dev.json. Packaged production uses main / latest.json. Google Drive media is HTTPS-only (no Drive for Desktop). A Drive folder URL is never ShareRoot. Do not publish exe/zip to Drive. Do not overlay Drive HTTPS VERSION.json on destage.",
@@ -26,14 +26,52 @@
     },
     "changelog": [
         {
-            "version": "7.0.0",
-            "date": "2026-10-21",
+            "version": "7.0.3",
+            "date": "2026-11-02",
             "changes": [
-                "Official release 7.0.0 — payload MAJOR (6 to 7); launcher 6.3.0.",
+                "Official release 7.0.3 — follow-up to 7.0.2 (RELEASE 2→3). Launcher, payload, and product version are all 7.0.3.",
+                "Changed",
+                "Media layout — Google Drive Image Ready lives under Windows Images\\Builds\\{build}; HQ SMB uses flat Image Ready folders at FB Image Creation\\{build} (no Builds wrapper)",
+                "Share discovery — Bitraser-ISOs at share root or Drive Windows Images; staging scans skip .old, .requirements, and .docs",
+                "ISO, PreSplit, WinPE-OCs, and Edge — legacy share-root and Remote\\Staging trees remain supported when flat build folders are absent"
+            ]
+        },
+        {
+            "version": "7.0.2",
+            "date": "2026-11-02",
+            "changes": [
+                "Official release 7.0.2 — follow-up to 7.0.1 (RELEASE 1→2). Launcher, payload, and product version are all 7.0.2.",
+                "Changed",
+                "Share layout — UNC-safe Test-Path when the HQ share is offline or unreachable so staging detection does not throw",
+                "USB Builder — Image in RAM toggle on packaged production for share-ISO workflows; stamps sticks and WinPE may stage install*.swm to RAM when memory allows",
+                "Quick Install — Builder offers Quick Update when scripts are newer than the stick (overlay), same as Updates sticks"
+            ]
+        },
+        {
+            "version": "7.0.1",
+            "date": "2026-11-02",
+            "changes": [
+                "Official release 7.0.1 — follow-up to 7.0.0 (RELEASE 0→1). Launcher, payload, and product version are all 7.0.1.",
+                "Added",
+                "Destage image-in-RAM apply test — optional Builder toggle stamps the stick; WinPE stages install*.swm to RAM scratch when memory allows, then falls back to USB",
+                "Changed",
+                "USB Builder — recommend Full Rebuild when PreSplit identity or offline cumulative OS build on staging is newer than the stick; imageVersion family matching ignores calendar M-D segments in folder names",
+                "Builder ISO sources — deployment share ISOs hidden by default; Show share / Hide share restores the prior list",
+                "Google Drive HTTP and PreSplit — packaged and destage USB rebuild reliability (Drive HTTP media copy, split-WIM staging, overlay profile)",
+                "Quick Update — can replace install*.swm when staging carries a newer offline cumulative build than the stick"
+            ]
+        },
+        {
+            "version": "7.0.0",
+            "date": "2026-10-30",
+            "changes": [
+                "Official release 7.0.0 — launcher and payload MAJOR (6 to 7).",
                 "Added",
                 "Seal security gates — Defender exclusions and Windows Update auto-update policy are live-verified HARD before seal; READY treats WU AU leftovers and a failed security probe as not ready",
                 "Changed",
                 "Install media — Google Drive is the default; the HQ share is not auto-connected at startup",
+                "Google Drive media — HTTPS Image Ready staging, rebuild, and packaged Full Rebuild without Drive for Desktop",
+                "Pre-split / Image Ready — canonical folder ids for SkipISO and UUP convert trees include edition, arch, and calendar date",
                 "Seal paths — a prior sealed marker no longer bypasses Defender restore or MDM scrub failures before sysprep",
                 "HQ share credentials — LONEWOLF_SHARE_PASSWORD is required; no password is embedded in the product",
                 "Windows Update — clock/certificate failures sync time only when needed; splash elapsed and reboot counting stay correct across rechecks"

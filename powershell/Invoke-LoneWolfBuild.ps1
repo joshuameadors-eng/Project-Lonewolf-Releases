@@ -50,7 +50,7 @@
   Optional local folder for the ESP template cache used ONLY by non-ISO (staged-WIM /
   MEDIA-CREATOR) builds that inject boot.wim once into a local EspCache before copying
   to USB. Defaults to %TEMP%\LWCache_<guid> when that path is needed. ISO / PreferIso /
-  OverlayOnly builds do NOT use CacheRoot — USB-bound content is copied directly to the
+  OverlayOnly builds do NOT use CacheRoot - USB-bound content is copied directly to the
   stick (ISO→ESP, ISO→data, ContentRoot→overlay). User-provided CacheRoot is ignored
   on PreferIso/ISO paths.
 
@@ -73,7 +73,7 @@
   Process one disk at a time instead of launching all jobs in parallel.
   Each disk's Start-Job (full pipeline: wipe through WinPE/BCD/done) is fully
   drained and removed before the next disk starts.
-  Opt-in only — pass this switch explicitly to force sequential builds (e.g. for debugging).
+  Opt-in only - pass this switch explicitly to force sequential builds (e.g. for debugging).
   Release builds run each disk end-to-end in parallel by default.
 
 .OUTPUTS
@@ -162,6 +162,8 @@ param(
     # AND --destage-updates-finished / LONEWOLF_DESTAGE_UPDATES_FINISHED). Packaged Destage
     # must never pass this. Stamps destageSkipWu on slim LW_VERSION.json (destage only).
     [switch] $DestageSkipWu,
+    # Builder toggle (npm start or packaged). Stamps imageInRam on slim LW_VERSION.json.
+    [switch] $ImageInRam,
     [ValidateSet('local', 'share', 'googleDrive', '')]
     [string] $MediaSource = '',
     # Producer: write startnet/WinPeUi-injected boot.wim under BootInject on Drive, then exit.
@@ -256,7 +258,7 @@ function Invoke-LwIsoSweep {
 # --- Orphan %TEMP% litter sweep (crashed / hard-killed builds) ----------------
 # Best-effort: unmount any leftover DISM mount dirs then delete matching folders/logs.
 # Safe to run at start, end, and on -DismountOnly (cancel). Never throws.
-# -IncludeCache also removes LWCache_* (use at end / cancel — NOT at build-start, so a
+# -IncludeCache also removes LWCache_* (use at end / cancel - NOT at build-start, so a
 # user-provided persistent EspCache under %TEMP% is not wiped before a WIM-mode build).
 function Invoke-LwTempOrphanSweep {
     param(
@@ -320,7 +322,7 @@ if ($WindowsEdition -match '^(?i)home$') { $winEdition = 'Home' }
 $shareLayoutLib = Join-Path $PSScriptRoot 'lib\Resolve-LwShareLayout.ps1'
 if (Test-Path -LiteralPath $shareLayoutLib) { . $shareLayoutLib }
 
-# Drive HTTP direct must not inherit the default HQ ShareRoot — that made googleDrive
+# Drive HTTP direct must not inherit the default HQ ShareRoot - that made googleDrive
 # layout bind to HQ ISO/PreSplit and fall into local ESP cache ("Preparing ESP cache").
 $script:DriveHttpSupportRoot = ''
 if ($DriveHttpDirect) {
@@ -505,7 +507,7 @@ if (Test-Path -LiteralPath $LcuLibPath) { . $LcuLibPath }
 # Full Windows Updates (Intel/AMD and Snapdragon) parses the update loop.
 # Both Quick Install workflows and WIN-INSTALL skip that payload.
 # Image Ready boot.wim export (-ExportStagedBootWim*) only needs Deploy\WinPE-Startnet.cmd
-# under ContentRoot — not the multi-MB update loop (Keyes / Stage-GoogleDriveMedia producers).
+# under ContentRoot - not the multi-MB update loop (Keyes / Stage-GoogleDriveMedia producers).
 $exportOnlyBootWim = (-not [string]::IsNullOrWhiteSpace($ExportStagedBootWimSetDir)) -or
     (-not [string]::IsNullOrWhiteSpace($ExportStagedBootWimRoot))
 $stageWuPayload = $false
@@ -520,42 +522,131 @@ if ($stageWuPayload) {
     EmitLog -Disk 0 -Msg "payload: update-loop script parse+trailer OK ($ContentRoot)"
 }
 
-# WinPE OC source: Drive root WinPE-OCs (Desktop or HTTP support download), else
-# LocalProjectRoot Staging\WinPE-OCs, explicit -WpeOcRoot, share layout / HQ.
+# WinPE OC source: arch-bearing Staging\WinPE-OCs, explicit -WpeOcRoot, share / HQ.
+# Drive HTTP still needs a real OC root when the package lacks an inject sentinel
+# (per-disk startnet inject). Empty UUP\WinPE-OCs must not beat HQ.
 $WpeOcSource = if (-not [string]::IsNullOrWhiteSpace($LocalProjectRoot) -and
                    -not [string]::IsNullOrWhiteSpace($StagingRoot) -and
-                   (Test-Path -LiteralPath (Join-Path $StagingRoot 'WinPE-OCs'))) {
+                   (Get-Command -Name Test-LwWpeOcRootHasArch -ErrorAction SilentlyContinue) -and
+                   (Test-LwWpeOcRootHasArch (Join-Path $StagingRoot 'WinPE-OCs'))) {
     Join-Path $StagingRoot 'WinPE-OCs'
 } elseif (-not [string]::IsNullOrWhiteSpace($WpeOcRoot)) {
     $WpeOcRoot
 } elseif ($DriveHttpDirect) {
-    ''
+    if (Get-Command -Name Resolve-LwWpeOcRoot -ErrorAction SilentlyContinue) {
+        Resolve-LwWpeOcRoot -ShareRoot (Get-LwHqShareRoot) -LocalOcRoot ''
+    } else {
+        ''
+    }
 } else {
     Resolve-LwWpeOcRoot -ShareRoot $ShareRoot -LocalOcRoot $shareLayout.WpeOcRoot
 }
 
 # WinPE-OCs on HQ: Images\FB Image Creation\WinPE-OCs\{AMD64|ARM64}.
-# Resolve the arch subfolder for the current build. Prefer <root>\<ARCH>; fall
-# back to the flat <root> only when the arch subfolder is absent but the flat
-# root still holds the base PowerShell cab (legacy / offline dev). When neither
-# is present, return the arch subfolder path so the required-cab guard fails
-# loudly naming that exact path.
+# Prefer <root>\<ARCH>; flat root with WinPE-PowerShell.cab (legacy / ADK); then
+# local ADK WinPE_OCs when HQ is offline. When nothing exists, return the arch
+# subfolder path so the required-cab guard fails naming that path.
 function Resolve-WpeOcArchRoot {
     param([string]$BaseRoot, [string]$Arch)
 
-    if ([string]::IsNullOrWhiteSpace($BaseRoot) -or [string]::IsNullOrWhiteSpace($Arch)) { return $BaseRoot }
     $archKey = if ($Arch -match '(?i)ARM64') { 'ARM64' } else { 'AMD64' }
-    $archRoot = Join-Path $BaseRoot $archKey
-    if (Test-Path -LiteralPath $archRoot) { return $archRoot }
-    # Legacy flat WinPE-OCs\ (no AMD64\ / ARM64\ children) was AMD64 ADK only.
-    # Never feed that tree to ARM64 — DISM /Add-Package fails with opaque exit codes.
-    $hasArchChildren = (Test-Path -LiteralPath (Join-Path $BaseRoot 'AMD64')) -or
-        (Test-Path -LiteralPath (Join-Path $BaseRoot 'ARM64'))
-    if (-not $hasArchChildren -and $archKey -eq 'AMD64' -and
-        (Test-Path -LiteralPath (Join-Path $BaseRoot 'WinPE-PowerShell.cab'))) {
-        return $BaseRoot
+    if (-not [string]::IsNullOrWhiteSpace($BaseRoot)) {
+        $archRoot = Join-Path $BaseRoot $archKey
+        if (Test-Path -LiteralPath $archRoot) { return $archRoot }
+        # Legacy flat WinPE-OCs\ or ADK WinPE_OCs\ (cabs at root). Never feed a
+        # flat AMD64 ADK tree to ARM64.
+        $hasArchChildren = (Test-Path -LiteralPath (Join-Path $BaseRoot 'AMD64')) -or
+            (Test-Path -LiteralPath (Join-Path $BaseRoot 'ARM64'))
+        if (-not $hasArchChildren -and
+            (Test-Path -LiteralPath (Join-Path $BaseRoot 'WinPE-PowerShell.cab'))) {
+            if ($archKey -eq 'AMD64') { return $BaseRoot }
+            # ARM64: flat AMD64-only tree is wrong; try ADK below.
+        } elseif (-not $hasArchChildren -and [string]::IsNullOrWhiteSpace($BaseRoot) -eq $false) {
+            # Base exists but empty / wrong - fall through to ADK.
+        }
     }
-    return $archRoot
+    if (Get-Command -Name Get-LwAdkWpeOcArchRoot -ErrorAction SilentlyContinue) {
+        $adk = [string](Get-LwAdkWpeOcArchRoot -Arch $archKey)
+        if (-not [string]::IsNullOrWhiteSpace($adk) -and (Test-Path -LiteralPath $adk)) {
+            return $adk
+        }
+    }
+    if (-not [string]::IsNullOrWhiteSpace($BaseRoot)) {
+        return (Join-Path $BaseRoot $archKey)
+    }
+    return ''
+}
+
+# Full Rebuild / EspCache inject: preferred root → HQ → Drive HTTPS → ADK.
+function Resolve-WpeOcArchRootForInject {
+    param(
+        [string]$PreferredRoot = '',
+        [Parameter(Mandatory)][string]$Arch,
+        [scriptblock]$Log
+    )
+    $tryPath = {
+        param([string]$Root)
+        if ([string]::IsNullOrWhiteSpace($Root)) { return '' }
+        $p = Resolve-WpeOcArchRoot -BaseRoot $Root -Arch $Arch
+        if (-not [string]::IsNullOrWhiteSpace($p) -and (Test-Path -LiteralPath $p)) { return $p }
+        return ''
+    }
+    $hit = & $tryPath $PreferredRoot
+    if ($hit) { return $hit }
+
+    if (Get-Command -Name Resolve-LwWpeOcRoot -ErrorAction SilentlyContinue) {
+        $hqShare = if (Get-Command -Name Get-LwHqShareRoot -ErrorAction SilentlyContinue) {
+            [string](Get-LwHqShareRoot)
+        } else { '' }
+        $hqRoot = Resolve-LwWpeOcRoot -ShareRoot $hqShare -LocalOcRoot ''
+        $hit = & $tryPath $hqRoot
+        if ($hit) { return $hit }
+    }
+
+    $driveParent = Get-LwDriveHttpSupportDestRoot -ShareRoot ''
+    if (Get-Command -Name Ensure-LwDriveHttpWpeOcRoot -ErrorAction SilentlyContinue) {
+        if ($Log) { & $Log "WinPE-OCs: fetching public Drive folder into $driveParent\WinPE-OCs" }
+        $fetched = Ensure-LwDriveHttpWpeOcRoot -DestRoot $driveParent -Arch $Arch -Log $Log
+        $hit = & $tryPath $fetched
+        if ($hit) { return $hit }
+    }
+
+    # Last resort: ADK (Resolve-WpeOcArchRoot with empty base).
+    $hit = & $tryPath ''
+    if ($hit) { return $hit }
+    return ''
+}
+
+function Get-LwDriveHttpSupportDestRoot {
+    param([string] $ShareRoot = '')
+    $driveParent = ''
+    if (Get-Command -Name Get-LwDestageUupLayout -ErrorAction SilentlyContinue) {
+        try { $driveParent = [string](Get-LwDestageUupLayout).Root } catch { }
+    }
+    if ([string]::IsNullOrWhiteSpace($driveParent) -and -not [string]::IsNullOrWhiteSpace($ShareRoot) -and
+        (Get-Command -Name Test-LwLooksLikeStagingRoot -ErrorAction SilentlyContinue) -and
+        (Test-LwLooksLikeStagingRoot $ShareRoot)) {
+        $driveParent = $ShareRoot
+    }
+    if ([string]::IsNullOrWhiteSpace($driveParent)) {
+        $driveParent = Join-Path $env:TEMP 'LW-WinPeOc-Drive'
+    }
+    return $driveParent
+}
+
+function Resolve-LwArm64DriverDirForBuild {
+    param(
+        [string] $ShareRoot = '',
+        [scriptblock] $Log
+    )
+    if (-not (Get-Command -Name Resolve-LwArm64DriverDir -ErrorAction SilentlyContinue)) { return '' }
+    $dir = [string](Resolve-LwArm64DriverDir -ShareRoot $ShareRoot)
+    if (-not [string]::IsNullOrWhiteSpace($dir)) { return $dir }
+    if (-not (Get-Command -Name Ensure-LwDriveHttpWinPeDriversRoot -ErrorAction SilentlyContinue)) { return '' }
+    $driveParent = Get-LwDriveHttpSupportDestRoot -ShareRoot $ShareRoot
+    $fetched = Ensure-LwDriveHttpWinPeDriversRoot -DestRoot $driveParent -Log $Log
+    if (-not [string]::IsNullOrWhiteSpace($fetched)) { return $fetched }
+    return [string](Resolve-LwArm64DriverDir -ShareRoot $driveParent)
 }
 
 # Copy-LwEdgeOfflineInstaller lives in lib\LwUsbOverlay.ps1 (dotted above and into disk jobs).
@@ -756,7 +847,7 @@ function Get-LWPreSplitSet {
                 continue
             }
             # Match by source name+size (and soft last-write). Do not recompute
-            # Get-LWImageVersionId for string equality — stamps are staging UTC.
+            # Get-LWImageVersionId for string equality - stamps are staging UTC.
             $reasons = @()
             if (-not (Get-Command -Name Test-LWPreSplitSourceMatchesIso -ErrorAction SilentlyContinue) -or
                 -not (Test-LWPreSplitSourceMatchesIso -Manifest $m -Iso $Iso)) {
@@ -792,7 +883,7 @@ function Get-LWPreSplitSet {
 
 # CacheRoot / EspCache is allocated ONLY for non-ISO staged-WIM builds (see ensure block
 # after ISO detection). ISO / PreferIso / OverlayOnly copy USB-bound content directly to
-# the stick — no local LWCache overlay or ESP staging. PreferIso ignores a user-provided
+# the stick - no local LWCache overlay or ESP staging. PreferIso ignores a user-provided
 # -CacheRoot so a persistent EspCache folder cannot accidentally suppress per-disk inject.
 $userProvidedCache = (-not [string]::IsNullOrWhiteSpace($CacheRoot))
 if ($PreferIso) {
@@ -938,7 +1029,7 @@ function Get-LwWinPeUiFolderName {
 function Ensure-LwWinPeUiArchDir {
     # Prefer local publish trees (npm start). Else: staged UUP\WinPEUI zips, then
     # Warehouse - Imaging > WinPEUI on Drive, then GitHub bin/ (under 100 MB).
-    # Cache expands into a writable dir — resources\payload is often read-only.
+    # Cache expands into a writable dir - resources\payload is often read-only.
     param(
         [Parameter(Mandatory)][ValidateSet('AMD64', 'ARM64')][string] $Arch,
         [switch] $Required
@@ -1164,7 +1255,7 @@ function Build-Cache {
 
     EmitProgress -Disk 0 -Phase 'esp-copy' -Pct 100
 
-    # Overlay cache — wipe and recreate so no stale payload files survive across workflow-type
+    # Overlay cache - wipe and recreate so no stale payload files survive across workflow-type
     # switches (e.g. a prior full AMD64 build populates Deploy\, WUPayload\, Scripts\ in the
     # same cache root; New-Item -Force on an existing directory does NOT clear old content).
     Remove-Item -LiteralPath $overlayCache -Recurse -Force -ErrorAction SilentlyContinue
@@ -1431,7 +1522,7 @@ function Build-IsoCache {
 
     EmitProgress -Disk 0 -Phase 'esp-copy' -Pct 100
 
-    # Overlay cache — wipe and recreate so no stale payload files survive across workflow-type
+    # Overlay cache - wipe and recreate so no stale payload files survive across workflow-type
     # switches (same logic as Build-Cache; New-Item -Force never clears existing content).
     Remove-Item -LiteralPath $overlayCache -Recurse -Force -ErrorAction SilentlyContinue
     New-Item -ItemType Directory -Force -Path $overlayCache | Out-Null
@@ -1822,7 +1913,7 @@ function Invoke-StartnetInjection {
                     $cabPath = Join-Path $WpeOcPath $cabName
                     if (-not (Test-Path -LiteralPath $cabPath)) { $cabPath = Join-Path (Join-Path $WpeOcPath 'en-us') $cabName }
                     EmitLog -Disk 0 -Msg "startnet inject: adding $cabName to boot.wim index $wimIndex from '$cabPath' ..."
-                    # Do not pipe DISM to Out-Null — that can clobber $LASTEXITCODE on Windows PowerShell 5.1.
+                    # Do not pipe DISM to Out-Null - that can clobber $LASTEXITCODE on Windows PowerShell 5.1.
                     $addOut = & dism.exe /Image:"$mountDir" /Add-Package /PackagePath:"$cabPath" 2>&1
                     $addCode = $LASTEXITCODE
                     if ($addCode -ne 0) {
@@ -1966,6 +2057,8 @@ $workerDiskBlock = {
         [string] $EdgeToolsDir,
         # Destage skip-WU (npm start:updatesfinished). Only honored when $DevBuild is true.
         [bool]   $DestageSkipWu,
+        # WinPE DISM apply may stage install image to RAM when LW_VERSION imageInRam is set.
+        [bool]   $ImageInRam,
         # ARM64 driver folder. Empty on AMD64 and on overlay-only.
         [string] $Arm64UsbDriverDir,
         [string] $Arm64DriverLibPath,
@@ -2533,7 +2626,7 @@ $workerDiskBlock = {
             # directly from the mounted ISO per disk. WIM mode pre-populates from ESP cache.
             JPhase 'esp-copy'
             if ($driveHttpMediaOnVolume) {
-                # Single-volume package already on the stick — verify boot loaders only.
+                # Single-volume package already on the stick - verify boot loaders only.
                 JProgress 'esp-copy' 0
                 $synthHttp = Repair-LwEspBootLoaders -EspRoot $espRoot -WorkflowType $WorkflowType
                 if ($synthHttp) {
@@ -2614,7 +2707,7 @@ $workerDiskBlock = {
                         if ($espDone -ge ($espTotalBytes * 0.99)) {
                             # Dest size looks complete but robocopy is still flushing write-back
                             # to the USB. Cap the reported pct low so the UI Finalizing fake bar
-                            # has room to climb (do NOT emit 99 — that made the bar look done).
+                            # has room to climb (do NOT emit 99 - that made the bar look done).
                             J @{ event='progress'; disk=$DiskNumber; phase='esp-copy'; pct=88; flushing=$true; label='Finalizing...' }
                         } else {
                             JProgress 'esp-copy' ([math]::Min(88, [int](100 * $espDone / $espTotalBytes)))
@@ -2670,11 +2763,11 @@ $workerDiskBlock = {
             $dataRoot = ($data | Get-Volume).DriveLetter + ':\'
 
             # Data partition write
-            # Drive HTTP: package already on the volume — do not fall through to WIM mount
+            # Drive HTTP: package already on the volume - do not fall through to WIM mount
             # (StagingWim is empty when ShareRoot is cleared; Split-Path '' throws empty Path).
             # ISO mode: robocopy all ISO contents to data partition (install.wim stays as a file).
             # WIM mode (preferred): robocopy from a shared read-only mount prepared on the main
-            # thread — concurrent DISM /Mount-Image across Start-Jobs serializes / fails, so
+            # thread - concurrent DISM /Mount-Image across Start-Jobs serializes / fails, so
             # parallel Phase 1 must share one mount and only parallelize the USB writes.
             # WIM mode (fallback): per-disk local copy + Mount-Image when no shared mount exists.
             if ($driveHttpMediaOnVolume) {
@@ -2808,7 +2901,7 @@ $workerDiskBlock = {
                                 if ($dstBytes -ge ($psSrcBytes * 0.99)) {
                                     # Dest .swm sizes look complete but robocopy is still flushing
                                     # write-back to FAT32 USB (often many minutes). Emit Finalizing
-                                    # at 88 — not 99 — so the UI fake bar can keep climbing.
+                                    # at 88 - not 99 - so the UI fake bar can keep climbing.
                                     J @{ event='progress'; disk=$DiskNumber; phase='wim-presplit'; pct=88; flushing=$true; label='Finalizing...' }
                                 } else {
                                     $pct = [math]::Min(88, [int](100 * $dstBytes / $psSrcBytes))
@@ -2852,7 +2945,7 @@ $workerDiskBlock = {
                     Move-LwUsbMediaRootArtifacts -VolRoot $dataRoot
                 }
             } elseif (-not [string]::IsNullOrWhiteSpace($SharedWimMount)) {
-                # Shared mount path — parallel-safe (read-only mount, concurrent robocopy OK)
+                # Shared mount path - parallel-safe (read-only mount, concurrent robocopy OK)
                 JPhase 'dism'
                 JProgress 'dism' 0
                 if (-not (Test-Path -LiteralPath $SharedWimMount)) {
@@ -3107,16 +3200,16 @@ $workerDiskBlock = {
                 }
             }
 
-            # Full-build data/ESP populate complete — continue into WinPE/overlay/BCD below.
+            # Full-build data/ESP populate complete - continue into WinPE/overlay/BCD below.
         }
 
         # ---------------------------------------------------------------------
-        # Post-data steps (formerly Phase 2) — run in this job so Disk A can
+        # Post-data steps (formerly Phase 2) - run in this job so Disk A can
         # inject WinPE while Disk B is still in DISM. Injects only THIS USB's
         # ESP sources\boot.wim (never a shared cache WIM).
         # ---------------------------------------------------------------------
 
-        # Re-acquire partition roots — USB controllers can re-enumerate during
+        # Re-acquire partition roots - USB controllers can re-enumerate during
         # the long DISM/robocopy, causing cached drive letters to go stale.
         if (-not $OverlayOnly) {
             $espRoot  = $null
@@ -3384,7 +3477,7 @@ $workerDiskBlock = {
                             $__peMsg = $_.Exception.Message
                             if ($__peMsg -like 'FATAL:*' -or -not [string]::IsNullOrEmpty($IsoDrive)) {
                                 # Mandatory dependency failure, or ISO mode where stock boot.wim was
-                                # just placed on the ESP — any injection failure must abort this disk.
+                                # just placed on the ESP - any injection failure must abort this disk.
                                 J @{ event='log'; disk=$DiskNumber; message="ERROR: startnet-inject FAILED (index $peIdx) - $__peMsg" }
                                 if ($peIsMounted) {
                                     & dism.exe /Unmount-Image /MountDir:"$peMountDir" /Discard 2>&1 | Out-Null
@@ -3455,7 +3548,7 @@ $workerDiskBlock = {
                 if ($stageWuPayload) {
                     Copy-LwRepoEdgeInstaller -DestRoot $partRoot
                     # Quick Update has no OverlayCache Edge stage; Full Rebuild may have
-                    # already cached Edge — re-run ContentRoot/download so the stick gets it.
+                    # already cached Edge - re-run ContentRoot/download so the stick gets it.
                     if (Get-Command -Name Copy-LwEdgeOfflineInstaller -ErrorAction SilentlyContinue) {
                         $null = Copy-LwEdgeOfflineInstaller -WuPayloadRoot (Join-Path $partRoot 'FirstBase\WUPayload') -Arch $WorkflowType -ContentRoot $ContentRoot -EdgeShareRoot ''
                     }
@@ -3514,11 +3607,20 @@ $workerDiskBlock = {
                     if ($QuickInstall) {
                         $overlayMap = @($overlayMap | Where-Object { -not (Test-LwQuickInstallSkipDeployOverlayDest -Destination $_.Dst) })
                     }
+                    $ovMapCount = @($overlayMap).Count
+                    if ($ovMapCount -lt 1) { $ovMapCount = 1 }
+                    $ovIdx = 0
+                    if ($OverlayOnly) { JProgress 'overlay-update' 8 }
                     foreach ($o in $overlayMap) {
                         $dstPath = Join-Path $partRoot $o.Dst
                         $copied = Copy-LwOverlayPayloadFile -Source $o.Src -Destination $dstPath
                         if (-not $copied -and $o.Dst -eq $ovProfile.TechInstallDest) {
                             throw ("FATAL: {0} updates overlay did not stage {1} from '{2}'." -f $ovProfile.Arch, $ovProfile.TechInstallDest, $o.Src)
+                        }
+                        $ovIdx++
+                        if ($OverlayOnly) {
+                            $ovPct = [math]::Min(82, 8 + [int](74 * $ovIdx / $ovMapCount))
+                            JProgress 'overlay-update' $ovPct
                         }
                     }
                     Assert-LwUpdatesOverlayTechInstall -PartRoot $partRoot -WorkflowType $WorkflowType -QuickInstall ([bool]$QuickInstall) -NoPayload $false
@@ -3641,6 +3743,8 @@ $workerDiskBlock = {
             Write-LwUsbExplorerChrome -VolRoot $partRoot -IcoSrc (Join-Path $ContentRoot 'FirstBase.ico')
         }
 
+        if ($OverlayOnly) { JProgress 'overlay-update' 86 }
+
         # Packaged production / packaged Destage: never leave a destage marker on the stick
         # (Quick Update copy does not delete extra files, so a prior npm start destage would linger).
         if (-not $DevBuild) {
@@ -3651,26 +3755,6 @@ $workerDiskBlock = {
                         Remove-Item -LiteralPath $marker -Force -ErrorAction SilentlyContinue
                     }
                 }
-            }
-        }
-
-        # -- Hide Windows install media at volume root; hide FirstBase; keep fb-im.cmd visible --
-        if ($dataRoot) {
-            try {
-                if (Get-Command -Name Move-LwUsbMediaRootArtifacts -ErrorAction SilentlyContinue) {
-                    Move-LwUsbMediaRootArtifacts -VolRoot $dataRoot
-                }
-                $chromeProfile = Get-LwUsbOverlayProfile -WorkflowType $WorkflowType -QuickInstall ([bool]$QuickInstall) -NoPayload ([bool]$NoPayload)
-                foreach ($bootItem in $chromeProfile.HiddenRootItems) {
-                    $bootPath = Join-Path $dataRoot $bootItem
-                    if (Test-Path -LiteralPath $bootPath) {
-                        & attrib.exe +H +S $bootPath /D /S 2>&1 | Out-Null
-                    }
-                }
-                Write-LwUsbExplorerChrome -VolRoot $dataRoot -IcoSrc (Join-Path $ContentRoot 'FirstBase.ico')
-                J @{ event='log'; disk=$DiskNumber; message='hid boot/media artifacts (+H +S); hid FirstBase (+H +S); staged autorun.inf icon; left fb-im.cmd visible' }
-            } catch {
-                J @{ event='log'; disk=$DiskNumber; message="WARNING: Could not set boot/media artifact attributes: $($_.Exception.Message)" }
             }
         }
 
@@ -3725,6 +3809,7 @@ $workerDiskBlock = {
             $stickLcuKb = ''
             $stickOsBuild = ''
             $stickImageVersion = ''
+            $stickImageBuildDate = ''
             try {
                 $stickStampPath = Join-Path $dataRoot 'FirstBase\LW_VERSION.json'
                 if (Test-Path -LiteralPath $stickStampPath) {
@@ -3732,6 +3817,8 @@ $workerDiskBlock = {
                     if ($stickStamp.installLcuKb) { $stickLcuKb = [string]$stickStamp.installLcuKb }
                     if ($stickStamp.osBuild) { $stickOsBuild = [string]$stickStamp.osBuild }
                     if ($stickStamp.imageVersion) { $stickImageVersion = [string]$stickStamp.imageVersion }
+                    if ($stickStamp.imageBuildDate) { $stickImageBuildDate = [string]$stickStamp.imageBuildDate }
+                    elseif ($stickStamp.wimBuildDate) { $stickImageBuildDate = [string]$stickStamp.wimBuildDate }
                 }
             } catch { }
             $refreshSet = [string]$LcuRefreshSetDir
@@ -3741,19 +3828,24 @@ $workerDiskBlock = {
             $refreshKb = [string]$InstallLcuKb
             $refreshBuild = [string]$OsBuild
             $refreshIv = [string]$LcuImageVersion
+            if ([string]::IsNullOrWhiteSpace($refreshIv) -and -not [string]::IsNullOrWhiteSpace($ImageVersion)) {
+                $refreshIv = [string]$ImageVersion
+            }
             if ([string]::IsNullOrWhiteSpace($refreshIv) -and -not [string]::IsNullOrWhiteSpace($refreshSet)) {
                 try { $refreshIv = [string](Split-Path -Leaf $refreshSet) } catch { }
             }
-            $lcuBehind = $false
-            if (Get-Command -Name Test-LwInstallLcuBehind -ErrorAction SilentlyContinue) {
-                $lcuBehind = [bool](Test-LwInstallLcuBehind -StickKb $stickLcuKb -StickBuild $stickOsBuild -CurrentKb $refreshKb -CurrentBuild $refreshBuild)
+            $refreshDate = [string]$LcuImageBuildDate
+            if ([string]::IsNullOrWhiteSpace($refreshDate)) { $refreshDate = [string]$ImageBuildDate }
+            $behind = $false
+            if (Get-Command -Name Test-LwInstallImageRefreshNeeded -ErrorAction SilentlyContinue) {
+                $behind = [bool](Test-LwInstallImageRefreshNeeded `
+                    -StickImageVersion $stickImageVersion `
+                    -StickImageBuildDate $stickImageBuildDate `
+                    -CurrentImageVersion $refreshIv `
+                    -CurrentImageBuildDate $refreshDate `
+                    -StickKb $stickLcuKb -StickBuild $stickOsBuild `
+                    -CurrentKb $refreshKb -CurrentBuild $refreshBuild)
             }
-            $imageBehind = $false
-            if (-not [string]::IsNullOrWhiteSpace($stickImageVersion) -and -not [string]::IsNullOrWhiteSpace($refreshIv) -and
-                $stickImageVersion -ne $refreshIv) {
-                $imageBehind = $true
-            }
-            $behind = $lcuBehind -or $imageBehind
             if ($behind -and [string]::IsNullOrWhiteSpace($refreshSet) -and
                 -not [string]::IsNullOrWhiteSpace($DriveHttpLibPath) -and
                 (Test-Path -LiteralPath $DriveHttpLibPath) -and
@@ -3775,10 +3867,13 @@ $workerDiskBlock = {
             }
             if ($behind -and -not [string]::IsNullOrWhiteSpace($refreshSet)) {
                 JPhase 'install-refresh'
-                J @{ event='progress'; disk=$DiskNumber; phase='install-refresh'; pct=10; message='Refreshing install image...' }
+                JProgress 'install-refresh' 0
                 Copy-LwInstallSwmSetToVolume -SetDir $refreshSet -VolumeRoot $dataRoot -Log {
                     param($m)
                     J @{ event='log'; disk=$DiskNumber; message=$m }
+                } -Progress {
+                    param($p)
+                    JProgress 'install-refresh' $p
                 }
                 $lcuDidRefresh = $true
                 $refreshedLcuKb = $refreshKb
@@ -3788,7 +3883,6 @@ $workerDiskBlock = {
                     try { $refreshedImageVersion = [string](Split-Path -Leaf $refreshSet) } catch { }
                 }
                 if (-not [string]::IsNullOrWhiteSpace($LcuImageBuildDate)) { $refreshedImageDate = [string]$LcuImageBuildDate }
-                J @{ event='progress'; disk=$DiskNumber; phase='install-refresh'; pct=100; message='Refreshing install image...' }
                 JPhase 'overlay-update'
             } elseif ($behind) {
                 J @{ event='log'; disk=$DiskNumber; message='Refreshing install image: Image Ready is newer but no install*.swm set was found locally or on Drive' }
@@ -3905,6 +3999,7 @@ $workerDiskBlock = {
                     $stamp.channel = 'destage'
                     if ($DestageSkipWu) { $stamp.destageSkipWu = $true }
                 }
+                if ($ImageInRam) { $stamp.imageInRam = $true }
                 $stamp.builtAt = (Get-Date -Format 'o')
                 if (Test-Path -LiteralPath $stampPath) {
                     Remove-Item -LiteralPath $stampPath -Force -ErrorAction SilentlyContinue
@@ -3912,6 +4007,30 @@ $workerDiskBlock = {
                 ($stamp | ConvertTo-Json -Depth 6) | Out-File -FilePath $stampPath -Encoding utf8 -Force
             } catch { }
         }
+
+        # Hide boot/media at volume root and FirstBase after overlay + optional install refresh.
+        if ($dataRoot) {
+            try {
+                if (Get-Command -Name Set-LwUsbHiddenMediaRoot -ErrorAction SilentlyContinue) {
+                    Set-LwUsbHiddenMediaRoot -VolRoot $dataRoot -WorkflowType $WorkflowType -QuickInstall ([bool]$QuickInstall) -NoPayload ([bool]$NoPayload)
+                } elseif (Get-Command -Name Move-LwUsbMediaRootArtifacts -ErrorAction SilentlyContinue) {
+                    Move-LwUsbMediaRootArtifacts -VolRoot $dataRoot
+                    $chromeProfile = Get-LwUsbOverlayProfile -WorkflowType $WorkflowType -QuickInstall ([bool]$QuickInstall) -NoPayload ([bool]$NoPayload)
+                    foreach ($bootItem in $chromeProfile.HiddenRootItems) {
+                        $bootPath = Join-Path $dataRoot $bootItem
+                        if (Test-Path -LiteralPath $bootPath) {
+                            & attrib.exe +H +S $bootPath /D /S 2>&1 | Out-Null
+                        }
+                    }
+                }
+                Write-LwUsbExplorerChrome -VolRoot $dataRoot -IcoSrc (Join-Path $ContentRoot 'FirstBase.ico')
+                J @{ event='log'; disk=$DiskNumber; message='hid boot/media artifacts (+H +S); hid FirstBase (+H +S); staged autorun.inf icon; left fb-im.cmd visible' }
+            } catch {
+                J @{ event='log'; disk=$DiskNumber; message="WARNING: Could not set boot/media artifact attributes: $($_.Exception.Message)" }
+            }
+        }
+
+        if ($OverlayOnly) { JProgress 'overlay-update' 98 }
 
         J @{ event='done'; disk=$DiskNumber; success=$true }
 
@@ -3957,13 +4076,15 @@ try {
         EmitLog -Disk 0 -Msg "drive-staging: exporting injected boot.wim to '$exportLabel'"
         $arm64UsbDriverDir = ''
         if ($wfUpper -eq 'ARM64') {
-            # Local UUP often has an empty WinPE-Drivers folder; Resolve falls back to HQ.
-            $arm64UsbDriverDir = [string](Resolve-LwArm64DriverDir -ShareRoot $ShareRoot)
+            # Local UUP often has an empty WinPE-Drivers folder; Resolve falls back to HQ, then Drive HTTPS.
+            $arm64UsbDriverDir = [string](Resolve-LwArm64DriverDirForBuild -ShareRoot $ShareRoot -Log {
+                param($m) EmitLog -Disk 0 -Msg $m
+            })
             if ([string]::IsNullOrWhiteSpace($arm64UsbDriverDir)) {
                 Emit @{
                     event   = 'error'
                     disk    = -1
-                    message = "FATAL: ARM64 Image Ready staging requires WinPE-Drivers with .inf packages (ShareRoot '$ShareRoot' and HQ). Empty local placeholders are ignored."
+                    message = "FATAL: ARM64 Image Ready staging requires WinPE-Drivers with .inf packages (ShareRoot '$ShareRoot', HQ, and Google Drive). Empty local placeholders are ignored."
                 }
                 exit 1
             }
@@ -4010,13 +4131,33 @@ try {
         }
         Build-IsoCache -IsoDrive $isoDrive
         $bootWimPath = Join-Path $espCache 'sources\boot.wim'
-        # Prefer HQ WinPE-OCs\<ARCH> for Image Ready export when ShareRoot is local UUP
-        # (no WinPE-OCs there). Resolve-LwWpeOcRoot already HQ-falls-back; re-resolve here
-        # so logs name the arch folder before DISM runs.
+        # Image Ready export OC order: explicit → HQ → Drive HTTPS → local ADK.
+        # Populate an arch-bearing base before Resolve-WpeOcArchRoot so ADK is last resort.
         $wpeOcBase = $WpeOcSource
-        if ([string]::IsNullOrWhiteSpace($wpeOcBase) -or -not (Test-Path -LiteralPath $wpeOcBase)) {
+        $hasOcBase = {
+            param($root)
+            if ([string]::IsNullOrWhiteSpace($root)) { return $false }
+            if ((Get-Command -Name Test-LwWpeOcRootHasArch -ErrorAction SilentlyContinue) -and
+                (Test-LwWpeOcRootHasArch $root)) { return $true }
+            $ak = if ($wfUpper -match '(?i)ARM64') { 'ARM64' } else { 'AMD64' }
+            return (Test-Path -LiteralPath (Join-Path $root $ak))
+        }
+        if (-not (& $hasOcBase $wpeOcBase)) {
             if (Get-Command -Name Resolve-LwWpeOcRoot -ErrorAction SilentlyContinue) {
-                $wpeOcBase = Resolve-LwWpeOcRoot -ShareRoot $ShareRoot
+                $hqShare = if (Get-Command -Name Get-LwHqShareRoot -ErrorAction SilentlyContinue) {
+                    [string](Get-LwHqShareRoot)
+                } else { '' }
+                $hqOc = Resolve-LwWpeOcRoot -ShareRoot $hqShare -LocalOcRoot ''
+                if (& $hasOcBase $hqOc) { $wpeOcBase = $hqOc }
+            }
+        }
+        if (-not (& $hasOcBase $wpeOcBase)) {
+            $driveOcParent = Get-LwDriveHttpSupportDestRoot -ShareRoot $ShareRoot
+            if (Get-Command -Name Ensure-LwDriveHttpWpeOcRoot -ErrorAction SilentlyContinue) {
+                $fetched = Ensure-LwDriveHttpWpeOcRoot -DestRoot $driveOcParent -Arch $wfUpper -Log {
+                    param($m) EmitLog -Disk 0 -Msg $m
+                }
+                if (& $hasOcBase $fetched) { $wpeOcBase = $fetched }
             }
         }
         $wpeOcStaging = Resolve-WpeOcArchRoot -BaseRoot $wpeOcBase -Arch $wfUpper
@@ -4025,7 +4166,7 @@ try {
             Emit @{
                 event   = 'error'
                 disk    = -1
-                message = "FATAL: WinPE-OCs\$wfUpper not found at '$wpeOcStaging'. Stage arch-matched ADK cabs under the HQ WinPE-OCs tree."
+                message = "FATAL: WinPE-OCs\$wfUpper not found at '$wpeOcStaging'. Reach HQ, the public Drive WinPE-OCs folder, or install the ADK WinPE optional components."
             }
             exit 1
         }
@@ -4159,7 +4300,7 @@ try {
     # -- Media source: Google Drive Image Ready package OR ISO -----------------
     # googleDrive Image Ready packages are a full ISO tree under PreSplit\<set>\
     # (boot/efi/sources\install*.swm + injected sources\boot.wim). Prefer that
-    # folder as the "ISO drive" — no Mount-DiskImage, no ISO file required.
+    # folder as the "ISO drive" - no Mount-DiskImage, no ISO file required.
     $isoItem    = $null
     $useIsoMode = $false
     $isoDriveLetter = ''
@@ -4177,10 +4318,9 @@ try {
             message        = 'Google Drive Image Ready package will download to the USB volume during build'
         }
         EmitLog -Disk 0 -Msg 'googleDrive: Drive HTTP direct to USB enabled (public folder over HTTPS)'
-        # WinPE-OCs / WinPE-Drivers are already in the staged sources\boot.wim - do not
-        # download them to %TEMP% before wipe/partition.
+        # Prefer packages that already carry injected boot.wim (skip per-disk DISM).
+        # Keep $WpeOcSource for inject fallback when the package has no sentinel.
         $script:DriveHttpSupportRoot = ''
-        $WpeOcSource = ''
     }
 
     if (-not $OverlayOnly -and -not $DriveHttpDirect -and $wantMediaPkgSource -and
@@ -4283,7 +4423,7 @@ try {
     $isoDiskImage = $null
     if ($useIsoMode -and [string]::IsNullOrEmpty($isoDriveLetter) -and
         $resolvedMediaSource -eq 'googleDrive' -and -not $OverlayOnly -and $null -ne $isoItem) {
-        # Legacy: ISO present on Drive alongside PreSplit — prefer matching package when valid.
+        # Legacy: ISO present on Drive alongside PreSplit - prefer matching package when valid.
         $pkgSet = Get-LWPreSplitSet -Iso $isoItem -PreSplitRoot $PreSplitRoot -Arch $wfUpper -Edition $winEdition -VerifyHash:$VerifyPreSplitHash
         if ($pkgSet -and (Get-Command -Name Test-LwPreSplitMediaPackage -ErrorAction SilentlyContinue) -and
             (Test-LwPreSplitMediaPackage -SetDir $pkgSet)) {
@@ -4331,14 +4471,16 @@ try {
         if (-not (Get-Command -Name Resolve-LwArm64DriverDir -ErrorAction SilentlyContinue)) {
             throw 'FATAL: ARM64 driver helper is not loaded (lib\Add-LwArm64Drivers.ps1).'
         }
-        $arm64UsbDriverDir = [string](Resolve-LwArm64DriverDir -ShareRoot $ShareRoot)
+        $arm64UsbDriverDir = [string](Resolve-LwArm64DriverDirForBuild -ShareRoot $ShareRoot -Log {
+            param($m) EmitLog -Disk 0 -Msg $m
+        })
         if ([string]::IsNullOrWhiteSpace($arm64UsbDriverDir)) {
             $hintRoot = if (-not [string]::IsNullOrWhiteSpace($ShareRoot)) {
                 Join-Path $ShareRoot 'WinPE-Drivers'
             } else {
                 'WinPE-Drivers'
             }
-            throw ("FATAL: ARM64 build requires driver packages under '{0}'." -f $hintRoot)
+            throw ("FATAL: ARM64 build requires driver packages under '{0}' (HQ or Google Drive when local is empty)." -f $hintRoot)
         }
         EmitLog -Disk 0 -Msg "ARM64 drivers: $arm64UsbDriverDir (injected into boot.wim only; the Windows install image stays stock)"
     } elseif ($snapdragonBuild -and -not $OverlayOnly -and $DriveHttpDirect) {
@@ -4420,7 +4562,7 @@ try {
 
     # Build cache (full build needs ESP template for non-ISO WIM path only).
     # ISO / PreferIso / OverlayOnly: USB-bound content goes DIRECT to the stick
-    # (ISO→ESP, ISO→data, ContentRoot→overlay) — no LWCache / EspCache / overlay temp.
+    # (ISO→ESP, ISO→data, ContentRoot→overlay) - no LWCache / EspCache / overlay temp.
     # LocalProjectRoot mode uses the same path as network-share mode once $isoDriveLetter
     # / $StagingWim are resolved.
     if ($OverlayOnly) {
@@ -4440,7 +4582,7 @@ try {
         $overlayCache = ''
     } elseif (-not [string]::IsNullOrEmpty($isoDriveLetter) -and
               -not [string]::IsNullOrWhiteSpace($bootInjectSourcesDirForWorker)) {
-        # Image Ready / ISO folder already has injected boot.wim + sentinel — copy only.
+        # Image Ready / ISO folder already has injected boot.wim + sentinel - copy only.
         EmitLog -Disk 0 -Msg 'ISO/media package: pre-injected boot.wim ready - skipping EspCache and per-disk DISM'
         $CacheRoot = ''
         $userProvidedCache = $false
@@ -4459,7 +4601,9 @@ try {
         Build-IsoCache -IsoDrive "$isoDriveLetter\"
         $startnetSrc  = $startnetForInjection
         $bootWimPath  = Join-Path $espCache 'sources\boot.wim'
-        $wpeOcStaging = Resolve-WpeOcArchRoot -BaseRoot $WpeOcSource -Arch $wfUpper
+        $wpeOcStaging = Resolve-WpeOcArchRootForInject -PreferredRoot $WpeOcSource -Arch $wfUpper -Log {
+            param($m) EmitLog -Disk 0 -Msg $m
+        }
         EmitLog -Disk 0 -Msg "startnet inject: resolved WinPE-OCs source for $wfUpper -> '$wpeOcStaging'"
         $winPeUiSrcForInject = Resolve-LwWinPeUiPublishDir -ContentRootPath $ContentRoot -Arch $wfUpper
         $winPeUiExeForSentinel = Join-Path $winPeUiSrcForInject 'LoneWolf.WinPeUi.exe'
@@ -4492,7 +4636,7 @@ try {
         # expensive Build-Cache / Build-IsoCache + Invoke-StartnetInjection step.
         # This only activates when -CacheRoot points to a persistent folder; the
         # default GUID-based temp path is always fresh and always rebuilds.
-        # Also require bootmgfw.efi — a cache that has boot.wim but missing bootmgfw
+        # Also require bootmgfw.efi - a cache that has boot.wim but missing bootmgfw
         # (common when staging ISO omitted it and a prior run skipped synthesis) must
         # not be treated as fresh; that produces USB boot 0xc0000098 / missing winload.efi.
         $espBootWim   = Join-Path $espCache 'sources\boot.wim'
@@ -4511,9 +4655,10 @@ try {
 
             $startnetSrc  = $startnetForInjection   # Both modes: Deploy\WinPE-Startnet.cmd from ContentRoot
             $bootWimPath  = Join-Path $espCache 'sources\boot.wim'
-            # WinPE-OCs is now arch-partitioned on the share: resolve <WpeOcRoot>\<ARCH>
-            # (e.g. ...\WinPE-OCs\AMD64) with a legacy-flat fallback.
-            $wpeOcStaging = Resolve-WpeOcArchRoot -BaseRoot $WpeOcSource -Arch $wfUpper
+            # WinPE-OCs: HQ → Drive HTTPS → ADK (same as per-disk Full Rebuild inject).
+            $wpeOcStaging = Resolve-WpeOcArchRootForInject -PreferredRoot $WpeOcSource -Arch $wfUpper -Log {
+                param($m) EmitLog -Disk 0 -Msg $m
+            }
             EmitLog -Disk 0 -Msg "startnet inject: resolved WinPE-OCs source for $wfUpper -> '$wpeOcStaging'"
             $espSentinel  = Join-Path $espCache 'sources\boot.wim.lw-injected'
             $winPeUiSrcForInject = Resolve-LwWinPeUiPublishDir -ContentRootPath $ContentRoot -Arch $wfUpper
@@ -4568,7 +4713,7 @@ try {
                 EmitLog -Disk 0 -Msg "startnet inject: boot.wim pre-injection complete"
             }
         } else {
-            # Cache age is fresh, but startnet / WinPeUi may still have changed — re-inject if sentinel mismatches.
+            # Cache age is fresh, but startnet / WinPeUi may still have changed - re-inject if sentinel mismatches.
             $bootWimPathFresh = Join-Path $espCache 'sources\boot.wim'
             $startnetSrcFresh = $startnetForInjection
             $espSentinelFresh = Join-Path $espCache 'sources\boot.wim.lw-injected'
@@ -4580,7 +4725,9 @@ try {
             $cachedFresh = if (Test-Path -LiteralPath $espSentinelFresh) { (Get-Content -LiteralPath $espSentinelFresh -Raw -ErrorAction SilentlyContinue).Trim() } else { '' }
             if ($freshHash -and $freshHash -ne $cachedFresh) {
                 EmitLog -Disk 0 -Msg "esp-cache is fresh but inject sentinel changed - re-injecting startnet/WinPeUi"
-                $wpeOcFresh = Resolve-WpeOcArchRoot -BaseRoot $WpeOcSource -Arch $wfUpper
+                $wpeOcFresh = Resolve-WpeOcArchRootForInject -PreferredRoot $WpeOcSource -Arch $wfUpper -Log {
+                    param($m) EmitLog -Disk 0 -Msg $m
+                }
                 Invoke-StartnetInjection -BootWimPath $bootWimPathFresh -StartnetCmdPath $startnetSrcFresh -WpeOcPath $wpeOcFresh -Arm64UsbDriverDir $arm64UsbDriverDir -WinPeUiSrcDir $winPeUiSrcFresh
                 Set-Content -LiteralPath $espSentinelFresh -Value $freshHash -Encoding ascii -Force -ErrorAction SilentlyContinue
             } else {
@@ -4608,7 +4755,7 @@ try {
     }
 
     # -------------------------------------------------------------------------
-    # Shared WIM mount (WIM mode only) — one read-only DISM mount for all disks
+    # Shared WIM mount (WIM mode only) - one read-only DISM mount for all disks
     # -------------------------------------------------------------------------
     # Concurrent DISM /Mount-Image from parallel Start-Jobs serializes or fails.
     # Mount once on the main thread; Phase 1 jobs robocopy from the shared path.
@@ -4633,7 +4780,7 @@ try {
                     throw "Shared DISM /Mount-Image (direct share) failed (exit $LASTEXITCODE): $($sharedMountOut -join '; ')"
                 }
                 $sharedDirectOk = $true
-                EmitLog -Disk 0 -Msg 'wim-shared: direct share mount ready (no local copy) — Phase 1 will run parallel robocopy to each USB'
+                EmitLog -Disk 0 -Msg 'wim-shared: direct share mount ready (no local copy) - Phase 1 will run parallel robocopy to each USB'
             } catch {
                 EmitLog -Disk 0 -Msg "wim-shared: direct share mount failed ($($_.Exception.Message)); falling back to copy-to-temp then mount"
                 & dism.exe /Unmount-Image /MountDir:"$sharedWimMount" /Discard 2>&1 | Out-Null
@@ -4659,7 +4806,7 @@ try {
                 if ($LASTEXITCODE -ne 0) {
                     throw "Shared DISM /Mount-Image failed (exit $LASTEXITCODE): $($sharedMountOut -join '; ')"
                 }
-                EmitLog -Disk 0 -Msg 'wim-shared: mount ready — Phase 1 will run parallel robocopy to each USB'
+                EmitLog -Disk 0 -Msg 'wim-shared: mount ready - Phase 1 will run parallel robocopy to each USB'
             }
         } catch {
             EmitLog -Disk 0 -Msg "WARNING: shared WIM mount failed ($($_.Exception.Message)); falling back to per-disk mounts (may serialize)"
@@ -4684,10 +4831,20 @@ try {
     $succeeded    = [System.Collections.Generic.List[int]]::new()
     $failed       = [System.Collections.Generic.List[int]]::new()
     $diskJobs     = @()
-    # WinPE-OCs is arch-partitioned on the share: pass the resolved <WpeOcRoot>\<ARCH>
-    # subfolder (legacy-flat fallback) into each per-disk job. The job runspace cannot
-    # call script-scope functions, so resolution happens here on the main thread.
-    $wpeOcStaging = Resolve-WpeOcArchRoot -BaseRoot $WpeOcSource -Arch $wfUpper
+    # WinPE-OCs for per-disk inject: HQ → Drive HTTPS → ADK. Resolved on the main
+    # thread (job runspace cannot call these helpers) and passed into each job.
+    $wpeOcStaging = Resolve-WpeOcArchRootForInject -PreferredRoot $WpeOcSource -Arch $wfUpper -Log {
+        param($m) EmitLog -Disk 0 -Msg $m
+    }
+    if ([string]::IsNullOrWhiteSpace($wpeOcStaging) -or -not (Test-Path -LiteralPath $wpeOcStaging)) {
+        Emit @{
+            event   = 'error'
+            disk    = -1
+            message = "FATAL: WinPE-OCs\$wfUpper not resolved (got '$wpeOcStaging'). Reach HQ, the public Drive WinPE-OCs folder, or install the ADK WinPE optional components."
+        }
+        exit 1
+    }
+    EmitLog -Disk 0 -Msg "WinPE-OCs for $wfUpper inject -> '$wpeOcStaging'"
 
     # Resolve the pre-split fast-copy set ONCE (ISO mode + Single layout only). '' when no
     # valid, matching staged set exists -> each disk job falls back to the on-the-fly split
@@ -4788,7 +4945,7 @@ try {
     # ARM64 drivers are injected into boot.wim only. $arm64InstallImageDir stays empty.
 
     # Warm WinPeUi (local trees or GitHub bin/ zips) before per-disk overlay / boot inject.
-    # Packaged builds may download ~60-130 MB with no USB phase yet — emit disk-0 progress
+    # Packaged builds may download ~60-130 MB with no USB phase yet - emit disk-0 progress
     # so the UI is not stuck on Waiting 0%. OverlayOnly only needs the workflow arch.
     try {
         $uiArches = if ($OverlayOnly) {
@@ -4822,9 +4979,16 @@ try {
                 if ($lcuSku.osBuild) { $osBuildStamp = [string]$lcuSku.osBuild }
                 if ($lcuSku.imageVersion) {
                     $lcuImageVersion = [string]$lcuSku.imageVersion
-                    $cand = Join-Path $lcuPreRoot $lcuImageVersion
-                    $swm = Join-Path $cand 'sources\install.swm'
-                    if (Test-Path -LiteralPath $swm) { $lcuRefreshSetDir = $cand }
+                    $lcuRefreshSetDir = ''
+                    if (Get-Command -Name Resolve-LWPreSplitSetDirForImageVersion -ErrorAction SilentlyContinue) {
+                        $lcuRefreshSetDir = [string](Resolve-LWPreSplitSetDirForImageVersion `
+                            -PreSplitRoot $lcuPreRoot -ImageVersion $lcuImageVersion -Arch $wfUpper -Edition $winEdition)
+                    }
+                    if ([string]::IsNullOrWhiteSpace($lcuRefreshSetDir)) {
+                        $cand = Join-Path $lcuPreRoot $lcuImageVersion
+                        $swm = Join-Path $cand 'sources\install.swm'
+                        if (Test-Path -LiteralPath $swm) { $lcuRefreshSetDir = $cand }
+                    }
                 }
                 if ($lcuSku.imageBuildDate) { $lcuImageBuildDate = [string]$lcuSku.imageBuildDate }
             }
@@ -4843,6 +5007,12 @@ try {
     }
     if ($OverlayOnly -and $lcuRefreshSetDir) {
         EmitLog -Disk 0 -Msg ("lcu: Quick Update can refresh install*.swm from '$lcuRefreshSetDir' ($installLcuKb)")
+    }
+    if ($OverlayOnly -and [string]::IsNullOrWhiteSpace($imageVersion) -and -not [string]::IsNullOrWhiteSpace($lcuImageVersion)) {
+        $imageVersion = [string]$lcuImageVersion
+    }
+    if ($OverlayOnly -and [string]::IsNullOrWhiteSpace($imageBuildDate) -and -not [string]::IsNullOrWhiteSpace($lcuImageBuildDate)) {
+        $imageBuildDate = [string]$lcuImageBuildDate
     }
 
     foreach ($diskNum in $requestedDisks) {
@@ -4881,6 +5051,7 @@ try {
                 $winEdition,
                 $edgeToolsDir,
                 ([bool]($DevBuild -and $DestageSkipWu)),
+                ([bool]$ImageInRam),
                 $arm64UsbDriverDir,
                 $Arm64DriverLibPath,
                 $arm64InstallImageDir,

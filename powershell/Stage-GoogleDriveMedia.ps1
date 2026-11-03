@@ -239,9 +239,27 @@ $bootArgs = @(
     '-WindowsEdition', $WindowsEdition,
     '-ShareRoot', $stagingRoot,
     '-MediaSource', $ms,
-    '-ExportStagedBootWimSetDir', $preSplitSetDir,
-    '-AppResourcesPath', $AppResourcesPath
+    '-ExportStagedBootWimSetDir', $preSplitSetDir
 )
+# Local UUP ShareRoot has no WinPE-OCs; prefer HQ (or layout-resolved) OC root.
+$wpeOcForExport = ''
+if ($destageLayout -and $destageLayout.PSObject.Properties['WpeOcRoot'] -and $destageLayout.WpeOcRoot) {
+    $wpeOcForExport = [string]$destageLayout.WpeOcRoot
+}
+if ([string]::IsNullOrWhiteSpace($wpeOcForExport) -and (Get-Command -Name Resolve-LwWpeOcRoot -ErrorAction SilentlyContinue)) {
+    $wpeOcForExport = [string](Resolve-LwWpeOcRoot -ShareRoot (Get-LwHqShareRoot) -LocalOcRoot '')
+}
+if (-not [string]::IsNullOrWhiteSpace($wpeOcForExport)) {
+    $bootArgs += '-WpeOcRoot', $wpeOcForExport
+}
+$appRes = $AppResourcesPath
+if ([string]::IsNullOrWhiteSpace($appRes)) {
+    # Destage: src\ (parent of powershell\). Packaged: pass -AppResourcesPath from main.
+    $appRes = [string](Split-Path -Parent $here)
+}
+if (-not [string]::IsNullOrWhiteSpace($appRes)) {
+    $bootArgs += '-AppResourcesPath', $appRes
+}
 if ($useSourceDir) { $bootArgs += '-StagingIsoPath', $isoItem.FullName }
 elseif ($IsoPath) { $bootArgs += '-StagingIsoPath', $IsoPath }
 else { $bootArgs += '-StagingIsoPath', $isoItem.FullName }

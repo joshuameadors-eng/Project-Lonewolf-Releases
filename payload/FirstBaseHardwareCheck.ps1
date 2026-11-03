@@ -13,7 +13,8 @@
 [CmdletBinding()]
 param(
     [string]$ResultPath = '',
-    [switch]$Quiet
+    [switch]$Quiet,
+    [switch]$DefinitionsOnly
 )
 
 Set-StrictMode -Version Latest
@@ -54,12 +55,68 @@ function New-FbHardwareCheckItem {
     param(
         [string]$Name,
         [bool]$Passed,
-        [string]$Detail
+        [string]$Detail,
+        [string]$State = ''
     )
     return [pscustomobject]@{
         Name   = $Name
         Passed = [bool]$Passed
         Detail = [string]$Detail
+        State  = [string]$State
+    }
+}
+
+function Get-FbSecureBootProbeState {
+    $reasons = New-Object System.Collections.Generic.List[string]
+    $passed = $false
+    $state = 'Not available'
+    $detail = ''
+    try {
+        $sbReg = Get-ItemProperty `
+            -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\SecureBoot\State' `
+            -Name 'UEFISecureBootEnabled' `
+            -ErrorAction Stop
+        $sbVal = [int]$sbReg.UEFISecureBootEnabled
+        if ($sbVal -eq 1) {
+            $passed = $true
+            $state = 'Enabled'
+            $detail = 'Secure Boot: Enabled (UEFISecureBootEnabled=1).'
+        } else {
+            $state = 'Disabled'
+            [void]$reasons.Add('UEFISecureBootEnabled=0')
+        }
+    } catch {
+        [void]$reasons.Add('registry state unavailable')
+    }
+    if (-not $passed) {
+        try {
+            if (Get-Command Confirm-SecureBootUEFI -ErrorAction SilentlyContinue) {
+                $sbCmd = Confirm-SecureBootUEFI -ErrorAction SilentlyContinue
+                if ($sbCmd -eq $true) {
+                    $passed = $true
+                    $state = 'Enabled'
+                    $detail = 'Secure Boot: Enabled (Confirm-SecureBootUEFI).'
+                    $reasons.Clear()
+                } elseif ($sbCmd -eq $false) {
+                    $state = 'Disabled'
+                    if ($reasons.Count -eq 0) { [void]$reasons.Add('Confirm-SecureBootUEFI=false') }
+                }
+            }
+        } catch {}
+    }
+    if (-not $passed) {
+        if ($state -eq 'Disabled') {
+            $detail = ('Secure Boot: Disabled ({0}).' -f ($reasons -join '; '))
+        } else {
+            $state = 'Not available'
+            if ($reasons.Count -eq 0) { [void]$reasons.Add('could not read state') }
+            $detail = ('Secure Boot: Not available ({0}).' -f ($reasons -join '; '))
+        }
+    }
+    return [pscustomobject]@{
+        Passed = [bool]$passed
+        State  = [string]$state
+        Detail = [string]$detail
     }
 }
 
@@ -115,6 +172,11 @@ function Get-FbPnpMicrophoneNames {
         } catch {}
     }
     return @($ok)
+}
+
+function Test-FbHardwareSecureBoot {
+    $probe = Get-FbSecureBootProbeState
+    return New-FbHardwareCheckItem -Name 'secureboot' -Passed $probe.Passed -Detail $probe.Detail -State $probe.State
 }
 
 function Test-FbHardwareSound {
@@ -439,7 +501,7 @@ function Invoke-FbHardwareGate {
         }
         Set-Content -LiteralPath $HwRunningMarker -Value ('pid={0} at {1}' -f $PID, (Get-Date -Format 'o')) -Encoding ascii -Force
     } catch {}
-    try { Set-FbHardwareCheckSplashStatus -Message 'Starting hardware checks (sound, camera, Wi-Fi, PnP).' } catch {}
+    try { Set-FbHardwareCheckSplashStatus -Message 'Starting hardware checks (sound, camera, Wi-Fi, PnP, Secure Boot).' } catch {}
     $items = @()
     try {
         try { Set-FbHardwareCheckSplashStatus -Message 'Running hardware checks: sound (microphone and speakers).' } catch {}
@@ -465,15 +527,21 @@ function Invoke-FbHardwareGate {
     } catch {
         $items += New-FbHardwareCheckItem -Name 'pnp' -Passed $false -Detail ('PnP probe threw: {0}' -f $_.Exception.Message)
     }
+    try {
+        try { Set-FbHardwareCheckSplashStatus -Message 'Running hardware checks: Secure Boot.' } catch {}
+        $items += Test-FbHardwareSecureBoot
+    } catch {
+        $items += New-FbHardwareCheckItem -Name 'secureboot' -Passed $false -Detail ('Secure Boot probe threw: {0}' -f $_.Exception.Message) -State 'Not available'
+    }
 
     $failed = @($items | Where-Object { -not $_.Passed })
-    $passed = ($failed.Count -eq 0 -and $items.Count -eq 4)
+    $passed = ($failed.Count -eq 0 -and $items.Count -eq 5)
     $summary = ($items | ForEach-Object { '{0}={1}' -f $_.Name, $(if ($_.Passed) { 'PASS' } else { 'FAIL' }) }) -join '; '
     try {
         if ($passed) {
             Set-FbHardwareCheckSplashStatus -Phase 'HardwarePass' -Message ('Hardware passed ({0}). Operator gate is next.' -f $summary)
         } else {
-            Set-FbHardwareCheckSplashStatus -Phase 'HardwareFail' -Message ('Hardware failed ({0}). Settings is next.' -f $summary)
+            Set-FbHardwareCheckSplashStatus -Phase 'HardwareFail' -Message ('Hardware failed ({0}). Fix the items below on the splash, then restart or open firmware setup.' -f $summary)
         }
     } catch {}
     Write-FbHardwareCheckLog ("result passed={0} {1}" -f $passed, $summary) $(if ($passed) { 'INFO' } else { 'WARN' })
@@ -493,6 +561,7 @@ function Invoke-FbHardwareGate {
 }
 
 $result = $null
+if ($DefinitionsOnly) { return }
 try {
     $result = Invoke-FbHardwareGate
 } catch {
@@ -503,7 +572,7 @@ try {
         Summary = 'probe-threw'
         Error   = [string]$_.Exception.Message
         Checks  = @()
-        Failed  = @('sound', 'camera', 'wifi', 'pnp')
+        Failed  = @('sound', 'camera', 'wifi', 'pnp', 'secureboot')
     }
 }
 

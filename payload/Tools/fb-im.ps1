@@ -142,7 +142,7 @@ if ($LaunchHost -and -not $Library) {
 # Windows PowerShell 5.1 (ErrorActionPreference is optimized).
 Set-Variable -Name ErrorActionPreference -Value SilentlyContinue -Scope Script
 
-$FbImVersion = '2.0.43'
+$FbImVersion = '2.0.45'
 
 function Initialize-FbImWpf {
     # Must run BEFORE Show-FbImWindow is invoked. Parameter binding resolves
@@ -1790,6 +1790,80 @@ function Update-FbImDumpHandle {
     return $Handle
 }
 
+function Get-FbImSelfScriptPath {
+    try {
+        if ($PSCommandPath -and (Test-Path -LiteralPath $PSCommandPath)) { return $PSCommandPath }
+    } catch {}
+    if ($FbImFileDir) {
+        $p = Join-Path $FbImFileDir 'fb-im.ps1'
+        if (Test-Path -LiteralPath $p) { return $p }
+    }
+    try {
+        if ($PSScriptRoot) {
+            $p = Join-Path $PSScriptRoot 'fb-im.ps1'
+            if (Test-Path -LiteralPath $p) { return $p }
+        }
+    } catch {}
+    return $null
+}
+
+function Start-FbImSealRunspace {
+    param(
+        [ValidateSet('Restart', 'Shutdown')]
+        [string]$PowerAction,
+        [string]$ScriptPath = ''
+    )
+    if (-not $ScriptPath) { $ScriptPath = Get-FbImSelfScriptPath }
+    if (-not $ScriptPath -or -not (Test-Path -LiteralPath $ScriptPath)) {
+        throw 'fb-im.ps1 path could not be resolved for seal runspace.'
+    }
+    $rs = [System.Management.Automation.Runspaces.RunspaceFactory]::CreateRunspace()
+    $rs.ApartmentState = [System.Threading.ApartmentState]::MTA
+    $rs.Open()
+    $ps = [System.Management.Automation.PowerShell]::Create()
+    $ps.Runspace = $rs
+    [void]$ps.AddScript(@"
+param(`$ScriptPath, `$PowerAction)
+`$ErrorActionPreference = 'Continue'
+. `$ScriptPath -Library
+Invoke-FbImSealToOobe -PowerAction `$PowerAction
+"@).AddArgument($ScriptPath).AddArgument($PowerAction)
+    $handle = $ps.BeginInvoke()
+    if (-not $handle) { throw 'Seal helper runspace did not start.' }
+    return [pscustomobject]@{
+        PSObject   = $true
+        IsRunspace = $true
+        PowerShell = $ps
+        Handle     = $handle
+        Runspace   = $rs
+        HasExited  = $false
+        Result     = $null
+    }
+}
+
+function Update-FbImSealHandle {
+    param($Handle)
+    if (-not $Handle) { return $null }
+    try {
+        if ($Handle.PSObject.Properties.Name -contains 'IsRunspace' -and $Handle.IsRunspace) {
+            $done = [bool]$Handle.Handle.IsCompleted
+            $Handle.HasExited = $done
+            if ($done -and -not $Handle.Result) {
+                $out = $null
+                try { $out = $Handle.PowerShell.EndInvoke($Handle.Handle) } catch {}
+                $r = $null
+                if ($out -is [System.Collections.IList] -and $out.Count -gt 0) { $r = $out[0] }
+                elseif ($out) { $r = $out }
+                $Handle.Result = $r
+                try { $Handle.PowerShell.Dispose() } catch {}
+                try { $Handle.Runspace.Close(); $Handle.Runspace.Dispose() } catch {}
+            }
+            return $Handle
+        }
+    } catch {}
+    return $Handle
+}
+
 function Invoke-FbImImmediatePower {
     param(
         [ValidateSet('Restart', 'Shutdown', 'Firmware')]
@@ -1798,6 +1872,7 @@ function Invoke-FbImImmediatePower {
     $result = [ordered]@{
         Ok      = $false
         Message = ''
+        Process = $null
     }
     $shutdown = Join-Path $env:SystemRoot 'System32\shutdown.exe'
     if (-not (Test-Path -LiteralPath $shutdown)) { $shutdown = 'shutdown.exe' }
@@ -1816,9 +1891,10 @@ function Invoke-FbImImmediatePower {
         $okMsg = 'Shutting down.'
     }
     try {
-        Start-Process -FilePath $shutdown -ArgumentList $shutArgs -WindowStyle Hidden -ErrorAction Stop | Out-Null
+        $proc = Start-Process -FilePath $shutdown -ArgumentList $shutArgs -WindowStyle Hidden -PassThru -ErrorAction Stop
         $result.Ok = $true
         $result.Message = $okMsg
+        $result.Process = $proc
         return [pscustomobject]$result
     } catch {}
     if ($Kind -eq 'Firmware') {
@@ -1834,6 +1910,188 @@ function Invoke-FbImImmediatePower {
         $result.Message = $_.Exception.Message
     }
     return [pscustomobject]$result
+}
+
+function Stop-FbImPowerWatch {
+    try {
+        if ($script:FbImPowerWatch) {
+            $script:FbImPowerWatch.Stop()
+            $script:FbImPowerWatch = $null
+        }
+    } catch { $script:FbImPowerWatch = $null }
+}
+
+function Set-FbImActionMessageUi {
+    param(
+        [string]$Text,
+        [string]$Color = '#FFEF5350'
+    )
+    $script:FbImActionMessageText = [string]$Text
+    $script:FbImActionMessageColor = [string]$Color
+    $apply = {
+        try {
+            $ui = $script:FbImUi
+            if (-not $ui) { return }
+            $am = $ui.ActionMessage
+            if (-not $am) { return }
+            $c = [string]$script:FbImActionMessageColor
+            if ([string]::IsNullOrWhiteSpace($c)) { $c = '#FFEF5350' }
+            $am.Foreground = [System.Windows.Media.BrushConverter]::new().ConvertFromString($c)
+            $am.Text = [string]$script:FbImActionMessageText
+        } catch {}
+    }
+    $disp = $script:FbImDispatcher
+    if ($disp -and -not $disp.CheckAccess()) {
+        try {
+            $null = $disp.BeginInvoke([System.Windows.Threading.DispatcherPriority]::Normal, [Action]$apply)
+        } catch {
+            try { & $apply } catch {}
+        }
+    } else {
+        & $apply
+    }
+}
+
+function Start-FbImPowerWatch {
+    param(
+        [object]$Proc,
+        [string]$FallbackKind,
+        [string]$BusyFailText
+    )
+    Stop-FbImPowerWatch
+    $script:FbImPowerProc = $Proc
+    $script:FbImPowerFallbackKind = $FallbackKind
+    $script:FbImPowerBusyFail = $BusyFailText
+    $script:FbImPowerFallbackTried = $false
+    $script:FbImPowerDeadline = [datetime]::UtcNow.AddSeconds(12)
+    $t = New-Object System.Windows.Threading.DispatcherTimer
+    $t.Interval = [TimeSpan]::FromMilliseconds(400)
+    $t.Add_Tick({
+        try {
+            $started = $false
+            try { $started = [bool][System.Environment]::HasShutdownStarted } catch {}
+            if ($started) { Stop-FbImPowerWatch; return }
+
+            $p = $script:FbImPowerProc
+            $exited = $false
+            $ec = 0
+            if ($p) {
+                try { $p.Refresh() } catch {}
+                try { $exited = [bool]$p.HasExited } catch { $exited = $true }
+                if ($exited) {
+                    try { $ec = [int]$p.ExitCode } catch { $ec = 1 }
+                    $script:FbImPowerProc = $null
+                }
+            }
+
+            if ($exited -and $ec -ne 0 -and -not $script:FbImPowerFallbackTried) {
+                $script:FbImPowerFallbackTried = $true
+                $kind = [string]$script:FbImPowerFallbackKind
+                if ($kind -eq 'restart') {
+                    if ($script:FbImShowBusy) {
+                        & $script:FbImShowBusy 'Please wait - firmware restart not available; restarting Windows...' 'RESTART'
+                    }
+                    Set-FbImActionMessageUi -Text 'Please wait - firmware restart not available; restarting Windows...' -Color '#FF22D3EE'
+                    $r = Invoke-FbImImmediateRestart
+                    if ($r -and $r.Process) { $script:FbImPowerProc = $r.Process }
+                    return
+                }
+            }
+
+            if ([datetime]::UtcNow -ge [datetime]$script:FbImPowerDeadline) {
+                Stop-FbImPowerWatch
+                $msg = [string]$script:FbImPowerBusyFail
+                if ([string]::IsNullOrWhiteSpace($msg)) {
+                    $msg = 'Restart did not start. The overlay will close.'
+                }
+                Set-FbImActionMessageUi -Text $msg -Color '#FFEF5350'
+                try {
+                    $hide = New-Object System.Windows.Threading.DispatcherTimer
+                    $hide.Interval = [TimeSpan]::FromSeconds(4)
+                    $hide.Add_Tick({
+                        try { $args[0].Stop() } catch {}
+                        if ($script:FbImHideBusy) { & $script:FbImHideBusy } else { $script:FbImBusy = $false }
+                    })
+                    $hide.Start()
+                } catch {
+                    if ($script:FbImHideBusy) { & $script:FbImHideBusy } else { $script:FbImBusy = $false }
+                }
+            }
+        } catch {
+            Stop-FbImPowerWatch
+            if ($script:FbImHideBusy) { & $script:FbImHideBusy } else { $script:FbImBusy = $false }
+        }
+    })
+    $script:FbImPowerWatch = $t
+    $t.Start()
+}
+
+function Invoke-FbImRunDeferredImmediatePower {
+    try {
+        $kind = [string]$script:FbImDeferredPowerKind
+        $failText = [string]$script:FbImDeferredPowerFail
+        $fallback = [string]$script:FbImDeferredPowerFallback
+        $r = $null
+        switch ($kind) {
+            'Restart' { $r = Invoke-FbImImmediateRestart }
+            'Shutdown' { $r = Invoke-FbImImmediateShutdown }
+            'Firmware' { $r = Invoke-FbImImmediateFirmware }
+        }
+        if (-not $r -or -not $r.Ok) {
+            if ($script:FbImHideBusy) { & $script:FbImHideBusy } else { $script:FbImBusy = $false }
+            $detail = if ($r -and $r.Message) { $r.Message } else { '' }
+            $prefix = switch ($kind) {
+                'Shutdown' { 'Shutdown did not start.' }
+                'Firmware' { 'BIOS restart did not start.' }
+                default { 'Restart did not start.' }
+            }
+            if ($detail) {
+                Set-FbImActionMessageUi -Text ('{0} {1}' -f $prefix, $detail) -Color '#FFEF5350'
+            } else {
+                Set-FbImActionMessageUi -Text $prefix -Color '#FFEF5350'
+            }
+            return
+        }
+        Start-FbImPowerWatch -Proc $r.Process -FallbackKind $fallback -BusyFailText $failText
+    } catch {
+        if ($script:FbImHideBusy) { & $script:FbImHideBusy } else { $script:FbImBusy = $false }
+        Set-FbImActionMessageUi -Text ($_.Exception.Message) -Color '#FFEF5350'
+    }
+}
+
+function Invoke-FbImDeferredImmediatePower {
+    param(
+        [ValidateSet('Restart', 'Shutdown', 'Firmware')]
+        [string]$Kind,
+        [string]$BusyFailText,
+        [string]$FallbackKind = ''
+    )
+    # PowerShell cannot reliably pass a ScriptBlock to Dispatcher.BeginInvoke(priority, method)
+    # ("Cannot convert argument method"). Yield one timer tick so the busy overlay paints first.
+    $script:FbImDeferredPowerKind = $Kind
+    $script:FbImDeferredPowerFail = $BusyFailText
+    $script:FbImDeferredPowerFallback = $FallbackKind
+    try {
+        if ($script:FbImDeferredPowerTimer) {
+            $script:FbImDeferredPowerTimer.Stop()
+            $script:FbImDeferredPowerTimer = $null
+        }
+    } catch { $script:FbImDeferredPowerTimer = $null }
+    $disp = $script:FbImDispatcher
+    if (-not $disp) {
+        Invoke-FbImRunDeferredImmediatePower
+        return
+    }
+    $t = New-Object System.Windows.Threading.DispatcherTimer
+    $t.Interval = [TimeSpan]::FromMilliseconds(50)
+    $t.Add_Tick({
+        param($sender, $e)
+        try { if ($sender) { $sender.Stop() } } catch {}
+        $script:FbImDeferredPowerTimer = $null
+        Invoke-FbImRunDeferredImmediatePower
+    })
+    $script:FbImDeferredPowerTimer = $t
+    $t.Start()
 }
 
 function Invoke-FbImImmediateShutdown {
@@ -3111,6 +3369,7 @@ function Show-FbImWindow {
     $scaleBox = $scroller
 
     $dispatcher = if ($EmbedHost) { $EmbedHost.Dispatcher } else { $window.Dispatcher }
+    $script:FbImDispatcher = $dispatcher
 
     # Embedding loads a second Window via XamlReader. Default ShutdownMode is
     # OnLastWindowClose — closing that unused shell exits the splash with no error.
@@ -3282,6 +3541,7 @@ function Show-FbImWindow {
 
     $script:FbImDumpDest = $null
     $script:FbImDumpProc = $null
+    $script:FbImSealProc = $null
     $script:FbImNotesIdleArmed = $false
     $script:FbImBusy = $false
 
@@ -3321,6 +3581,7 @@ function Show-FbImWindow {
         # (current handler never finishes, so Background never runs) and leaves
         # "Checking device status..." on screen forever.
     }
+    $script:FbImShowBusy = $showFbImBusy
     $hideFbImBusy = {
         if ($busyOverlay) {
             $busyOverlay.Visibility = 'Collapsed'
@@ -3366,6 +3627,10 @@ function Show-FbImWindow {
             if ($sealStatus) { $sealStatus.Text = 'Already sealing — wait for this action to finish.' }
             return
         }
+        if ($script:FbImSealProc) {
+            if ($sealStatus) { $sealStatus.Text = 'Already sealing — wait for this action to finish.' }
+            return
+        }
         $script:FbImBusy = $false
         & $showFbImBusy ('Sealing device, then {0}...' -f $PowerAction.ToLower()) 'SEALING'
         if ($btnSealRestart) { $btnSealRestart.IsEnabled = $false }
@@ -3375,35 +3640,58 @@ function Show-FbImWindow {
             $sealStatus.Foreground = [System.Windows.Media.BrushConverter]::new().ConvertFromString('#FF22D3EE')
             $sealStatus.Text = ('Sealing device, then {0}...' -f $PowerAction.ToLower())
         }
-        $sealOk = $false
         try {
-            $r = Invoke-FbImSealToOobe -PowerAction $PowerAction
-            if ($r -and $r.Ok) { $sealOk = $true }
+            $script:FbImSealProc = Start-FbImSealRunspace -PowerAction $PowerAction
+            if ($script:FbImSealTimer) { $script:FbImSealTimer.Start() }
+        } catch {
+            & $hideFbImBusy
+            if ($btnSealRestart) { $btnSealRestart.IsEnabled = $true }
+            if ($btnSealShutdown) { $btnSealShutdown.IsEnabled = $true }
+            if ($btnSealCancel) { $btnSealCancel.IsEnabled = $true }
             if ($sealStatus) {
-                if ($sealOk) {
-                    $sealStatus.Foreground = [System.Windows.Media.BrushConverter]::new().ConvertFromString('#FF66BB6A')
-                } else {
-                    $sealStatus.Foreground = [System.Windows.Media.BrushConverter]::new().ConvertFromString('#FFEF5350')
-                }
-                $sealStatus.Text = ($r.Message + "`n" + $r.Detail).Trim()
+                $sealStatus.Foreground = [System.Windows.Media.BrushConverter]::new().ConvertFromString('#FFEF5350')
+                $sealStatus.Text = ('Seal did not start: {0}' -f $_.Exception.Message)
             }
-            $actionMessage.Text = ($r.Message + "`n" + $r.Detail).Trim()
+            if ($actionMessage) {
+                $actionMessage.Foreground = [System.Windows.Media.BrushConverter]::new().ConvertFromString('#FFEF5350')
+                $actionMessage.Text = ('Seal did not start: {0}' -f $_.Exception.Message)
+            }
+        }
+    }
+
+    $finishFbImSealRun = {
+        param($r)
+        $sealOk = $false
+        if ($r -and $r.Ok) { $sealOk = $true }
+        if ($sealStatus) {
+            if ($sealOk) {
+                $sealStatus.Foreground = [System.Windows.Media.BrushConverter]::new().ConvertFromString('#FF66BB6A')
+            } else {
+                $sealStatus.Foreground = [System.Windows.Media.BrushConverter]::new().ConvertFromString('#FFEF5350')
+            }
+            $msg = ''
+            if ($r) { $msg = ($r.Message + "`n" + $r.Detail).Trim() }
+            $sealStatus.Text = $msg
+        }
+        if ($actionMessage) {
+            $msg = ''
+            if ($r) { $msg = ($r.Message + "`n" + $r.Detail).Trim() }
+            $actionMessage.Text = $msg
             if ($sealOk) {
                 $actionMessage.Foreground = [System.Windows.Media.BrushConverter]::new().ConvertFromString('#FF66BB6A')
             } else {
                 $actionMessage.Foreground = [System.Windows.Media.BrushConverter]::new().ConvertFromString('#FFEF5350')
             }
-        } finally {
-            if ($sealOk) {
-                # sysprep exit 0 stages async /reboot or /shutdown. Do not refresh
-                # status: that can stall the power action on the UI thread.
-            } else {
+        }
+        if ($sealOk) {
+            # sysprep exit 0 stages async /reboot or /shutdown. Do not refresh
+            # status: that can stall the power action on the UI thread.
+        } else {
             & $hideFbImBusy
             if ($btnSealRestart) { $btnSealRestart.IsEnabled = $true }
             if ($btnSealShutdown) { $btnSealShutdown.IsEnabled = $true }
             if ($btnSealCancel) { $btnSealCancel.IsEnabled = $true }
             [void](& $runStatus)
-            }
         }
     }
 
@@ -3956,6 +4244,24 @@ function Show-FbImWindow {
         } catch {}
     })
 
+    $sealTimer = New-Object System.Windows.Threading.DispatcherTimer
+    $sealTimer.Interval = [TimeSpan]::FromMilliseconds(500)
+    $script:FbImSealTimer = $sealTimer
+    $sealTimer.Add_Tick({
+        try {
+            if (-not $script:FbImSealProc) { return }
+            try {
+                $script:FbImSealProc = Update-FbImSealHandle -Handle $script:FbImSealProc
+                if ($script:FbImSealProc -and -not $script:FbImSealProc.HasExited) { return }
+            } catch { return }
+            try { $script:FbImSealTimer.Stop() } catch { try { $sealTimer.Stop() } catch {} }
+            $r = $null
+            try { $r = $script:FbImSealProc.Result } catch {}
+            $script:FbImSealProc = $null
+            & $finishFbImSealRun $r
+        } catch {}
+    })
+
     if ($btnChooseDump) {
         $btnChooseDump.Add_Click({
             try {
@@ -4142,12 +4448,7 @@ function Show-FbImWindow {
                 & $showFbImBusy 'Please wait - shutting down...' 'SHUTDOWN'
                 $actionMessage.Foreground = [System.Windows.Media.BrushConverter]::new().ConvertFromString('#FF22D3EE')
                 $actionMessage.Text = 'Please wait - shutting down...'
-                $r = Invoke-FbImImmediateShutdown
-                if (-not $r.Ok) {
-                    & $hideFbImBusy
-                    $actionMessage.Foreground = [System.Windows.Media.BrushConverter]::new().ConvertFromString('#FFEF5350')
-                    $actionMessage.Text = ('Shutdown did not start. {0}' -f $r.Message)
-                }
+                Invoke-FbImDeferredImmediatePower -Kind 'Shutdown' -BusyFailText 'Shutdown did not start. Overlay closing - use the power button if needed.'
             } catch {
                 try {
                     & $hideFbImBusy
@@ -4167,12 +4468,7 @@ function Show-FbImWindow {
                 & $showFbImBusy 'Please wait - restarting...' 'RESTART'
                 $actionMessage.Foreground = [System.Windows.Media.BrushConverter]::new().ConvertFromString('#FF22D3EE')
                 $actionMessage.Text = 'Please wait - restarting...'
-                $r = Invoke-FbImImmediateRestart
-                if (-not $r.Ok) {
-                    & $hideFbImBusy
-                    $actionMessage.Foreground = [System.Windows.Media.BrushConverter]::new().ConvertFromString('#FFEF5350')
-                    $actionMessage.Text = ('Restart did not start. {0}' -f $r.Message)
-                }
+                Invoke-FbImDeferredImmediatePower -Kind 'Restart' -BusyFailText 'Restart did not start. The overlay will close.'
             } catch {
                 try {
                     & $hideFbImBusy
@@ -4217,12 +4513,7 @@ function Show-FbImWindow {
                 & $showFbImBusy 'Please wait - restarting to BIOS...' 'BIOS'
                 $actionMessage.Foreground = [System.Windows.Media.BrushConverter]::new().ConvertFromString('#FF22D3EE')
                 $actionMessage.Text = 'Please wait - restarting to firmware...'
-                $r = Invoke-FbImImmediateFirmware
-                if (-not $r.Ok) {
-                    & $hideFbImBusy
-                    $actionMessage.Foreground = [System.Windows.Media.BrushConverter]::new().ConvertFromString('#FFEF5350')
-                    $actionMessage.Text = ('BIOS restart did not start. {0}' -f $r.Message)
-                }
+                Invoke-FbImDeferredImmediatePower -Kind 'Firmware' -FallbackKind 'restart' -BusyFailText 'BIOS restart did not start. The overlay will close.'
             } catch {
                 try {
                     & $hideFbImBusy
@@ -4339,6 +4630,7 @@ function Show-FbImWindow {
         # and WPF Click handlers resolve variables at invoke time.
         $script:FbImOnEmbedClose = $OnEmbedClose
         $script:FbImHideBusy = $hideFbImBusy
+        $script:FbImShowBusy = $showFbImBusy
         $btnEmbedBack.Add_Click({
             try {
                 if ($script:FbImHideBusy) { & $script:FbImHideBusy }

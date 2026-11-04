@@ -422,40 +422,6 @@ function Assert-LwUpdateLoopCopy {
     Test-LwUpdateLoopPayload -Path $Dst
 }
 
-function Copy-LwRepoEdgeInstaller {
-    # Destage local installer: C:\Repos\ProjectLoneWolfLauncher\tools\edge.exe (gitignored).
-    # Lands on the stick as FirstBase\WUPayload\Edge so TechInstall can stage it into
-    # C:\Windows\Setup\FirstBase\Edge for Install-FbMicrosoftEdge.ps1.
-    param([Parameter(Mandatory)][string]$DestRoot)
-    try {
-        $repoRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..'))
-        $toolsDir = Join-Path $repoRoot 'tools'
-        if (-not (Test-Path -LiteralPath $toolsDir)) { return }
-        $files = @(Get-ChildItem -LiteralPath $toolsDir -File -ErrorAction SilentlyContinue |
-            Where-Object { $_.Extension -match '\.(exe|msi)$' -and $_.Name -match '(?i)edge' })
-        if ($files.Count -eq 0) { return }
-        $edgeRoot = Join-Path $DestRoot 'FirstBase\WUPayload\Edge'
-        $archDirs = @(
-            $edgeRoot
-            (Join-Path $edgeRoot 'AMD64')
-            (Join-Path $edgeRoot 'ARM64')
-        )
-        foreach ($d in $archDirs) {
-            if (-not (Test-Path -LiteralPath $d)) {
-                New-Item -ItemType Directory -Force -Path $d | Out-Null
-            }
-        }
-        foreach ($f in $files) {
-            foreach ($d in $archDirs) {
-                Copy-Item -LiteralPath $f.FullName -Destination (Join-Path $d $f.Name) -Force -ErrorAction SilentlyContinue
-            }
-            EmitLog -Disk 0 -Msg ("payload: staged local Edge installer {0} ({1} bytes) under FirstBase\WUPayload\Edge" -f $f.Name, $f.Length)
-        }
-    } catch {
-        EmitLog -Disk 0 -Msg ("payload: Edge installer copy skipped: {0}" -f $_.Exception.Message)
-    }
-}
-
 # New fixed-path layout: Staging\AMD64\ and Staging\AMD64\AMD64.wim
 # Quick Update has no staging root. Join-Path rejects an empty Path.
 if ([string]::IsNullOrWhiteSpace($StagingRoot)) {
@@ -649,7 +615,7 @@ function Resolve-LwArm64DriverDirForBuild {
     return [string](Resolve-LwArm64DriverDir -ShareRoot $driveParent)
 }
 
-# Copy-LwEdgeOfflineInstaller lives in lib\LwUsbOverlay.ps1 (dotted above and into disk jobs).
+# Edge MSI is not staged onto the stick. Install-FbMicrosoftEdge.ps1 downloads it on the target PC.
 
 # UEFI removable-media loader is arch-specific (same path for bootmgfw.efi on both):
 #   AMD64 -> efi\boot\bootx64.efi
@@ -1327,7 +1293,6 @@ function Build-Cache {
             Remove-LwQuickInstallStartnetFromDeploy -PartRoot $overlayCache
         }
         if ($stageWuPayload) {
-            Copy-LwRepoEdgeInstaller -DestRoot $overlayCache
             Assert-LwUpdateLoopCopy -Src (Join-Path $ContentRoot 'Invoke-WindowsUpdateLoop.ps1') -Dst (Join-Path $overlayCache 'FirstBase\WUPayload\Invoke-WindowsUpdateLoop.ps1')
         }
         $scriptsSrc = Join-Path $ContentRoot 'Scripts'
@@ -1335,11 +1300,6 @@ function Build-Cache {
             $scriptsDst = Join-Path $overlayCache 'FirstBase\Scripts'
             New-Item -ItemType Directory -Path $scriptsDst -Force | Out-Null
             Copy-Item -Path (Join-Path $scriptsSrc '*') -Destination $scriptsDst -Recurse -Force -ErrorAction SilentlyContinue
-        }
-        if ($stageWuPayload) {
-            $edgeShare = ''
-            try { $edgeShare = [string]$shareLayout.EdgeRoot } catch {}
-            $null = Copy-LwEdgeOfflineInstaller -WuPayloadRoot (Join-Path $overlayCache 'FirstBase\WUPayload') -Arch $wfUpper -ContentRoot $ContentRoot -EdgeShareRoot $edgeShare
         }
         if ($DevBuild -and $stageWuPayload) {
             try {
@@ -1593,7 +1553,6 @@ function Build-IsoCache {
             Remove-LwQuickInstallStartnetFromDeploy -PartRoot $overlayCache
         }
         if ($stageWuPayload) {
-            Copy-LwRepoEdgeInstaller -DestRoot $overlayCache
             Assert-LwUpdateLoopCopy -Src (Join-Path $ContentRoot 'Invoke-WindowsUpdateLoop.ps1') -Dst (Join-Path $overlayCache 'FirstBase\WUPayload\Invoke-WindowsUpdateLoop.ps1')
         }
         $scriptsSrc = Join-Path $ContentRoot 'Scripts'
@@ -1601,11 +1560,6 @@ function Build-IsoCache {
             $scriptsDst = Join-Path $overlayCache 'FirstBase\Scripts'
             New-Item -ItemType Directory -Path $scriptsDst -Force | Out-Null
             Copy-Item -Path (Join-Path $scriptsSrc '*') -Destination $scriptsDst -Recurse -Force -ErrorAction SilentlyContinue
-        }
-        if ($stageWuPayload) {
-            $edgeShare = ''
-            try { $edgeShare = [string]$shareLayout.EdgeRoot } catch {}
-            $null = Copy-LwEdgeOfflineInstaller -WuPayloadRoot (Join-Path $overlayCache 'FirstBase\WUPayload') -Arch $wfUpper -ContentRoot $ContentRoot -EdgeShareRoot $edgeShare
         }
         if ($DevBuild -and $stageWuPayload) {
             try {
@@ -2052,9 +2006,6 @@ $workerDiskBlock = {
         # PreSplit / Image Ready folder identity (e.g. 25h2-home-9-22-amd64-20261005T164435Z).
         [string] $ImageVersion,
         [string] $WindowsEdition,
-        # Job runspaces cannot see script-scope Copy-LwRepoEdgeInstaller / $PSScriptRoot.
-        # Resolved on the main thread (repo tools\ for destage, app-adjacent tools\ packaged).
-        [string] $EdgeToolsDir,
         # Destage skip-WU (npm start:updatesfinished). Only honored when $DevBuild is true.
         [bool]   $DestageSkipWu,
         # WinPE DISM apply may stage install image to RAM when LW_VERSION imageInRam is set.
@@ -2175,40 +2126,6 @@ $workerDiskBlock = {
         }
         if ($dstLen -lt 900000) {
             throw ("FATAL: Invoke-WindowsUpdateLoop.ps1 on stick is truncated ({0} bytes): '{1}'." -f $dstLen, $Dst)
-        }
-    }
-
-    # Job runspaces cannot see script-scope Copy-LwRepoEdgeInstaller on the parent.
-    function Copy-LwRepoEdgeInstaller {
-        param([Parameter(Mandatory)][string]$DestRoot)
-        try {
-            $toolsDir = $EdgeToolsDir
-            if ([string]::IsNullOrWhiteSpace($toolsDir) -and $ContentRoot) {
-                $toolsDir = Join-Path ([IO.Path]::GetFullPath((Join-Path $ContentRoot '..\..'))) 'tools'
-            }
-            if ([string]::IsNullOrWhiteSpace($toolsDir) -or -not (Test-Path -LiteralPath $toolsDir)) { return }
-            $files = @(Get-ChildItem -LiteralPath $toolsDir -File -ErrorAction SilentlyContinue |
-                Where-Object { $_.Extension -match '\.(exe|msi)$' -and $_.Name -match '(?i)edge' })
-            if ($files.Count -eq 0) { return }
-            $edgeRoot = Join-Path $DestRoot 'FirstBase\WUPayload\Edge'
-            $archDirs = @(
-                $edgeRoot
-                (Join-Path $edgeRoot 'AMD64')
-                (Join-Path $edgeRoot 'ARM64')
-            )
-            foreach ($d in $archDirs) {
-                if (-not (Test-Path -LiteralPath $d)) {
-                    New-Item -ItemType Directory -Force -Path $d | Out-Null
-                }
-            }
-            foreach ($f in $files) {
-                foreach ($d in $archDirs) {
-                    Copy-Item -LiteralPath $f.FullName -Destination (Join-Path $d $f.Name) -Force -ErrorAction SilentlyContinue
-                }
-                J @{ event='log'; disk=$DiskNumber; message=("payload: staged local Edge installer {0} ({1} bytes) under FirstBase\WUPayload\Edge" -f $f.Name, $f.Length) }
-            }
-        } catch {
-            J @{ event='log'; disk=$DiskNumber; message=("payload: Edge installer copy skipped: {0}" -f $_.Exception.Message) }
         }
     }
 
@@ -3546,12 +3463,6 @@ $workerDiskBlock = {
                     Assert-LwUpdatesOverlayTechInstall -PartRoot $partRoot -WorkflowType $WorkflowType -QuickInstall ([bool]$QuickInstall) -NoPayload $false
                 }
                 if ($stageWuPayload) {
-                    Copy-LwRepoEdgeInstaller -DestRoot $partRoot
-                    # Quick Update has no OverlayCache Edge stage; Full Rebuild may have
-                    # already cached Edge - re-run ContentRoot/download so the stick gets it.
-                    if (Get-Command -Name Copy-LwEdgeOfflineInstaller -ErrorAction SilentlyContinue) {
-                        $null = Copy-LwEdgeOfflineInstaller -WuPayloadRoot (Join-Path $partRoot 'FirstBase\WUPayload') -Arch $WorkflowType -ContentRoot $ContentRoot -EdgeShareRoot ''
-                    }
                     $loopSrc = Join-Path $OverlayCache 'FirstBase\WUPayload\Invoke-WindowsUpdateLoop.ps1'
                     if (-not (Test-Path -LiteralPath $loopSrc)) { $loopSrc = Join-Path $ContentRoot 'Invoke-WindowsUpdateLoop.ps1' }
                     Assert-LoopCopyLocal -Src $loopSrc -Dst (Join-Path $partRoot 'FirstBase\WUPayload\Invoke-WindowsUpdateLoop.ps1')
@@ -3625,7 +3536,6 @@ $workerDiskBlock = {
                     }
                     Assert-LwUpdatesOverlayTechInstall -PartRoot $partRoot -WorkflowType $WorkflowType -QuickInstall ([bool]$QuickInstall) -NoPayload $false
                     if ($stageWuPayload) {
-                        Copy-LwRepoEdgeInstaller -DestRoot $partRoot
                         Assert-LoopCopyLocal -Src (Join-Path $ContentRoot 'Invoke-WindowsUpdateLoop.ps1') -Dst (Join-Path $partRoot 'FirstBase\WUPayload\Invoke-WindowsUpdateLoop.ps1')
                     }
                     $scriptsSrc = Join-Path $ContentRoot 'Scripts'
@@ -3633,25 +3543,6 @@ $workerDiskBlock = {
                         $scriptsDst = Join-Path $partRoot 'FirstBase\Scripts'
                         New-Item -ItemType Directory -Path $scriptsDst -Force | Out-Null
                         Copy-Item -Path (Join-Path $scriptsSrc '*') -Destination $scriptsDst -Recurse -Force -ErrorAction SilentlyContinue
-                    }
-                    if ($stageWuPayload) {
-                        # OverlayOnly / ISO direct path: stage Edge from payload (or download).
-                        # Copy-LwEdgeOfflineInstaller is in LwUsbOverlay.ps1 (dotted into this job).
-                        $wuDst = Join-Path $partRoot 'FirstBase\WUPayload'
-                        if (Get-Command -Name Copy-LwEdgeOfflineInstaller -ErrorAction SilentlyContinue) {
-                            $null = Copy-LwEdgeOfflineInstaller -WuPayloadRoot $wuDst -Arch $WorkflowType -ContentRoot $ContentRoot -EdgeShareRoot ''
-                        } else {
-                            $edgePs1 = Join-Path $ContentRoot 'Install-FbMicrosoftEdge.ps1'
-                            if ((Test-Path -LiteralPath $edgePs1) -and (Test-Path -LiteralPath $wuDst)) {
-                                Copy-Item -LiteralPath $edgePs1 -Destination (Join-Path $wuDst 'Install-FbMicrosoftEdge.ps1') -Force -ErrorAction SilentlyContinue
-                            }
-                            $edgeSrc = Join-Path $ContentRoot 'Edge'
-                            if ((Test-Path -LiteralPath $edgeSrc) -and (Test-Path -LiteralPath $wuDst)) {
-                                $edgeDst = Join-Path $wuDst 'Edge'
-                                if (-not (Test-Path -LiteralPath $edgeDst)) { New-Item -ItemType Directory -Path $edgeDst -Force | Out-Null }
-                                Copy-Item -Path (Join-Path $edgeSrc '*') -Destination $edgeDst -Recurse -Force -ErrorAction SilentlyContinue
-                            }
-                        }
                     }
                 } else {
                     # WIN-INSTALL only. Quick Install uses the install boot map above, without the update payload.
@@ -4489,12 +4380,12 @@ try {
         EmitLog -Disk 0 -Msg "ARM64 driver inject skipped for $wfUpper (Intel/AMD and Quick Install Intel/AMD do not get ARM64 drivers)"
     }
     if ($stageWuPayload) {
-        EmitLog -Disk 0 -Msg 'Windows Updates: staging Windows Update payload (WUPayload, Edge installer, update loop)'
+        EmitLog -Disk 0 -Msg 'Windows Updates: staging Windows Update payload (WUPayload, update loop; Edge downloads on target)'
     } elseif ($QuickInstall -and $snapdragonBuild) {
         $qiDriverNote = if ($OverlayOnly) { '' } else { ' ARM64 drivers are injected into WinPE only.' }
-        EmitLog -Disk 0 -Msg ("Snapdragon Quick Install: skipping Windows Update payload (no WUPayload, Edge installer, or offline update servicing).{0}" -f $qiDriverNote)
+        EmitLog -Disk 0 -Msg ("Snapdragon Quick Install: skipping Windows Update payload (no WUPayload or offline update servicing).{0}" -f $qiDriverNote)
     } elseif ($QuickInstall) {
-        EmitLog -Disk 0 -Msg 'Quick Install Intel/AMD: skipping Windows Update payload (no WUPayload, Edge installer, or offline update servicing). ARM64 drivers are not injected.'
+        EmitLog -Disk 0 -Msg 'Quick Install Intel/AMD: skipping Windows Update payload (no WUPayload or offline update servicing). ARM64 drivers are not injected.'
     }
 
     # Measure ESP size for dynamic partition sizing
@@ -4941,7 +4832,6 @@ try {
         EmitLog -Disk 0 -Msg ("image-identity: imageVersion={0} imageBuildDate={1} edition={2}" -f $imageVersion, $imageBuildDate, $winEdition)
     }
 
-    $edgeToolsDir = Join-Path ([IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..'))) 'tools'
     # ARM64 drivers are injected into boot.wim only. $arm64InstallImageDir stays empty.
 
     # Warm WinPeUi (local trees or GitHub bin/ zips) before per-disk overlay / boot inject.
@@ -5049,7 +4939,6 @@ try {
                 $imageBuildDate,
                 $imageVersion,
                 $winEdition,
-                $edgeToolsDir,
                 ([bool]($DevBuild -and $DestageSkipWu)),
                 ([bool]$ImageInRam),
                 $arm64UsbDriverDir,

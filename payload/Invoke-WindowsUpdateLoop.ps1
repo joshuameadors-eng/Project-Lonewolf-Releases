@@ -6147,8 +6147,8 @@ function Invoke-FbReboot {
                 $uiPhase = 'Waiting'
                 $msg = ("Waiting for Windows to settle. {0} [{1} elapsed {2}s / {3}s]" -f $reasonNow, $PhaseLabel, $elapsed, $PhaseSeconds)
             } else {
-                $uiPhase = 'Rebooting'
-                $msg = ("Restarting - waiting for Windows to begin shutdown. {0} [{1} elapsed {2}s / {3}s]" -f $reasonNow, $PhaseLabel, $elapsed, $PhaseSeconds)
+                $uiPhase = 'Waiting'
+                $msg = ("Waiting for Windows to settle. {0} [{1} elapsed {2}s / {3}s]" -f $reasonNow, $PhaseLabel, $elapsed, $PhaseSeconds)
             }
             try { Set-UiPhase -Phase $uiPhase -Message $msg } catch {}
             try { Update-FbHeartbeat -Phase $uiPhase } catch {}

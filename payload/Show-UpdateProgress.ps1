@@ -1786,6 +1786,12 @@ function Test-FbSplashCheckPhase {
     return [bool]($Phase -match '^(?i)(Scanning|Checking|Verifying|FinalCheck)$')
 }
 
+function Test-FbSplashRebootCountLatchPhase {
+    param([string]$Phase)
+    if (Test-FbSplashCheckPhase -Phase $Phase) { return $true }
+    return [bool]($Phase -match '^(?i)(Waiting|preparing-handoff|HardwareGate|Rebooting|restart-for-checks)$')
+}
+
 function Get-FbSplashPipelineStartTime {
     # Earliest of wu-state StartTime and wu-pipeline-started.utc.
     # CBS settle used to rewrite StartTime to "now" (dump 4FVGN94-0657),
@@ -1972,7 +1978,8 @@ function Get-FbSplashHardwareFailListText {
         }
     }
     if ($lines.Count -eq 0) { return 'Failed checks could not be read. Inspect C:\ProgramData\FirstBase\.hardware-gate-result.json.' }
-    return ($lines -join [Environment]::NewLine)
+    $banner = 'This device will not auto-seal. The desktop will open. Seal manually from fb-im when checks pass.'
+    return ($banner + [Environment]::NewLine + [Environment]::NewLine + ($lines -join [Environment]::NewLine))
 }
 
 function Hide-FbSplashHardwareFailPanel {
@@ -2047,9 +2054,9 @@ function Set-FbSplashRebootDisplay {
     if (-not $rebootCountText) { return }
     $n = if ($Count -ge 0) { $Count } else { Get-FbSplashRebootCount }
     # A recheck must not zero REBOOTS. The count moves only when a real
-    # reboot iteration is on disk, or when this splash is not in a check phase.
-    $checkPhase = Test-FbSplashCheckPhase -Phase ([string]$script:FbSplashActivityPhase)
-    if (-not $script:Preview -and $checkPhase -and $null -ne $script:FbSplashRebootShown -and $n -lt [int]$script:FbSplashRebootShown) {
+    # reboot iteration is on disk, or when this splash is not in a latch phase.
+    $latchPhase = Test-FbSplashRebootCountLatchPhase -Phase ([string]$script:FbSplashActivityPhase)
+    if (-not $script:Preview -and $latchPhase -and $null -ne $script:FbSplashRebootShown -and $n -lt [int]$script:FbSplashRebootShown) {
         $n = [int]$script:FbSplashRebootShown
     }
     $script:FbSplashRebootShown = $n
@@ -3257,8 +3264,8 @@ function Get-FbSplashHandoffCopyForPhase {
         }
         '^(Waiting|preparing-handoff)$' {
             $copy.Eyebrow = 'WAITING'
-            $copy.Header  = 'Restarting soon'
-            $copy.Detail  = 'The computer will restart on its own.'
+            $copy.Header  = 'Waiting for Windows to settle'
+            $copy.Detail  = 'Updates are finishing. Hardware checks are next.'
             $copy.Status  = 'Waiting'
             $copy.Warning = ''
         }
@@ -3293,9 +3300,9 @@ function Get-FbSplashHandoffCopyForPhase {
         '^(HardwareFail|checks-fail)$' {
             $copy.Eyebrow = 'HARDWARE'
             $copy.Header  = 'Hardware check failed'
-            $copy.Detail  = 'Failed checks are listed below. Fix hardware or firmware, then restart or open firmware setup.'
+            $copy.Detail  = 'This device will not auto-seal. The desktop will open. Fix hardware or firmware, then restart or open firmware setup. Seal manually from fb-im when checks pass.'
             $copy.Status  = 'Hardware failed'
-            $copy.Warning = 'The device stays on. Seal and customer setup do not continue until checks pass.'
+            $copy.Warning = 'FirstBase does not continue to customer setup until checks pass.'
         }
         '^(OperatorGate|close-wait)$' {
             $copy.Eyebrow = 'WAITING ON YOU'
@@ -3327,20 +3334,24 @@ function Get-FbSplashHandoffCopyForPhase {
         $copy.Header = ('Checking {0}' -f $probe)
         $copy.Detail = 'Wi-Fi, camera, and sound.'
         $copy.Status = ('Checking {0}' -f $probe)
-    } elseif ($msg -match '(?i)youtube' -and $msg -match '(?i)settings') {
-        # Keep the generic operator-gate copy (YouTube pass or Settings fail).
-    } elseif ($msg -match '(?i)youtube') {
-        $copy.Header = 'Opening a private YouTube window'
-        $copy.Detail = 'Hardware passed. Close the YouTube window when you are done to seal and restart into Windows setup.'
-        $copy.Status = 'Opening operator gate'
-    } elseif ($msg -match '(?i)settings') {
-        $copy.Header = 'Opening Windows Settings'
-        $copy.Detail = 'Close Settings when you are done. FirstBase continues after that window closes.'
-        $copy.Status = 'Opening operator gate'
-    } elseif ($msg -match '(?i)seal the device from fb-im') {
-        $copy.Header = 'Hardware passed'
-        $copy.Detail = 'Hardware checks passed. Seal the device from fb-im when you are ready. Walking away does not shut the device down.'
-        $copy.Status = 'Hardware passed'
+    } elseif ($p -match '^(?i)(OperatorGate|close-wait|HardwarePass|checks-pass)$') {
+        # YouTube / Settings wording is only for operator-gate phases. Do not let a
+        # leftover "settings" substring in Message override Waiting / Rebooting / Fail.
+        if ($msg -match '(?i)youtube' -and $msg -match '(?i)settings') {
+            # Keep the generic operator-gate copy (YouTube pass or Settings fail).
+        } elseif ($msg -match '(?i)youtube') {
+            $copy.Header = 'Opening a private YouTube window'
+            $copy.Detail = 'Hardware passed. Close the YouTube window when you are done to seal and restart into Windows setup.'
+            $copy.Status = 'Opening operator gate'
+        } elseif ($msg -match '(?i)settings') {
+            $copy.Header = 'Opening Windows Settings'
+            $copy.Detail = 'Close Settings when you are done. FirstBase continues after that window closes.'
+            $copy.Status = 'Opening operator gate'
+        } elseif ($msg -match '(?i)seal the device from fb-im') {
+            $copy.Header = 'Hardware passed'
+            $copy.Detail = 'Hardware checks passed. Seal the device from fb-im when you are ready. Walking away does not shut the device down.'
+            $copy.Status = 'Hardware passed'
+        }
     }
     return $copy
 }
@@ -4156,6 +4167,47 @@ function Get-StatusFromStateFile {
     }
 }
 
+function Set-FbSplashStatusSurfaceFromPhase {
+    param(
+        [string]$DisplayPhase = '',
+        [string]$Message = '',
+        [switch]$PriorBoot,
+        [bool]$HasRows = $false
+    )
+    $displayPhase = if ([string]::IsNullOrWhiteSpace($DisplayPhase)) { '' } else { $DisplayPhase.Trim() }
+    $stateMsg = [string]$Message
+    if ($displayPhase -eq 'ManualRestart') {
+        Show-FbSplashStatusNotice -Kind 'Restart' -Title 'Manual restart required' -Detail 'The computer is stopped. Restart it to continue.' -Accent '#FFEF5350'
+        return
+    }
+    if ($PriorBoot -and -not $HasRows) {
+        Show-FbSplashStatusNotice -Kind 'Boot' -Title 'Checking Updates after reboot' -Detail 'This can take a few minutes.' -Spinner -Accent '#FF4FC3F7'
+        return
+    }
+    if ($displayPhase -match '^(?i)(Rebooting|restart-for-checks)$') {
+        Show-FbSplashStatusNotice -Kind 'Boot' -Title 'Restarting to continue' -Detail 'Leave the device powered on.' -Spinner -Accent '#FF4FC3F7'
+        return
+    }
+    if ($displayPhase -match '^(?i)(Verifying|FinalCheck)$') {
+        Show-FbSplashStatusNotice -Kind 'Check' -Title 'Verifying installed updates' -Detail 'This can take a few minutes.' -Spinner -Accent '#FF22D3EE'
+        return
+    }
+    if (Test-FbSplashAuditStatusPhase -Phase $displayPhase) {
+        try { Set-FbSplashHandoffLayout -Phase $displayPhase -Message $stateMsg } catch {}
+        return
+    }
+    if (-not $HasRows -and $displayPhase -match '^(?i)(Checking|Scanning)$') {
+        Show-FbSplashStatusNotice -Kind 'Check' -Title 'Checking for updates' -Detail 'This process can take 2 - 5 minutes.' -Spinner -Accent '#FF22D3EE'
+        return
+    }
+    if (-not $HasRows) {
+        # Keep a styled notice for empty update lists; do not Clear into plain placeholder.
+        try { Show-FbSplashEmptyUpdatesSpinnerIfNeeded -Phase $displayPhase } catch {}
+        return
+    }
+    Clear-FbSplashHandoffLayout
+}
+
 function Invoke-FbSplashHydrateFromDisk {
     $state = Get-StatusFromStateFile
     if ($state) {
@@ -4167,17 +4219,7 @@ function Invoke-FbSplashHydrateFromDisk {
         $stateMsg = [string]$state.Message
         Set-FbSplashPassStatus -Text (Get-FbSplashShortStatusLine -PhaseOrPass $displayPhase) -Phase $displayPhase -Message $stateMsg
         $fbHasRows = @($state.Updates).Count -gt 0
-        if ($displayPhase -eq 'ManualRestart') {
-            Show-FbSplashStatusNotice -Kind 'Restart' -Title 'Manual restart required' -Detail 'The computer is stopped. Restart it to continue.' -Accent '#FFEF5350'
-        } elseif ($state.PriorBoot -and -not $fbHasRows) {
-            Show-FbSplashStatusNotice -Kind 'Boot' -Title 'Checking Updates after reboot' -Detail 'This can take a few minutes.' -Spinner -Accent '#FF4FC3F7'
-        } elseif (Test-FbSplashAuditStatusPhase -Phase $displayPhase) {
-            try { Set-FbSplashHandoffLayout -Phase $displayPhase -Message $stateMsg } catch {}
-        } elseif (-not $fbHasRows -and $displayPhase -match '^(?i)(Checking|Scanning)$') {
-            Show-FbSplashStatusNotice -Kind 'Check' -Title 'Checking for updates' -Detail 'This process can take 2 - 5 minutes.' -Spinner -Accent '#FF22D3EE'
-        } else {
-            Clear-FbSplashHandoffLayout
-        }
+        Set-FbSplashStatusSurfaceFromPhase -DisplayPhase $displayPhase -Message $stateMsg -PriorBoot:([bool]$state.PriorBoot) -HasRows $fbHasRows
         if (@($state.Updates).Count -gt 0) {
             Set-FbSplashUpdatesContent -Items $state.Updates
         } else {
@@ -4252,6 +4294,34 @@ function Get-FbSplashUpdateCardMetrics {
     return @{ W = [int]$cardW; H = [int]$cardH; Slot = [int]$slot; Inner = [int]$inner; Font = $font; StatusFont = $statusFont; Cols = $cols; Rows = $rows; Bucket = $rows }
 }
 
+function Get-FbSplashEmptyUpdatesPlaceholderText {
+    param([string]$Phase = '')
+    $p = if ([string]::IsNullOrWhiteSpace($Phase)) { [string]$script:FbSplashActivityPhase } else { $Phase.Trim() }
+    if ($p -match '^(?i)(Verifying|FinalCheck)$') { return 'Verifying installed updates' }
+    if ($p -match '^(?i)(Waiting|preparing-handoff)$') { return 'Waiting for Windows to settle; hardware checks are next' }
+    if ($p -match '^(?i)(Rebooting|restart-for-checks)$') { return 'Restarting to continue updates' }
+    if ($p -match '^(?i)(HardwareGate|HardwareChecks|running-checks)$') { return 'Hardware checks in progress' }
+    return "Waiting for this boot's updates"
+}
+
+function Show-FbSplashEmptyUpdatesSpinnerIfNeeded {
+    param([string]$Phase = '')
+    if ($script:FbSplashHandoffLayoutActive) { return }
+    $p = if ([string]::IsNullOrWhiteSpace($Phase)) { [string]$script:FbSplashActivityPhase } else { $Phase.Trim() }
+    if ($p -match '^(?i)(Verifying|FinalCheck)$') {
+        Show-FbSplashStatusNotice -Kind 'Check' -Title 'Verifying installed updates' -Detail 'This can take a few minutes.' -Spinner -Accent '#FF22D3EE'
+    } elseif ($p -match '^(?i)(Rebooting|restart-for-checks)$') {
+        Show-FbSplashStatusNotice -Kind 'Boot' -Title 'Restarting to continue' -Detail 'Leave the device powered on.' -Spinner -Accent '#FF4FC3F7'
+    } elseif ($p -match '^(?i)(Waiting|preparing-handoff)$') {
+        Show-FbSplashStatusNotice -Kind 'Settle' -Title 'Waiting for Windows to settle' -Detail 'Hardware checks are next.' -Spinner -Accent '#FF22D3EE'
+    } elseif ($p -match '^(?i)(HardwareGate|HardwareChecks|running-checks)$') {
+        Show-FbSplashStatusNotice -Kind 'Checks' -Title 'Running hardware checks' -Detail 'Wi-Fi, camera, and sound.' -Spinner -Accent '#FF22D3EE'
+    } else {
+        # Never leave the bare UpdatesPlaceholder TextBlock as the only status.
+        Show-FbSplashStatusNotice -Kind 'Boot' -Title "Waiting for this boot's updates" -Detail 'Checking for updates after startup.' -Spinner -Accent '#FF4FC3F7'
+    }
+}
+
 function Update-FbSplashUpdateCards {
     param([object[]]$Items)
     if (-not $updatesWrap) { return }
@@ -4260,11 +4330,16 @@ function Update-FbSplashUpdateCards {
     if ($list.Count -eq 0) {
         $script:FbSplashCardSig = ''
         try { $updatesWrap.Children.Clear() } catch {}
-        if ($updatesPlaceholder -and -not $script:FbSplashNoticeOpen) {
-            $updatesPlaceholder.Text = "Waiting for this boot's updates"
-            $updatesPlaceholder.Visibility = [System.Windows.Visibility]::Visible
+        $phaseForEmpty = [string]$script:FbSplashActivityPhase
+        try { Show-FbSplashEmptyUpdatesSpinnerIfNeeded -Phase $phaseForEmpty } catch {}
+        if ($updatesPlaceholder) {
+            try { $updatesPlaceholder.Visibility = [System.Windows.Visibility]::Collapsed } catch {}
         }
         return
+    }
+    # Real update cards own the panel. Drop empty-state notices unless handoff owns the surface.
+    if (-not $script:FbSplashHandoffLayoutActive) {
+        try { Hide-FbSplashStatusNotice } catch {}
     }
     $metrics = Get-FbSplashUpdateCardMetrics -Count $list.Count
     try {
@@ -4595,17 +4670,7 @@ $timer.Add_Tick({
         $stateMsg = [string]$state.Message
         Set-FbSplashPassStatus -Text (Get-FbSplashShortStatusLine -PhaseOrPass $displayPhase) -Phase $displayPhase -Message $stateMsg
         $fbHasRows = @($state.Updates).Count -gt 0
-        if ($displayPhase -eq 'ManualRestart') {
-            Show-FbSplashStatusNotice -Kind 'Restart' -Title 'Manual restart required' -Detail 'The computer is stopped. Restart it to continue.' -Accent '#FFEF5350'
-        } elseif ($state.PriorBoot -and -not $fbHasRows) {
-            Show-FbSplashStatusNotice -Kind 'Boot' -Title 'Checking Updates after reboot' -Detail 'This can take a few minutes.' -Spinner -Accent '#FF4FC3F7'
-        } elseif (Test-FbSplashAuditStatusPhase -Phase $displayPhase) {
-            try { Set-FbSplashHandoffLayout -Phase $displayPhase -Message $stateMsg } catch {}
-        } elseif (-not $fbHasRows -and $displayPhase -match '^(?i)(Checking|Scanning)$') {
-            Show-FbSplashStatusNotice -Kind 'Check' -Title 'Checking for updates' -Detail 'This process can take 2 - 5 minutes.' -Spinner -Accent '#FF22D3EE'
-        } else {
-            Clear-FbSplashHandoffLayout
-        }
+        Set-FbSplashStatusSurfaceFromPhase -DisplayPhase $displayPhase -Message $stateMsg -PriorBoot:([bool]$state.PriorBoot) -HasRows $fbHasRows
         if (@($state.Updates).Count -gt 0) {
             Set-FbSplashUpdatesContent -Items $state.Updates
         } else {

@@ -1,6 +1,6 @@
 {
     "launcherVersion":  "7.0.4",
-    "payloadVersion":  "7.0.9",
+    "payloadVersion":  "7.0.10",
     "channel":  "dev",
     "source":  "github-public-source",
     "latestReleaseUrl":  "https://github.com/joshuameadors-eng/Project-Lonewolf-Releases/releases/latest",
@@ -38,6 +38,18 @@
     "portableSha256":  "2a9fc97b6190f1eb32bd966f54ce93d1f415caede73e3b75f6f445a3fe71fa20",
     "portableSize":  73304425,
     "changelog":  [
+                      {
+                          "version":  "7.0.10",
+                          "date":  "2026-11-04",
+                          "changes":  [
+                                          "Official release 7.0.10 â€” follow-up to 7.0.9. Launcher stays 7.0.4; product and payload are 7.0.10.",
+                                          "Changed",
+                                          "Updates splash â€” Waiting no longer reads as Restarting; restart status only after shutdown starts; empty update lists use animated notices instead of plain placeholder text; reboot count no longer flashes to zero; hardware-fail page states no auto-seal and manual seal in fb-im",
+                                          "Technician tool â€” Restart / Shutdown / BIOS busy overlay paints before power; manual seal stays responsive; status lists each check that passed or failed",
+                                          "Microsoft Edge â€” installer is no longer staged onto the USB stick; the target PC downloads Edge when online",
+                                          "PreSplit staging â€” Robocopy + SUBST for long ISO paths so UUP copy does not fail on MAX_PATH"
+                                      ]
+                      },
                       {
                           "version":  "7.0.9",
                           "date":  "2026-11-03",

@@ -594,9 +594,17 @@ try {
             $rootIdx++
             EmitProgress 'stage-copy' ([int](40 * $rootIdx / $rootTotal))
             if ($isoEntry.PSIsContainer) {
-                Copy-Item -LiteralPath $isoEntry.FullName -Destination $tmpTarget -Recurse -Force -ErrorAction Stop
+                $destDir = Join-Path $tmpTarget $isoEntry.Name
+                $null = New-Item -ItemType Directory -Force -Path $destDir -ErrorAction SilentlyContinue
+                # Robocopy + SUBST — Copy-Item -Recurse dies on MAX_PATH with leaf-only errors
+                # like "Could not find a part of the path '….secondarytileexperience_….xml'".
+                $null = Invoke-LwRobocopyChecked -Source $isoEntry.FullName -Destination $destDir `
+                    -ExtraArgs @('/E') `
+                    -FailureContext ("copying ISO root folder '$($isoEntry.Name)' to '$destDir'")
             } else {
-                Copy-Item -LiteralPath $isoEntry.FullName -Destination $tmpTarget -Force -ErrorAction Stop
+                $null = Invoke-LwRobocopyChecked -Source $isoDrive -Destination $tmpTarget `
+                    -FilePatterns @($isoEntry.Name) `
+                    -FailureContext ("copying ISO root file '$($isoEntry.Name)' to '$tmpTarget'")
             }
         }
         $null = Invoke-LwRobocopyChecked -Source $isoSources -Destination $chunkDest -ExtraArgs @('/E', '/XF', 'install.wim', 'install.esd') -FailureContext ("copying ISO sources (minus install image) to '$chunkDest'")

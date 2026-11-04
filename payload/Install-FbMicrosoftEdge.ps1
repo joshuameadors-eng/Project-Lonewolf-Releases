@@ -1,4 +1,4 @@
-# Install Microsoft Edge from the USB payload (UUP ISOs often omit it).
+# Install Microsoft Edge by download when missing (UUP ISOs often omit it).
 # Run as -File from SetupComplete, or dot-source and call Install-FbMicrosoftEdge.
 # No param() block — this file is also dot-sourced from the WU loop.
 # For Internal Use Only.
@@ -153,7 +153,7 @@ function Save-FbEdgeEnterpriseMsi {
     $arch = Get-FbEdgeNativeArch
     $url = Get-FbEdgeEnterpriseMsiUrl -Arch $arch
     if ([string]::IsNullOrWhiteSpace($url)) {
-        Write-FbEdgeLog ("No Edge MSI URL for {0}. Stage MicrosoftEdgeEnterprise{1}.msi under Edge\{0}\ on the share." -f $arch, $(if ($arch -eq 'ARM64') { 'ARM64' } else { 'X64' })) 'ERROR'
+        Write-FbEdgeLog ("No Edge MSI URL for {0}. Need internet to download Microsoft Edge." -f $arch) 'ERROR'
         return $null
     }
     $dir = Get-FbEdgeDownloadDir
@@ -199,7 +199,7 @@ function Invoke-FbEdgeInstallerFile {
 }
 
 function Remove-FbEdgeStagingFolder {
-    # Offline installer bits staged by TechInstall. Keep them only while Edge is missing.
+    # Leftover offline installer cache from older sticks. Remove after Edge is present.
     $dirs = @(
         'C:\Windows\Setup\FirstBase\Edge'
         'C:\Windows\Setup\FirstBase\WUPayload\Edge'
@@ -234,7 +234,7 @@ function Install-FbMicrosoftEdge {
         $source = 'download'
     }
     if (-not $installer) {
-        Write-FbEdgeLog 'No Edge offline installer on the image and download was unavailable. YouTube PASS needs Edge. Stage Edge\AMD64 or Edge\ARM64 on the share (MicrosoftEdgeEnterpriseX64.msi / MicrosoftEdgeEnterpriseARM64.msi).' 'ERROR'
+        Write-FbEdgeLog 'Microsoft Edge is missing and download was unavailable. YouTube PASS needs Edge. Connect to the internet and retry.' 'ERROR'
         $existing = Test-FbMicrosoftEdgePresent
         return [pscustomobject]@{ Present = [bool]$existing; Path = $existing; Installed = $false; Source = 'missing' }
     }

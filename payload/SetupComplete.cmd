@@ -1239,7 +1239,7 @@ if errorlevel 1 (
 :: 5b) Microsoft Edge (UUP dump ISOs often omit it). After ARM so a slow MSI
 :: cannot block loop triggers. Best-effort; WU loop and YouTube PASS retry if needed.
 if exist "%FB_ROOT%\Install-FbMicrosoftEdge.ps1" (
-    call :LOG "Installing Microsoft Edge from payload if missing (UUP images omit Edge; YouTube PASS needs it)"
+    call :LOG "Installing Microsoft Edge if missing (download when online; UUP images omit Edge; YouTube PASS needs it)"
     "%FB_PS%" -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "%FB_ROOT%\Install-FbMicrosoftEdge.ps1" >> "%FB_LOG%" 2>&1 <nul
     if errorlevel 1 (
         call :LOG "WARN: Edge install returned non-zero; WU loop / YouTube PASS will retry."

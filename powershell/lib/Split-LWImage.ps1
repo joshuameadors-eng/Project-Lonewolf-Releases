@@ -1302,7 +1302,7 @@ function Test-LwPreSplitBootInjected {
 # Invoke-LwRobocopyChecked
 #   Robocopy wrapper for staging copies. Uses plain full paths (no /256, no \\?\;
 #   robocopy mishandles \\?\ on local dirs as ERROR_BAD_NETPATH). SUBST shortens
-#   deep UUP source trees when the source path exceeds 200 chars.
+#   deep UUP source and/or PreSplit dest trees when either path exceeds ~140 chars.
 # ---------------------------------------------------------------------------
 function Resolve-LwRobocopyPath {
     param([Parameter(Mandatory)][string] $Path)
@@ -1321,13 +1321,14 @@ function Resolve-LwRobocopyPath {
     }
 }
 
-function New-LwRobocopySubstContext {
+function New-LwRobocopyDriveSubst {
     param(
-        [Parameter(Mandatory)][string] $SourcePath,
-        [int] $MinSourceLength = 200
+        [Parameter(Mandatory)][string] $Path,
+        [int] $MinLength = 140,
+        [string[]] $PreferLetters = @('Z', 'Y', 'X', 'W', 'V', 'U', 'T', 'S', 'R', 'Q', 'P')
     )
-    $full = Resolve-LwRobocopyPath -Path $SourcePath
-    if ($full.Length -le $MinSourceLength) { return $null }
+    $full = Resolve-LwRobocopyPath -Path $Path
+    if ($full.Length -le $MinLength) { return $null }
 
     $anchor = $full
     $leaf = Split-Path -Leaf $full
@@ -1340,7 +1341,7 @@ function New-LwRobocopySubstContext {
     if (-not (Test-Path -LiteralPath $anchor -PathType Container)) { return $null }
 
     $letter = $null
-    foreach ($c in @('Z', 'Y', 'X', 'W', 'V', 'U', 'T', 'S', 'R', 'Q', 'P')) {
+    foreach ($c in $PreferLetters) {
         if (-not (Get-PSDrive -Name $c -ErrorAction SilentlyContinue)) {
             $letter = "${c}:"
             break
@@ -1359,9 +1360,24 @@ function New-LwRobocopySubstContext {
     $mapped = if ([string]::IsNullOrEmpty($suffix)) { $letter + '\' } else { Join-Path $letter $suffix }
 
     return @{
-        Letter       = $letter
-        Anchor       = $anchor
-        MappedSource = $mapped
+        Letter      = $letter
+        Anchor      = $anchor
+        MappedPath  = $mapped
+    }
+}
+
+function New-LwRobocopySubstContext {
+    param(
+        [Parameter(Mandatory)][string] $SourcePath,
+        [int] $MinSourceLength = 140
+    )
+    $ctx = New-LwRobocopyDriveSubst -Path $SourcePath -MinLength $MinSourceLength `
+        -PreferLetters @('Z', 'Y', 'X', 'W', 'V', 'U', 'T')
+    if (-not $ctx) { return $null }
+    return @{
+        Letter       = $ctx.Letter
+        Anchor       = $ctx.Anchor
+        MappedSource = $ctx.MappedPath
     }
 }
 
@@ -1465,12 +1481,17 @@ function Invoke-LwRobocopyChecked {
         throw "robocopy source not found: '$srcUse' ($FailureContext)"
     }
 
-    $substCtx = $null
+    $substSrc = $null
+    $substDst = $null
     try {
-        $substCtx = New-LwRobocopySubstContext -SourcePath $srcUse
-        if ($substCtx) {
-            $srcUse = $substCtx.MappedSource
-        }
+        # UUP replacementmanifests leaves are ~150 chars under sources\; SUBST when root is
+        # long enough that leaf paths can blow MAX_PATH (Desktop\Repos\… PreSplit dests).
+        $substSrc = New-LwRobocopySubstContext -SourcePath $srcUse -MinSourceLength 140
+        if ($substSrc) { $srcUse = $substSrc.MappedSource }
+
+        $substDst = New-LwRobocopyDriveSubst -Path $destUse -MinLength 140 `
+            -PreferLetters @('S', 'R', 'Q', 'P', 'O', 'N', 'M')
+        if ($substDst) { $destUse = $substDst.MappedPath }
 
         $rcArgs = @($srcUse, $destUse)
         if ($FilePatterns -and @($FilePatterns).Count -gt 0) { $rcArgs += @($FilePatterns) }
@@ -1484,7 +1505,8 @@ function Invoke-LwRobocopyChecked {
         }
         return $exit
     } finally {
-        Remove-LwRobocopySubstContext -Context $substCtx
+        Remove-LwRobocopySubstContext -Context $substDst
+        Remove-LwRobocopySubstContext -Context $substSrc
         Remove-Item -LiteralPath $log -Force -ErrorAction SilentlyContinue
     }
 }
